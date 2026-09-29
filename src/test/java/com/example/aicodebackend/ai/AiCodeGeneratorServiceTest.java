@@ -1,7 +1,5 @@
 package com.example.aicodebackend.ai;
 
-import com.example.aicodebackend.ai.model.HTMLCodeResult;
-import com.example.aicodebackend.ai.model.MultiFileCodeResult;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.Test;
@@ -17,14 +15,14 @@ class AiCodeGeneratorServiceTest {
     @Test
     void generateHTMLCode() {
         String prompt = "写一个计算器的HTML页面";
-        HTMLCodeResult codeResult = aiCodeGeneratorService.generateHTMLCode(prompt);
+        String codeResult = aiCodeGeneratorService.generateHTMLCode(prompt);
         log.info("生成的HTML代码:\n{}", codeResult);
     }
 
     @Test
     void generateMultipleFileCode() {
         String prompt = "写一个计算器小工具。";
-        MultiFileCodeResult codeResult = aiCodeGeneratorService.generateMultipleFileCode(prompt);
+        String codeResult = aiCodeGeneratorService.generateMultipleFileCode(prompt);
         log.info("生成的多文件代码:\n{}", codeResult);
     }
 }

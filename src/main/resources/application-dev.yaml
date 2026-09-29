@@ -29,23 +29,23 @@ mybatis-flex:
 # LangChain4j配置
 langchain4j:
   open-ai:
-    chat-model:
-      base-url: https://api.deepseek.com
-      model-name: deepseek-chat  #deepseek-chat # deepseek-reasoner
-      api-key: ${DEEPSEEK_API_KEY}
-      log-requests: true
-      log-responses: true
-      max-retries: 5
-      timeout: 300s
-      max-tokens: 8192
-      strict-json-schema: true
-      response-format: json_object
+#    chat-model:
+    #      base-url: https://api.deepseek.com
+    #      model-name: deepseek-flash  # deepseek-flash / deepseek-v4-pro，最大输出 384K
+    #      api-key: ${DEEPSEEK_API_KEY}
+    #      log-requests: true
+    #      log-responses: true
+    #      max-retries: 5
+    #      timeout: 300s
+    #      max-tokens: 384000
+    #      response-format: json_object
+    #      strict-json-schema: true
     streaming-chat-model:
       base-url: https://api.deepseek.com
-      model-name: deepseek-chat
+      model-name: deepseek-v4-pro
       api-key: ${DEEPSEEK_API_KEY}
       log-requests: true
       log-responses: true
       max-retries: 5
       timeout: 600s
-      max-tokens: 8192
+      max-tokens: 384000
