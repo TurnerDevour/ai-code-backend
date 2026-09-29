@@ -25,3 +25,27 @@ mybatis-flex:
   global-config:
     normal-value-of-logic-delete: 0
     deleted-value-of-logic-delete: 1
+
+# LangChain4j配置
+langchain4j:
+  open-ai:
+    chat-model:
+      base-url: https://api.deepseek.com
+      model-name: deepseek-chat  #deepseek-chat # deepseek-reasoner
+      api-key: ${DEEPSEEK_API_KEY}
+      log-requests: true
+      log-responses: true
+      max-retries: 5
+      timeout: 300s
+      max-tokens: 8192
+      strict-json-schema: true
+      response-format: json_object
+    streaming-chat-model:
+      base-url: https://api.deepseek.com
+      model-name: deepseek-chat
+      api-key: ${DEEPSEEK_API_KEY}
+      log-requests: true
+      log-responses: true
+      max-retries: 5
+      timeout: 600s
+      max-tokens: 8192
