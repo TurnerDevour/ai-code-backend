@@ -8,7 +8,7 @@ public class PageRequest {
     /**
      * 当前页数
      */
-    private long current = 1;
+    private long pageNum = 1;
 
     /**
      * 每页条数
