@@ -1,42 +1,23 @@
-package com.example.aicodebackend.core;
+package com.example.aicodebackend.parser;
 
-import com.example.aicodebackend.ai.model.HTMLCodeResult;
 import com.example.aicodebackend.ai.model.MultiFileCodeResult;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 代码解析器
- * 提供静态方法解析不同类型的代码内容
+ * 多文件代码解析器
  */
-public class CodeParser {
+public class MultiFileCodeParser implements CodeParser<MultiFileCodeResult> {
 
     // 允许代码块在末尾被截断（没有闭合的 ``` 时，匹配到字符串结束为止）
     private static final Pattern HTML_CODE_PATTERN = Pattern.compile("```html\\s*\\n([\\s\\S]*?)(?:```|\\z)", Pattern.CASE_INSENSITIVE);
     private static final Pattern CSS_CODE_PATTERN = Pattern.compile("```(?:css|CSS)\\s*\\n([\\s\\S]*?)(?:```|\\z)", Pattern.CASE_INSENSITIVE);
     private static final Pattern JS_CODE_PATTERN = Pattern.compile("```(?:js|javascript|JavaScript)\\s*\\n([\\s\\S]*?)(?:```|\\z)", Pattern.CASE_INSENSITIVE);
 
-    /**
-     * 解析 HTML 单文件代码
-     */
-    public static HTMLCodeResult parseHtmlCode(String codeContent) {
-        HTMLCodeResult result = new HTMLCodeResult();
-        // 提取 HTML 代码
-        String htmlCode = extractHtmlCode(codeContent);
-        if (htmlCode != null && !htmlCode.trim().isEmpty()) {
-            result.setHtmlCode(htmlCode.trim());
-        } else {
-            // 如果没有找到代码块，将整个内容作为HTML
-            result.setHtmlCode(codeContent.trim());
-        }
-        return result;
-    }
 
-    /**
-     * 解析多文件代码（HTML + CSS + JS）
-     */
-    public static MultiFileCodeResult parseMultiFileCode(String codeContent) {
+    @Override
+    public MultiFileCodeResult parserCode(String codeContent) {
         MultiFileCodeResult result = new MultiFileCodeResult();
         // 提取各类代码
         String htmlCode = extractCodeByPattern(codeContent, HTML_CODE_PATTERN);
@@ -60,20 +41,6 @@ public class CodeParser {
             result.setHtmlCode(codeContent.trim());
         }
         return result;
-    }
-
-    /**
-     * 提取HTML代码内容
-     *
-     * @param content 原始内容
-     * @return HTML代码
-     */
-    private static String extractHtmlCode(String content) {
-        Matcher matcher = HTML_CODE_PATTERN.matcher(content);
-        if (matcher.find()) {
-            return matcher.group(1);
-        }
-        return null;
     }
 
     /**

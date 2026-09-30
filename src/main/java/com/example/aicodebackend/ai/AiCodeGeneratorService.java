@@ -1,5 +1,7 @@
 package com.example.aicodebackend.ai;
 
+import com.example.aicodebackend.ai.model.HTMLCodeResult;
+import com.example.aicodebackend.ai.model.MultiFileCodeResult;
 import dev.langchain4j.service.SystemMessage;
 import reactor.core.publisher.Flux;
 
@@ -16,7 +18,7 @@ public interface AiCodeGeneratorService {
      * @return 生成的原始代码文本（Markdown 代码块），由调用方负责解析
      */
     @SystemMessage(fromResource = "prompt/codegen-html-system-prompt.txt")
-    String generateHTMLCode(String prompt);
+    HTMLCodeResult generateHTMLCode(String prompt);
 
     /**
      * 生成多文件代码
@@ -26,7 +28,7 @@ public interface AiCodeGeneratorService {
      * @return 生成的原始代码文本（Markdown 代码块），由调用方负责解析
      */
     @SystemMessage(fromResource = "prompt/codegen-multi-file-system-prompt.txt")
-    String generateMultipleFileCode(String prompt);
+    MultiFileCodeResult generateMultipleFileCode(String prompt);
 
     /**
      * 生成HTML代码流

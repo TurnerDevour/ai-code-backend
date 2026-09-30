@@ -20,13 +20,13 @@ class AiCodeGeneratorFacadeTest {
 
     @Test
     void generateAndSaveCode() {
-        File generated = aiCodeGeneratorFacade.generateAndSaveCode("生成一个博客网站", CodeGenTypeEnum.MULTI_FILE);
+        File generated = aiCodeGeneratorFacade.generateAndSaveCode("生成一个博客网站", CodeGenTypeEnum.MULTI_FILE, 1L);
         assertNotNull(generated);
     }
 
     @Test
     void generateAndSaveCodeStream() {
-        Flux<String> codeStream = aiCodeGeneratorFacade.generateAndSaveCodeStream("生成一个博客网站，必须包含html，css和javascript的代码。", CodeGenTypeEnum.MULTI_FILE);
+        Flux<String> codeStream = aiCodeGeneratorFacade.generateAndSaveCodeStream("生成一个可交互的博客网站。", CodeGenTypeEnum.MULTI_FILE, 1L);
 
         List<String> result = codeStream.collectList().block();
         assertNotNull(result);
