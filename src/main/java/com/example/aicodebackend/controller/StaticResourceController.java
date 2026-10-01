@@ -24,7 +24,7 @@ public class StaticResourceController {
 
     /**
      * 提供静态资源访问，支持目录重定向
-     * 访问格式：http://localhost:8123/api/static/{deployKey}[/{fileName}]
+     * 访问格式：http://localhost:8123/api/static/{deployKey}/
      */
     @GetMapping("/{deployKey}/**")
     public ResponseEntity<Resource> serveStaticResource(@PathVariable String deployKey, HttpServletRequest request) {

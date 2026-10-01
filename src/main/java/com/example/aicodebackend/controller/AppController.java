@@ -270,6 +270,15 @@ public class AppController {
         return ResultUtils.success(appVO);
     }
 
+    /**
+     * 根据应用ID和用户输入的 prompt，调用服务生成代码，并通过 SSE 流式返回生成的代码块
+     *
+     * @param appId  应用ID
+     * @param prompt 用户输入的 prompt
+     * @param request HTTP 请求对象
+     *
+     * @return SSE 流式返回生成的代码块
+     */
     @GetMapping(value = "/chat/gen/code", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId, @RequestParam String prompt, HttpServletRequest request) {
         // 1. 校验参数
