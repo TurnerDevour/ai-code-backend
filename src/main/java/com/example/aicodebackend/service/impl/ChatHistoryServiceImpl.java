@@ -2,7 +2,6 @@ package com.example.aicodebackend.service.impl;
 
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
-import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.exception.ThrowUtils;
 import com.example.aicodebackend.mapper.ChatHistoryMapper;
@@ -14,16 +13,13 @@ import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import dev.langchain4j.data.message.AiMessage;
-import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.Comparator;
 import java.util.List;
-import java.util.Objects;
 
 @Slf4j
 @Service
