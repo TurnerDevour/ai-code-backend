@@ -1,13 +1,20 @@
-server:
-  port: 8123
-  servlet:
-    context-path: /api
 spring:
   application:
     name: ai-code-backend
   profiles:
     active:
       - dev
+  session:
+    timeout: 2592000
+
+server:
+  port: 8123
+  servlet:
+    context-path: /api
+    # cookie 30天过期
+    session:
+      cookie:
+        max-age: 2592000
 
 # springdoc-openapi项目配置
 springdoc:

@@ -10,6 +10,14 @@ spring:
     url: jdbc:mysql://localhost:3306/ai_code_db?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
     username: root
     password: admin123
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      username: default
+      password: admin123
+      ttl: 3600 # Redis缓存过期时间，单位秒
+
 # knife4j的增强配置，不需要增强可以不配
 knife4j:
   enable: true
@@ -29,17 +37,17 @@ mybatis-flex:
 # LangChain4j配置
 langchain4j:
   open-ai:
-#    chat-model:
-    #      base-url: https://api.deepseek.com
-    #      model-name: deepseek-flash  # deepseek-flash / deepseek-v4-pro，最大输出 384K
-    #      api-key: ${DEEPSEEK_API_KEY}
-    #      log-requests: true
-    #      log-responses: true
-    #      max-retries: 5
-    #      timeout: 300s
-    #      max-tokens: 384000
-    #      response-format: json_object
-    #      strict-json-schema: true
+    chat-model:
+      base-url: https://api.deepseek.com
+      model-name: deepseek-v4-pro  # deepseek-flash / deepseek-v4-pro，最大输出 384K
+      api-key: ${DEEPSEEK_API_KEY}
+      log-requests: true
+      log-responses: true
+      max-retries: 5
+      timeout: 300s
+      max-tokens: 384000
+      response-format: json_object
+      strict-json-schema: true
     streaming-chat-model:
       base-url: https://api.deepseek.com
       model-name: deepseek-v4-pro

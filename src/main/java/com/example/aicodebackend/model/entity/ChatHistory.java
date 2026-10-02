@@ -9,16 +9,17 @@ import com.mybatisflex.annotation.Table;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDateTime;
+import java.util.Date;
 
 import com.mybatisflex.core.keygen.KeyGenerators;
 import lombok.Data;
 
 /**
- * 用户
+ * 对话历史
  */
 @Data
-@Table(value = "user")
-public class User implements Serializable {
+@Table(value = "chat_history")
+public class ChatHistory implements Serializable {
     /**
      * id
      */
@@ -26,40 +27,24 @@ public class User implements Serializable {
     private Long id;
 
     /**
-     * 账号
+     * 消息
      */
-    private String userAccount;
+    private String message;
 
     /**
-     * 密码
+     * user/ai
      */
-    private String userPassword;
+    private String messageType;
 
     /**
-     * 用户昵称
+     * 应用id
      */
-    private String username;
+    private Long appId;
 
     /**
-     * 用户头像
+     * 创建用户id
      */
-    private String userAvatar;
-
-    /**
-     * 用户简介
-     */
-    private String userProfile;
-
-    /**
-     * 用户角色：user/admin
-     */
-    private String userRole;
-
-    /**
-     * 编辑时间
-     */
-    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
-    private LocalDateTime editTime;
+    private Long userId;
 
     /**
      * 创建时间
@@ -72,6 +57,11 @@ public class User implements Serializable {
      */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime updateTime;
+
+    /**
+     * 父消息id（用于上下文关联）
+     */
+    private Long parentId;
 
     /**
      * 是否删除

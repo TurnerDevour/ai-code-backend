@@ -121,9 +121,8 @@ public class AppController {
         ThrowUtils.throwIf(oldApp == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
         // 4. 校验应用归属，只有本人或者管理员才能删除的应用
         ThrowUtils.throwIf(!oldApp.getUserId().equals(loginUser.getId()) && !UserConstant.ADMIN_ROLE.equals(loginUser.getUserRole()), ErrorCode.NO_AUTH_ERROR, "无权限删除该应用");
-        // 5. 调用服务删除应用（逻辑删除）
-        boolean result = appService.removeById(id);
-        ThrowUtils.throwIf(!result, ErrorCode.SYSTEM_ERROR, "删除应用失败");
+        // 5. 调用服务删除应用（逻辑删除，同时关联删除该应用的对话历史）
+        appService.deleteApp(id);
         return ResultUtils.success(true);
     }
 
@@ -203,9 +202,8 @@ public class AppController {
         // 2. 校验应用是否存在
         App oldApp = appService.getById(id);
         ThrowUtils.throwIf(oldApp == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
-        // 3. 调用服务删除应用（逻辑删除）
-        boolean result = appService.removeById(id);
-        ThrowUtils.throwIf(!result, ErrorCode.SYSTEM_ERROR, "删除应用失败");
+        // 3. 调用服务删除应用（逻辑删除，同时关联删除该应用的对话历史）
+        appService.deleteApp(id);
         return ResultUtils.success(true);
     }
 

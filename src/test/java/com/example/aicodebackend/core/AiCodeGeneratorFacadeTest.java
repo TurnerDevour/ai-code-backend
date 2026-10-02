@@ -1,5 +1,7 @@
 package com.example.aicodebackend.core;
 
+import com.example.aicodebackend.ai.AiCodeGeneratorService;
+import com.example.aicodebackend.ai.model.HTMLCodeResult;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import jakarta.annotation.Resource;
 import org.junit.jupiter.api.Assertions;

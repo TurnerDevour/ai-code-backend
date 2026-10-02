@@ -2,6 +2,7 @@ package com.example.aicodebackend.service.impl;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.core.exceptions.ExceptionUtil;
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
@@ -14,16 +15,19 @@ import com.example.aicodebackend.mapper.AppMapper;
 import com.example.aicodebackend.model.dto.app.AppQueryRequest;
 import com.example.aicodebackend.model.entity.App;
 import com.example.aicodebackend.model.entity.User;
+import com.example.aicodebackend.model.enums.ChatMessageTypeEnum;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import com.example.aicodebackend.model.vo.AppVO;
 import com.example.aicodebackend.model.vo.UserVO;
 import com.example.aicodebackend.service.AppService;
+import com.example.aicodebackend.service.ChatHistoryService;
 import com.example.aicodebackend.service.UserService;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
 
 import java.io.File;
@@ -40,6 +44,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
     @Resource
     private AiCodeGeneratorFacade aiCodeGeneratorFacade;
+
+    @Resource
+    private ChatHistoryService chatHistoryService;
 
     /**
      * 获取脱敏后的应用信息
@@ -144,9 +151,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     /**
      * 根据应用ID和提示生成代码，并以流式方式返回生成的代码。
      *
-     * @param appId       应用ID
-     * @param prompt      用户提供的提示，用于指导代码生成。
-     * @param loginUser   当前登录用户
+     * @param appId     应用ID
+     * @param prompt    用户提供的提示，用于指导代码生成。
+     * @param loginUser 当前登录用户
+     *
      * @return 生成的代码流
      */
     @Override
@@ -173,8 +181,32 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "不支持的代码生成类型");
         }
 
-        // 5. 调用 AiCodeGeneratorFacade 生成代码并返回流式输出
-        return aiCodeGeneratorFacade.generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId);
+        // 5. 保存用户消息（用户发送消息时立即持久化）
+        Long userMessageId = chatHistoryService.addChatMessage(appId, loginUser.getId(), prompt, ChatMessageTypeEnum.USER);
+
+        // 6. 调用 AiCodeGeneratorFacade 生成代码并返回流式输出，同时持久化 AI 消息和错误信息
+        StringBuilder aiReplyBuilder = new StringBuilder();
+        return aiCodeGeneratorFacade.generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId)
+                .doOnNext(aiReplyBuilder::append)
+                .doOnComplete(() -> {
+                    // AI 成功回复后保存 AI 消息，并关联对应的用户消息
+                    try {
+                        chatHistoryService.addChatMessage(appId, loginUser.getId(), aiReplyBuilder.toString(),
+                                ChatMessageTypeEnum.AI, userMessageId);
+                    } catch (Exception e) {
+                        log.error("保存 AI 消息失败，appId = {}", appId, e);
+                    }
+                })
+                .doOnError(throwable -> {
+                    // 即使 AI 回复失败，也要记录错误信息，确保对话的完整性
+                    try {
+                        chatHistoryService.addChatMessage(appId, loginUser.getId(),
+                                "AI 回复失败：" + ExceptionUtil.getMessage(throwable),
+                                ChatMessageTypeEnum.ERROR, userMessageId);
+                    } catch (Exception e) {
+                        log.error("保存错误消息失败，appId = {}", appId, e);
+                    }
+                });
     }
 
     /**
@@ -229,5 +261,26 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         ThrowUtils.throwIf(!updateResult, ErrorCode.SYSTEM_ERROR, "更新应用部署信息失败");
         // 9. 返回部署地址
         return String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
+    }
+
+    /**
+     * 删除应用，并关联删除该应用的所有对话历史
+     *
+     * @param appId 应用id
+     *
+     * @return 是否删除成功
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean deleteApp(Long appId) {
+        // 1. 校验参数
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+        // 2. 删除应用（逻辑删除）
+        boolean appResult = this.removeById(appId);
+        ThrowUtils.throwIf(!appResult, ErrorCode.SYSTEM_ERROR, "删除应用失败");
+        // 3. 关联删除该应用的所有对话历史，避免数据冗余
+        boolean chatHistoryResult = chatHistoryService.deleteByAppId(appId);
+        ThrowUtils.throwIf(!chatHistoryResult, ErrorCode.SYSTEM_ERROR, "删除应用的对话历史失败");
+        return true;
     }
 }

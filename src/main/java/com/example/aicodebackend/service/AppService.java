@@ -18,6 +18,15 @@ public interface AppService extends IService<App> {
 
     QueryWrapper getQueryWrapper(AppQueryRequest appQueryRequest);
 
+    /**
+     * 删除应用，并关联删除该应用的所有对话历史
+     *
+     * @param appId 应用id
+     *
+     * @return 是否删除成功
+     */
+    boolean deleteApp(Long appId);
+
     Flux<String> chatToGenCode(Long appId, String prompt, User LoginUser);
 
     String deployApp(Long appId, User loginUser);
