@@ -34,6 +34,7 @@ public class CodeFileSaverExecutor {
         return switch (codeGenTypeEnum) {
             case HTML -> htmlCodeFileSaver.saveCode((HTMLCodeResult) codeResult,appId);
             case MULTI_FILE -> multiFileCodeFileSaver.saveCode((MultiFileCodeResult) codeResult,appId);
+            default -> throw new BusinessException(ErrorCode.SYSTEM_ERROR, "无效的值: " + codeGenTypeEnum);
         };
     }
 }

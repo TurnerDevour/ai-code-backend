@@ -30,6 +30,7 @@ public class CodeParserExecutor {
         return switch (codeGenTypeEnum) {
             case HTML -> htmlCodeParser.parserCode(CodeContent);
             case MULTI_FILE -> multiFileCodeParser.parserCode(CodeContent);
+            default -> throw new BusinessException(ErrorCode.SYSTEM_ERROR, "无效的值: " + codeGenTypeEnum);
         };
     }
 }

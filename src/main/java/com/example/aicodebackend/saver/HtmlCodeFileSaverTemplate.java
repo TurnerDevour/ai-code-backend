@@ -2,6 +2,8 @@ package com.example.aicodebackend.saver;
 
 import cn.hutool.core.util.StrUtil;
 import com.example.aicodebackend.ai.model.HTMLCodeResult;
+import com.example.aicodebackend.exception.BusinessException;
+import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 
 /**
@@ -23,7 +25,7 @@ public class HtmlCodeFileSaverTemplate extends CodeFileSaverTemplate<HTMLCodeRes
         super.validateInput(result);
 
         if (StrUtil.isBlank(result.getHtmlCode())) {
-            throw new IllegalArgumentException("HTML 代码不能为空");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "HTML 代码为空");
         }
     }
 }
