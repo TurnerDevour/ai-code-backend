@@ -8,6 +8,7 @@ import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
 import com.example.aicodebackend.constant.AppConstant;
 import com.example.aicodebackend.core.AiCodeGeneratorFacade;
+import com.example.aicodebackend.core.builder.VueProjectBuilder;
 import com.example.aicodebackend.core.handler.StreamHandlerExecutor;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
@@ -51,6 +52,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
     @Resource
     private StreamHandlerExecutor streamHandlerExecutor;
+
+    @Resource
+    private VueProjectBuilder vueProjectBuilder;
 
     /**
      * 获取脱敏后的应用信息
@@ -230,7 +234,19 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         if (!sourceDir.exists() || !sourceDir.isDirectory()) {
             throw new BusinessException(ErrorCode.NOT_FOUND_ERROR, "源代码目录不存在，请先生成代码");
         }
-        // 7.复制文件到部署目录
+        // 7. Vue 项目特殊处理：执行构建
+        CodeGenTypeEnum codeGenTypeEnum = CodeGenTypeEnum.getEnumByValue(codeGenType);
+        if (codeGenTypeEnum == CodeGenTypeEnum.VUE_PROJECT) {
+            // Vue 项目需要执行构建命令，生成最终的静态文件
+            boolean buildSuccess = vueProjectBuilder.buildProject(sourceDirPath);
+            ThrowUtils.throwIf(!buildSuccess, ErrorCode.SYSTEM_ERROR, "Vue 项目构建失败，请重试");
+            // 构建成功后，源目录变为 dist 目录
+            File distDir = new File(sourceDirPath, "dist");
+            ThrowUtils.throwIf(!distDir.exists() || !distDir.isDirectory(), ErrorCode.SYSTEM_ERROR, "Vue 项目构建完成但 dist 目录未生成");
+            sourceDir = distDir;
+            log.info("Vue 项目构建成功，源目录已切换为 dist 目录: {}", sourceDir.getAbsolutePath());
+        }
+        // 8.复制文件到部署目录
         String deployDirPath = AppConstant.CODE_DEPLOY_ROOT_DIR + File.separator + deployKey;
         try {
             FileUtil.copyContent(sourceDir, new File(deployDirPath), true);
@@ -238,14 +254,14 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             log.error("部署应用失败", e);
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "部署应用失败：" + e.getMessage());
         }
-        // 8. 更新应用的deployKey和部署时间
+        // 9. 更新应用的deployKey和部署时间
         App updateApp = new App();
         updateApp.setId(appId);
         updateApp.setDeployKey(deployKey);
         updateApp.setDeployedTime(LocalDateTime.now());
         boolean updateResult = this.updateById(updateApp);
         ThrowUtils.throwIf(!updateResult, ErrorCode.SYSTEM_ERROR, "更新应用部署信息失败");
-        // 9. 返回部署地址
+        // 10. 返回部署地址
         return String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
     }
 
