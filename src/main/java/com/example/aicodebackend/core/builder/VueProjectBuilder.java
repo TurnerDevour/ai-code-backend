@@ -1,10 +1,14 @@
 package com.example.aicodebackend.core.builder;
 
-import cn.hutool.core.util.RuntimeUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -24,7 +28,7 @@ public class VueProjectBuilder {
                 if (result) {
                     log.info("异步构建 Vue 项目成功");
                 } else {
-                    log.error("异步构建 Vue 项目失败}");
+                    log.error("异步构建 Vue 项目失败");
                 }
             } catch (Exception e) {
                 log.error("异步构建 Vue 项目失败: {}", e.getMessage(), e);
@@ -69,34 +73,51 @@ public class VueProjectBuilder {
     }
 
     /**
-     * 执行命令
+     * 执行命令，并把子进程的标准输出/错误输出实时转发到应用日志，方便定位构建失败原因
      */
-    private boolean executeCommand(File workingDir, String command, int timeoutSeconds) {
+    private boolean executeCommand(File workingDir, List<String> command, int timeoutSeconds) {
         try {
-            log.info("在目录 {} 中执行命令: {}", workingDir.getAbsolutePath(), command);
-            Process process = RuntimeUtil.exec(
-                    null,
-                    workingDir,
-                    command.split("\\s+") // 命令分割为数组
-            );
+            log.info("在目录 {} 中执行命令: {}", workingDir.getAbsolutePath(), String.join(" ", command));
+            // redirectErrorStream = true：合并 stderr 到 stdout，由同一个线程消费，避免缓冲区写满导致子进程阻塞
+            Process process = new ProcessBuilder(command)
+                    .directory(workingDir)
+                    .redirectErrorStream(true)
+                    .start();
+            // 异步转发子进程输出，避免缓冲区写满导致子进程阻塞
+            Thread outputPump = Thread.ofVirtual().name("vue-builder-log").start(() -> pumpOutput(process));
             // 等待进程完成，设置超时
             boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
             if (!finished) {
-                log.error("命令执行超时（{}秒），强制终止进程", timeoutSeconds);
+                log.error("命令执行超时（{}秒），强制终止进程: {}", timeoutSeconds, String.join(" ", command));
                 process.destroyForcibly();
                 return false;
             }
+            outputPump.join(TimeUnit.SECONDS.toMillis(5));
             int exitCode = process.exitValue();
             if (exitCode == 0) {
-                log.info("命令执行成功: {}", command);
+                log.info("命令执行成功: {}", String.join(" ", command));
                 return true;
-            } else {
-                log.error("命令执行失败，退出码: {}", exitCode);
-                return false;
+            }
+            log.error("命令执行失败，退出码: {}，命令: {}", exitCode, String.join(" ", command));
+            return false;
+        } catch (Exception e) {
+            log.error("执行命令失败: {}, 错误信息: {}", String.join(" ", command), e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * 转发子进程的标准输出与错误输出
+     */
+    private void pumpOutput(Process process) {
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                log.info("[npm] {}", line);
             }
         } catch (Exception e) {
-            log.error("执行命令失败: {}, 错误信息: {}", command, e.getMessage());
-            return false;
+            log.debug("读取构建输出失败: {}", e.getMessage());
         }
     }
 
@@ -105,8 +126,9 @@ public class VueProjectBuilder {
      */
     private boolean executeNpmInstall(File projectDir) {
         log.info("执行 npm install...");
-        String command = String.format("%s install", buildCommand("npm"));
-        return executeCommand(projectDir, command, 300); // 5分钟超时
+        List<String> command = new ArrayList<>(resolveNpmCommand());
+        command.add("install");
+        return executeCommand(projectDir, command, 600); // 10分钟超时
     }
 
     /**
@@ -114,8 +136,10 @@ public class VueProjectBuilder {
      */
     private boolean executeNpmBuild(File projectDir) {
         log.info("执行 npm run build...");
-        String command = String.format("%s run build", buildCommand("npm"));
-        return executeCommand(projectDir, command, 180); // 3分钟超时
+        List<String> command = new ArrayList<>(resolveNpmCommand());
+        command.add("run");
+        command.add("build");
+        return executeCommand(projectDir, command, 300); // 5分钟超时
     }
 
     /**
@@ -126,13 +150,78 @@ public class VueProjectBuilder {
     }
 
     /**
-     * 构建命令，根据操作系统添加适当的后缀
+     * 解析可用的 npm 可执行文件。
+     * <p>
+     * Windows 上 npm 的形态并不统一：官方 Node 安装包提供的是 npm.cmd，
+     * 而部分 Node 发行版（如某些 nvm-for-windows 安装、直接解压的 Node）只有 npm.exe。
+     * 因此这里按 npm.cmd -> npm.exe -> npm 的顺序探测，避免命令不存在导致构建直接失败。
+     *
+     * @return 可直接传给 ProcessBuilder 的命令前缀
      */
-    private String buildCommand(String baseCommand) {
-        if (isWindows()) {
-            return baseCommand + ".cmd";
+    private List<String> resolveNpmCommand() {
+        if (!isWindows()) {
+            return List.of("npm");
         }
-        return baseCommand;
+        for (String candidate : List.of("npm.cmd", "npm.exe")) {
+            File executable = findOnPath(candidate);
+            if (executable != null) {
+                log.info("检测到 npm 可执行文件: {}", executable.getAbsolutePath());
+                return List.of(executable.getAbsolutePath());
+            }
+        }
+        // 兜底交给系统 PATH 解析
+        log.warn("未在 PATH 中找到 npm.cmd / npm.exe，回退为直接执行 npm");
+        return List.of("npm");
+    }
+
+    /**
+     * 在 PATH 与 Node 安装目录中查找可执行文件
+     *
+     * @param executable 可执行文件名，如 npm.cmd
+     *
+     * @return 可执行文件，未找到返回 null
+     */
+    private File findOnPath(String executable) {
+        File found = lookupInPath(executable);
+        if (found != null) {
+            return found;
+        }
+        // 兜底：npm 通常与 node 可执行文件位于同一目录
+        File node = lookupInPath(isWindows() ? "node.exe" : "node");
+        if (node != null) {
+            File candidate = new File(node.getParentFile(), executable);
+            if (candidate.isFile()) {
+                return candidate;
+            }
+        }
+        String nodeHome = System.getenv("NODE_HOME");
+        if (nodeHome != null && !nodeHome.isBlank()) {
+            File candidate = new File(nodeHome, executable);
+            if (candidate.isFile()) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 仅在 PATH 环境变量中查找文件
+     */
+    private File lookupInPath(String executable) {
+        String path = System.getenv("PATH");
+        if (path == null) {
+            return null;
+        }
+        for (String dir : path.split(File.pathSeparator)) {
+            if (dir.isBlank()) {
+                continue;
+            }
+            File candidate = new File(dir, executable);
+            if (candidate.isFile()) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
 }

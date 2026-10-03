@@ -1,5 +1,6 @@
 package com.example.aicodebackend.core;
 
+import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.example.aicodebackend.ai.AiCodeGeneratorService;
 import com.example.aicodebackend.ai.model.HTMLCodeResult;
@@ -98,7 +99,10 @@ public class AiCodeGeneratorFacade {
     }
 
     /**
-     * 处理代码流，将生成的代码保存到文件中。
+     * 处理 TokenStream（VUE_PROJECT 模式），把模型输出、思考过程与工具调用转换为前端可消费的 JSON 消息流。
+     * <p>
+     * VUE_PROJECT 使用推理模型，模型在调用文件写入工具之前只会输出思考内容（reasoning_content），
+     * 不会产生正常的文本增量。因此必须监听 onPartialThinking，否则前端在整个代码生成阶段收不到任何内容。
      *
      * @param tokenStream 生成的代码流。
      *
@@ -107,7 +111,16 @@ public class AiCodeGeneratorFacade {
     private Flux<String> processCodeTokenStream(TokenStream tokenStream) {
         return Flux.create(sink -> {
             tokenStream.onPartialResponse(partialResponse -> {
+                log.info("VUE_PROJECT 文本增量: {}", StrUtil.maxLength(partialResponse, 200));
                 AiResponseMessage aiResponseMessage = new AiResponseMessage(partialResponse);
+                sink.next(JSONUtil.toJsonStr(aiResponseMessage));
+            }).onPartialThinking(partialThinking -> {
+                String thinking = partialThinking.text();
+                if (StrUtil.isBlank(thinking)) {
+                    return;
+                }
+                // 思考过程也作为 AI 响应推送，保证代码生成期间前端持续有流式输出
+                AiResponseMessage aiResponseMessage = new AiResponseMessage(thinking);
                 sink.next(JSONUtil.toJsonStr(aiResponseMessage));
             }).onToolExecuted(toolExecution -> {
                 ToolExecutionRequest request = toolExecution.request();
@@ -116,6 +129,7 @@ public class AiCodeGeneratorFacade {
                 ToolExecutedMessage toolExecutedMessage = new ToolExecutedMessage(toolExecution);
                 sink.next(JSONUtil.toJsonStr(toolExecutedMessage));
             }).onCompleteResponse(chatResponse -> {
+                log.info("VUE_PROJECT 生成完成，结束原因: {}", chatResponse.finishReason());
                 sink.complete();
             }).onError(throwable -> {
                 log.error("处理代码流时发生错误", throwable);

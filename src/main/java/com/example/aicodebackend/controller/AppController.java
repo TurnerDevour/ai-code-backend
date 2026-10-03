@@ -2,7 +2,6 @@ package com.example.aicodebackend.controller;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.StrUtil;
-import cn.hutool.json.JSONUtil;
 import com.example.aicodebackend.annotation.AuthCheck;
 import com.example.aicodebackend.common.BaseResponse;
 import com.example.aicodebackend.common.DeleteRequest;
@@ -30,7 +29,6 @@ import reactor.core.publisher.Mono;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 
 @RestController
 @RequestMapping("/app")
@@ -60,7 +58,8 @@ public class AppController {
         // 应用名称由系统自动生成：取初始化提示词的前 12 位（压缩空白字符，避免名称中出现换行）
         app.setAppName(generateAppName(initPrompt));
         // 代码生成类型使用默认值（多文件模式）
-        app.setCodeGenType(CodeGenTypeEnum.MULTI_FILE.getValue());
+        //app.setCodeGenType(CodeGenTypeEnum.MULTI_FILE.getValue());
+        app.setCodeGenType(CodeGenTypeEnum.VUE_PROJECT.getValue());
         // 4. 调用服务创建应用
         boolean result = appService.save(app);
         ThrowUtils.throwIf(!result, ErrorCode.SYSTEM_ERROR, "创建应用失败");
@@ -271,8 +270,8 @@ public class AppController {
     /**
      * 根据应用ID和用户输入的 prompt，调用服务生成代码，并通过 SSE 流式返回生成的代码块
      *
-     * @param appId  应用ID
-     * @param prompt 用户输入的 prompt
+     * @param appId   应用ID
+     * @param prompt  用户输入的 prompt
      * @param request HTTP 请求对象
      *
      * @return SSE 流式返回生成的代码块
@@ -288,14 +287,13 @@ public class AppController {
         Flux<String> chatToGenCodeFlux = appService.chatToGenCode(appId, prompt, loginUser);
 
         return chatToGenCodeFlux
-                .map(chunk -> {
-                    // 将每个数据块包装为 JSON 对象
-                    Map<String, String> wrapper = Map.of("d", chunk);
-                    String jsonData = JSONUtil.toJsonStr(wrapper);
-                    return ServerSentEvent.<String>builder()
-                            .data(jsonData)
-                            .build();
-                })
+                .map(chunk -> ServerSentEvent.<String>builder()
+                        // 注意：这里必须直接下发 chunk 字符串本身，交给前端统一解析。
+                        // 不要把 chunk 再包一层 JSON 字符串：ServerSentEvent 的 data 是 String 时，
+                        // Spring 会按 JSON 序列化该字符串，导致内容被二次转义（{"d":"{\"type\":...}"}），
+                        // 前端的 JSON.parse 只能拿到被转义的字符串，无法按 type 分发消息。
+                        .data(chunk)
+                        .build())
                 .concatWith(Mono.just(
                         // 发送一个特殊的事件，表示流结束
                         ServerSentEvent.<String>builder()

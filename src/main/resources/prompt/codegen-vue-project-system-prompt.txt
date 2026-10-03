@@ -39,7 +39,10 @@
 ## 参考配置
 
 1）vite.config.js 必须配置 base 路径以支持子路径部署、需要支持通过 @ 引入文件、不要配置端口号
+注意：必须完整保留下面的 import 语句，尤其是 `fileURLToPath`（缺少该导入会导致构建直接报错、项目无法构建）
 
+
+import { fileURLToPath, URL } from 'node:url'
 
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'

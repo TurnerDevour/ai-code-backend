@@ -97,20 +97,7 @@ public class JsonMessageStreamHandler {
                 }
                 case TOOL_EXECUTED -> {
                     ToolExecutedMessage toolExecutedMessage = JSONUtil.toBean(chunk, ToolExecutedMessage.class);
-                    JSONObject jsonObject = JSONUtil.parseObj(toolExecutedMessage.getArguments());
-                    String relativeFilePath = jsonObject.getStr("relativeFilePath");
-                    String suffix = FileUtil.getSuffix(relativeFilePath);
-                    String content = jsonObject.getStr("content");
-                    String result = String.format("""
-                            [🔧 工具调用] 写入文件 %s
-                            ```%s
-                            %s
-                            ```
-                            """, relativeFilePath, suffix, content);
-                    // 输出前端和要持久化的内容
-                    String output = String.format("\n\n%s\n\n", result);
-                    chatHistoryStringBuilder.append(output);
-                    return output;
+                    return handleToolExecutedMessage(toolExecutedMessage, chatHistoryStringBuilder);
                 }
                 default -> {
                     log.error("不支持的消息类型: {}", typeEnum);
@@ -119,5 +106,48 @@ public class JsonMessageStreamHandler {
             }
         }
         return "";
+    }
+
+    /**
+     * 处理工具执行结果消息：把写入的文件路径与内容格式化为前端可直接渲染的 Markdown 代码块。
+     * <p>
+     * 注意：FileWriteTool#writeToFile 的形参名是 relativePath，模型返回的 arguments 也使用该键名，
+     * 因此这里以 relativePath 为准，同时兼容 relativeFilePath 以避免历史数据解析失败。
+     *
+     * @param toolExecutedMessage    工具执行结果消息
+     * @param chatHistoryStringBuilder 累积用于持久化的对话内容
+     *
+     * @return 需要推送给前端的内容，无需推送时返回空字符串
+     */
+    private String handleToolExecutedMessage(ToolExecutedMessage toolExecutedMessage, StringBuilder chatHistoryStringBuilder) {
+        String arguments = toolExecutedMessage.getArguments();
+        if (StrUtil.isBlank(arguments)) {
+            log.warn("工具执行结果缺少参数，已跳过展示，工具: {}", toolExecutedMessage.getName());
+            return "";
+        }
+        JSONObject jsonObject;
+        try {
+            jsonObject = JSONUtil.parseObj(arguments);
+        } catch (Exception e) {
+            log.warn("工具参数不是合法 JSON，已跳过展示，工具: {}，参数: {}", toolExecutedMessage.getName(), arguments);
+            return "";
+        }
+        String relativeFilePath = jsonObject.getStr("relativePath", jsonObject.getStr("relativeFilePath", ""));
+        String content = jsonObject.getStr("content", "");
+        if (StrUtil.isBlank(relativeFilePath)) {
+            log.warn("工具执行结果缺少文件路径，已跳过展示，工具: {}", toolExecutedMessage.getName());
+            return "";
+        }
+        String suffix = StrUtil.blankToDefault(FileUtil.getSuffix(relativeFilePath), "text");
+        String result = String.format("""
+                [🔧 工具调用] 写入文件 %s
+                ```%s
+                %s
+                ```
+                """, relativeFilePath, suffix, content);
+        // 输出前端和要持久化的内容
+        String output = String.format("\n\n%s\n\n", result);
+        chatHistoryStringBuilder.append(output);
+        return output;
     }
 }
