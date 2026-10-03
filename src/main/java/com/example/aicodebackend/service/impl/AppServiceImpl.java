@@ -8,6 +8,7 @@ import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
 import com.example.aicodebackend.constant.AppConstant;
 import com.example.aicodebackend.core.AiCodeGeneratorFacade;
+import com.example.aicodebackend.core.handler.StreamHandlerExecutor;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.exception.ThrowUtils;
@@ -47,6 +48,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
     @Resource
     private ChatHistoryService chatHistoryService;
+
+    @Resource
+    private StreamHandlerExecutor streamHandlerExecutor;
 
     /**
      * 获取脱敏后的应用信息
@@ -182,31 +186,13 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
 
         // 5. 保存用户消息（用户发送消息时立即持久化）
-        Long userMessageId = chatHistoryService.addChatMessage(appId, loginUser.getId(), prompt, ChatMessageTypeEnum.USER);
+        chatHistoryService.addChatMessage(appId, loginUser.getId(), prompt, ChatMessageTypeEnum.USER);
 
         // 6. 调用 AiCodeGeneratorFacade 生成代码并返回流式输出，同时持久化 AI 消息和错误信息
-        StringBuilder aiReplyBuilder = new StringBuilder();
-        return aiCodeGeneratorFacade.generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId)
-                .doOnNext(aiReplyBuilder::append)
-                .doOnComplete(() -> {
-                    // AI 成功回复后保存 AI 消息，并关联对应的用户消息
-                    try {
-                        chatHistoryService.addChatMessage(appId, loginUser.getId(), aiReplyBuilder.toString(),
-                                ChatMessageTypeEnum.AI, userMessageId);
-                    } catch (Exception e) {
-                        log.error("保存 AI 消息失败，appId = {}", appId, e);
-                    }
-                })
-                .doOnError(throwable -> {
-                    // 即使 AI 回复失败，也要记录错误信息，确保对话的完整性
-                    try {
-                        chatHistoryService.addChatMessage(appId, loginUser.getId(),
-                                "AI 回复失败：" + ExceptionUtil.getMessage(throwable),
-                                ChatMessageTypeEnum.ERROR, userMessageId);
-                    } catch (Exception e) {
-                        log.error("保存错误消息失败，appId = {}", appId, e);
-                    }
-                });
+        Flux<String> codeStream = aiCodeGeneratorFacade.generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId);
+
+        // 7. 收集AI响应内容并再完成后记录到对话历史
+        return streamHandlerExecutor.doExecute(codeStream, chatHistoryService, appId, loginUser, codeGenTypeEnum);
     }
 
     /**

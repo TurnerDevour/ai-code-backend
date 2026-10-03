@@ -1,14 +1,21 @@
 package com.example.aicodebackend.core;
 
+import cn.hutool.json.JSONUtil;
 import com.example.aicodebackend.ai.AiCodeGeneratorService;
 import com.example.aicodebackend.ai.model.HTMLCodeResult;
 import com.example.aicodebackend.ai.model.MultiFileCodeResult;
+import com.example.aicodebackend.ai.model.message.AiResponseMessage;
+import com.example.aicodebackend.ai.model.message.ToolExecutedMessage;
+import com.example.aicodebackend.ai.model.message.ToolRequestMessage;
 import com.example.aicodebackend.config.AiCodeGeneratorServiceFactory;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import com.example.aicodebackend.parser.CodeParserExecutor;
 import com.example.aicodebackend.saver.CodeFileSaverExecutor;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.service.TokenStream;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -84,10 +91,37 @@ public class AiCodeGeneratorFacade {
                 yield processCodeStream(codeStream, CodeGenTypeEnum.MULTI_FILE, appId);
             }
             case VUE_PROJECT -> {
-                Flux<String> codeStream = aiCodeGeneratorService.generateVueProjectCodeStream(appId, prompt);
-                yield processCodeStream(codeStream, CodeGenTypeEnum.MULTI_FILE, appId);
+                TokenStream tokenStream = aiCodeGeneratorService.generateVueProjectCodeStream(appId, prompt);
+                yield processCodeTokenStream(tokenStream);
             }
         };
+    }
+
+    /**
+     * 处理代码流，将生成的代码保存到文件中。
+     *
+     * @param tokenStream 生成的代码流。
+     *
+     * @return 处理后的代码流。
+     */
+    private Flux<String> processCodeTokenStream(TokenStream tokenStream) {
+        return Flux.create(sink -> {
+            tokenStream.onPartialResponse(partialResponse -> {
+                AiResponseMessage aiResponseMessage = new AiResponseMessage(partialResponse);
+                sink.next(JSONUtil.toJsonStr(aiResponseMessage));
+            }).onToolExecuted(toolExecution -> {
+                ToolExecutionRequest request = toolExecution.request();
+                ToolRequestMessage toolRequestMessage = new ToolRequestMessage(request);
+                sink.next(JSONUtil.toJsonStr(toolRequestMessage));
+                ToolExecutedMessage toolExecutedMessage = new ToolExecutedMessage(toolExecution);
+                sink.next(JSONUtil.toJsonStr(toolExecutedMessage));
+            }).onCompleteResponse(chatResponse -> {
+                sink.complete();
+            }).onError(throwable -> {
+                log.error("处理代码流时发生错误", throwable);
+                sink.error(throwable);
+            }).start();
+        });
     }
 
     /**
