@@ -13,6 +13,7 @@ import com.example.aicodebackend.exception.ThrowUtils;
 import com.example.aicodebackend.model.dto.app.*;
 import com.example.aicodebackend.model.entity.App;
 import com.example.aicodebackend.model.entity.User;
+import com.example.aicodebackend.model.enums.AIModelTypeEnum;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import com.example.aicodebackend.model.vo.AppVO;
 import com.example.aicodebackend.service.AppService;
@@ -51,16 +52,22 @@ public class AppController {
         ThrowUtils.throwIf(StrUtil.isBlank(initPrompt), ErrorCode.PARAMS_ERROR, "初始化 prompt 不能为空");
         // 2. 获取当前登录用户
         User loginUser = userService.getLoginUser(request);
-        // 3. 复制属性，并补全默认值
+        // 3. 校验代码生成类型（用户可不传，默认使用原生多文件模式）
+        CodeGenTypeEnum codeGenTypeEnum = CodeGenTypeEnum.getEnumByValue(appAddRequest.getCodeGenType());
+        ThrowUtils.throwIf(codeGenTypeEnum == null, ErrorCode.PARAMS_ERROR, "不支持的代码生成类型");
+        // 4. 校验 AI 模型类型（用户可不传，默认使用 deepseek-flash）
+        AIModelTypeEnum aiModelTypeEnum = AIModelTypeEnum.getEnumByValue(appAddRequest.getAiModelType());
+        ThrowUtils.throwIf(aiModelTypeEnum == null, ErrorCode.PARAMS_ERROR, "不支持的 AI 模型类型");
+        // 5. 复制属性，并补全默认值
         App app = new App();
         BeanUtil.copyProperties(appAddRequest, app);
         app.setUserId(loginUser.getId());
         // 应用名称由系统自动生成：取初始化提示词的前 12 位（压缩空白字符，避免名称中出现换行）
         app.setAppName(generateAppName(initPrompt));
-        // 代码生成类型使用默认值（多文件模式）
-        //app.setCodeGenType(CodeGenTypeEnum.MULTI_FILE.getValue());
-        app.setCodeGenType(CodeGenTypeEnum.VUE_PROJECT.getValue());
-        // 4. 调用服务创建应用
+        // 代码生成类型与 AI 模型类型由用户指定（未指定时已在请求体中回落到默认值）
+        app.setCodeGenType(codeGenTypeEnum.getValue());
+        app.setAiModelType(aiModelTypeEnum.getValue());
+        // 6. 调用服务创建应用
         boolean result = appService.save(app);
         ThrowUtils.throwIf(!result, ErrorCode.SYSTEM_ERROR, "创建应用失败");
         return ResultUtils.success(app.getId());

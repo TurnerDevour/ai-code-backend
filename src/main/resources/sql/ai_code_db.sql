@@ -63,3 +63,6 @@ create table chat_history
 -- 添加父消息id字段，用于上下文关联
 alter table chat_history
     add column parent_id bigint null comment '父消息id（用于上下文关联）';
+-- 应用表添加 AI 模型类型字段，用于记录该应用使用的模型
+alter table app
+    add column ai_model_type varchar(64) default 'deepseek-flash' null comment 'AI 模型类型（枚举）' after code_gen_type;

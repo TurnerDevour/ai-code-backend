@@ -17,6 +17,7 @@ import com.example.aicodebackend.mapper.AppMapper;
 import com.example.aicodebackend.model.dto.app.AppQueryRequest;
 import com.example.aicodebackend.model.entity.App;
 import com.example.aicodebackend.model.entity.User;
+import com.example.aicodebackend.model.enums.AIModelTypeEnum;
 import com.example.aicodebackend.model.enums.ChatMessageTypeEnum;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import com.example.aicodebackend.model.vo.AppVO;
@@ -189,11 +190,14 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "不支持的代码生成类型");
         }
 
+        // 4.1 获取应用所选 AI 模型类型（历史数据可能为空，为空时由工厂回落到默认模型）
+        AIModelTypeEnum aiModelTypeEnum = AIModelTypeEnum.getEnumByValue(app.getAiModelType());
+
         // 5. 保存用户消息（用户发送消息时立即持久化）
         chatHistoryService.addChatMessage(appId, loginUser.getId(), prompt, ChatMessageTypeEnum.USER);
 
         // 6. 调用 AiCodeGeneratorFacade 生成代码并返回流式输出，同时持久化 AI 消息和错误信息
-        Flux<String> codeStream = aiCodeGeneratorFacade.generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId);
+        Flux<String> codeStream = aiCodeGeneratorFacade.generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId, aiModelTypeEnum);
 
         // 7. 收集AI响应内容并再完成后记录到对话历史
         return streamHandlerExecutor.doExecute(codeStream, chatHistoryService, appId, loginUser, codeGenTypeEnum);

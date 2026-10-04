@@ -4,18 +4,19 @@ import cn.hutool.core.util.ObjUtil;
 import lombok.Getter;
 
 /**
- * 代码生成类型枚举
+ * AI 模型类型枚举
  */
 @Getter
-public enum CodeGenTypeEnum {
+public enum AIModelTypeEnum {
 
-    HTML("原生 HTML 模式", "html"),
-    MULTI_FILE("原生多文件模式", "multi_file"),
-    VUE_PROJECT("vue工程模式", "vue_project");
+    DEEPSEEK_FLASH("DeepSeek Flash（速度快）", "deepseek-flash"),
+    DEEPSEEK_V4_PRO("DeepSeek V4 Pro（推理强）", "deepseek-v4-pro");
+
     private final String text;
+
     private final String value;
 
-    CodeGenTypeEnum(String text, String value) {
+    AIModelTypeEnum(String text, String value) {
         this.text = text;
         this.value = value;
     }
@@ -27,11 +28,11 @@ public enum CodeGenTypeEnum {
      *
      * @return 枚举值
      */
-    public static CodeGenTypeEnum getEnumByValue(String value) {
+    public static AIModelTypeEnum getEnumByValue(String value) {
         if (ObjUtil.isEmpty(value)) {
             return null;
         }
-        for (CodeGenTypeEnum anEnum : CodeGenTypeEnum.values()) {
+        for (AIModelTypeEnum anEnum : AIModelTypeEnum.values()) {
             if (anEnum.value.equals(value)) {
                 return anEnum;
             }

@@ -11,6 +11,7 @@ import com.example.aicodebackend.ai.model.message.ToolRequestMessage;
 import com.example.aicodebackend.config.AiCodeGeneratorServiceFactory;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
+import com.example.aicodebackend.model.enums.AIModelTypeEnum;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import com.example.aicodebackend.parser.CodeParserExecutor;
 import com.example.aicodebackend.saver.CodeFileSaverExecutor;
@@ -40,24 +41,26 @@ public class AiCodeGeneratorFacade {
      *
      * @param prompt          用户提供的提示，用于指导代码生成。
      * @param codeGenTypeEnum 代码生成类型枚举，指定生成 HTML 代码或多文件代码。
+     * @param appId           应用 id
+     * @param aiModelTypeEnum AI 模型类型枚举，为空时使用默认模型
      *
      * @return 生成的代码文件。
      *
      * @throws BusinessException 如果 codeGenTypeEnum 为 null，则抛出参数错误异常。
      */
-    public File generateAndSaveCode(String prompt, CodeGenTypeEnum codeGenTypeEnum, Long appId) {
+    public File generateAndSaveCode(String prompt, CodeGenTypeEnum codeGenTypeEnum, Long appId, AIModelTypeEnum aiModelTypeEnum) {
         if (codeGenTypeEnum == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "codeGenTypeEnum 不可以为空");
         }
 
         return switch (codeGenTypeEnum) {
             case HTML -> {
-                AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum);
+                AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum, aiModelTypeEnum);
                 HTMLCodeResult htmlCodeResult = aiCodeGeneratorService.generateHTMLCode(prompt);
                 yield CodeFileSaverExecutor.executeSaver(htmlCodeResult, CodeGenTypeEnum.HTML, appId);
             }
             case MULTI_FILE -> {
-                AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum);
+                AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum, aiModelTypeEnum);
                 MultiFileCodeResult multiFileResult = aiCodeGeneratorService.generateMultipleFileCode(prompt);
                 yield CodeFileSaverExecutor.executeSaver(multiFileResult, CodeGenTypeEnum.MULTI_FILE, appId);
             }
@@ -66,21 +69,30 @@ public class AiCodeGeneratorFacade {
     }
 
     /**
+     * 根据给定的提示和代码生成类型生成代码，并将其保存到文件中（非流式输出，使用默认模型）。
+     */
+    public File generateAndSaveCode(String prompt, CodeGenTypeEnum codeGenTypeEnum, Long appId) {
+        return generateAndSaveCode(prompt, codeGenTypeEnum, appId, AIModelTypeEnum.DEEPSEEK_FLASH);
+    }
+
+    /**
      * 根据给定的提示和代码生成类型生成代码，并以流式方式返回生成的代码。
      *
      * @param prompt          用户提供的提示，用于指导代码生成。
      * @param codeGenTypeEnum 代码生成类型枚举，指定生成 HTML 代码或多文件代码。
+     * @param appId           应用 id
+     * @param aiModelTypeEnum AI 模型类型枚举，为空时使用默认模型
      *
      * @return 生成的代码流。
      *
      * @throws BusinessException 如果 codeGenTypeEnum 为 null，则抛出参数错误异常。
      */
-    public Flux<String> generateAndSaveCodeStream(String prompt, CodeGenTypeEnum codeGenTypeEnum, Long appId) {
+    public Flux<String> generateAndSaveCodeStream(String prompt, CodeGenTypeEnum codeGenTypeEnum, Long appId, AIModelTypeEnum aiModelTypeEnum) {
         if (codeGenTypeEnum == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "codeGenTypeEnum 不可以为空");
         }
 
-        AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum);
+        AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum, aiModelTypeEnum);
 
         return switch (codeGenTypeEnum) {
             case HTML -> {
@@ -96,6 +108,13 @@ public class AiCodeGeneratorFacade {
                 yield processCodeTokenStream(tokenStream);
             }
         };
+    }
+
+    /**
+     * 流式生成代码（使用默认模型）
+     */
+    public Flux<String> generateAndSaveCodeStream(String prompt, CodeGenTypeEnum codeGenTypeEnum, Long appId) {
+        return generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId, AIModelTypeEnum.DEEPSEEK_FLASH);
     }
 
     /**

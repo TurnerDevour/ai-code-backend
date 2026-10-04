@@ -5,7 +5,7 @@ public interface AppConstant {
     /**
      * 应用名称最大长度（创建应用时取初始化提示词的前 N 位作为应用名称）
      */
-    int APP_NAME_MAX_LENGTH = 12;
+    int APP_NAME_MAX_LENGTH = 20;
 
     /**
      * 精选应用的优先级
