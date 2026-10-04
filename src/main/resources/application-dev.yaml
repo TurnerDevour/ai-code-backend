@@ -64,3 +64,11 @@ langchain4j:
         log-requests: true
         log-responses: true
 
+# 配置cos对象存储
+cos:
+  client:
+    host: ${COS_HOST}
+    region: ${COS_REGION}
+    bucket: ${COS_BUCKET_NAME}
+    secret-id: ${COS_SECRET_ID}
+    secret-key: ${COS_SECRET_KEY}

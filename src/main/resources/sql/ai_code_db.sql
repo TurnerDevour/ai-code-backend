@@ -49,7 +49,7 @@ create table app
 create table chat_history
 (
     id           bigint auto_increment comment 'id' primary key,
-    message      text                               not null comment '消息',
+    message      mediumtext                         not null comment '消息',
     message_type varchar(32)                        not null comment '消息类型：user/ai/error',
     app_id       bigint                             not null comment '应用id',
     user_id      bigint                             not null comment '创建用户id',

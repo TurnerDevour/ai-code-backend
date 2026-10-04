@@ -24,6 +24,7 @@ import com.example.aicodebackend.model.vo.AppVO;
 import com.example.aicodebackend.model.vo.UserVO;
 import com.example.aicodebackend.service.AppService;
 import com.example.aicodebackend.service.ChatHistoryService;
+import com.example.aicodebackend.service.ScreenshotService;
 import com.example.aicodebackend.service.UserService;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
@@ -56,6 +57,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
     @Resource
     private VueProjectBuilder vueProjectBuilder;
+
+    @Resource
+    private ScreenshotService screenshotService;
 
     /**
      * 获取脱敏后的应用信息
@@ -266,7 +270,34 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         boolean updateResult = this.updateById(updateApp);
         ThrowUtils.throwIf(!updateResult, ErrorCode.SYSTEM_ERROR, "更新应用部署信息失败");
         // 10. 返回部署地址
-        return String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
+        String appDeployUrl = String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
+        log.info("应用部署成功，部署地址: {}", appDeployUrl);
+        // 11. 异步生成截图并上传到COS，更新应用封面
+        generateAndUploadScreenshotAsync(appId, appDeployUrl);
+        return appDeployUrl;
+    }
+
+    /**
+     * 异步生成截图并上传到COS，更新应用封面
+     *
+     * @param appId        应用ID
+     * @param appDeployUrl 部署地址
+     */
+    public void generateAndUploadScreenshotAsync(Long appId, String appDeployUrl) {
+        // 异步执行截图生成和上传
+        Thread.startVirtualThread(() -> {
+            try {
+                String screenshotUrl = screenshotService.generateAndUploadScreenshot(appDeployUrl);
+                App app = new App();
+                app.setId(appId);
+                app.setCover(screenshotUrl);
+                boolean updateResult = this.updateById(app);
+                ThrowUtils.throwIf(!updateResult, ErrorCode.SYSTEM_ERROR, "更新应用封面失败");
+                log.info("异步生成截图并上传到COS成功，appId: {}, app: {}", appId, app);
+            } catch (Exception e) {
+                log.error("异步生成截图并上传到COS失败，appId: {}, 部署地址: {}, error: {}", appId, appDeployUrl, ExceptionUtil.stacktraceToString(e));
+            }
+        });
     }
 
     /**

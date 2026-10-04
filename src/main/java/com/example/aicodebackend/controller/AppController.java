@@ -128,7 +128,8 @@ public class AppController {
         // 4. 校验应用归属，只有本人或者管理员才能删除的应用
         ThrowUtils.throwIf(!oldApp.getUserId().equals(loginUser.getId()) && !UserConstant.ADMIN_ROLE.equals(loginUser.getUserRole()), ErrorCode.NO_AUTH_ERROR, "无权限删除该应用");
         // 5. 调用服务删除应用（逻辑删除，同时关联删除该应用的对话历史）
-        appService.deleteApp(id);
+        boolean result = appService.deleteApp(id);
+        ThrowUtils.throwIf(!result, ErrorCode.SYSTEM_ERROR, "删除应用失败");
         return ResultUtils.success(true);
     }
 
