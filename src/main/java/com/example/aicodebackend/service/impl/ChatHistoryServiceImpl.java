@@ -61,10 +61,9 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
         ThrowUtils.throwIf(StrUtil.isBlank(message), ErrorCode.PARAMS_ERROR, "消息内容不能为空");
         ThrowUtils.throwIf(messageType == null, ErrorCode.PARAMS_ERROR, "消息类型不能为空");
         // 2. 构建对话历史实体
-        // 2.1 用户消息原样保存；AI / 错误消息可能包含工具写入的代码内容，统一限长，避免单条消息过大
-        String messageToSave = ChatMessageTypeEnum.USER.equals(messageType)
-                ? message
-                : TextUtils.truncate(message, ChatHistoryConstant.MESSAGE_MAX_LENGTH);
+        // 2.1 落库保留完整内容（用户「查看对话」时看到的是完整历史），
+        //     这里只做安全上限兜底，防止异常巨大的模型输出撑爆 message 字段导致插入失败
+        String messageToSave = TextUtils.truncate(message, ChatHistoryConstant.MESSAGE_MAX_LENGTH);
         ChatHistory chatHistory = new ChatHistory();
         chatHistory.setAppId(appId);
         chatHistory.setUserId(userId);
@@ -195,19 +194,24 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
             // 先清理记忆中的历史消息，避免重复加载
             chatMemory.clear();
             for (ChatHistory chatHistory : chatHistoryList) {
-                // 5.1 历史数据中可能存在旧版本落库的超长消息，加载进记忆前统一截断，避免撑爆模型上下文
-                String message = TextUtils.truncate(chatHistory.getMessage(), ChatHistoryConstant.MEMORY_MESSAGE_MAX_LENGTH);
-                // 5.2 过滤空消息，避免把无效内容塞进模型上下文
-                if (StrUtil.isBlank(message)) {
-                    continue;
-                }
-                // 5.3 根据消息类型，将消息转换为对应的 ChatMessage 对象，并添加到记忆中
+                // 5.1 根据消息类型，将消息转换为对应的 ChatMessage 对象，并添加到记忆中
                 if (ChatMessageTypeEnum.USER.getValue().equals(chatHistory.getMessageType())) {
-                    chatMemory.add(UserMessage.from(message));
+                    // 用户消息（含用户粘贴的内容）就是真实指令，原样进入上下文，不做压缩或截断
+                    if (StrUtil.isBlank(chatHistory.getMessage())) {
+                        continue;
+                    }
+                    chatMemory.add(UserMessage.from(chatHistory.getMessage()));
                     loadedCount++;
-                    // 5.4 AI 消息
+                    // 5.2 AI 消息：进入模型上下文前压缩代码块，每个代码块只保留开头预览，代码块之外的说明与文件路径保留。
+                    //     完整源码留在数据库中供用户查看历史，不参与多轮上下文，避免撑爆模型上下文与费用。
                 } else if (ChatMessageTypeEnum.AI.getValue().equals(chatHistory.getMessageType())) {
-                    chatMemory.add(AiMessage.from(message));
+                    String aiMessage = TextUtils.truncate(
+                            TextUtils.compressCodeBlocks(chatHistory.getMessage(), ChatHistoryConstant.MEMORY_CODE_BLOCK_MAX_LENGTH),
+                            ChatHistoryConstant.MEMORY_MESSAGE_MAX_LENGTH);
+                    if (StrUtil.isBlank(aiMessage)) {
+                        continue;
+                    }
+                    chatMemory.add(AiMessage.from(aiMessage));
                     loadedCount++;
                 }
             }

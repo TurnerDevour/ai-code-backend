@@ -18,23 +18,25 @@ public interface ChatHistoryConstant {
     int MEMORY_MAX_MESSAGES = 50;
 
     /**
-     * 落库时单个文件内容保留的最大字符数
+     * 单条消息落库的安全上限（字符数）
      * <p>
-     * 工具每写入一个文件都会产生一条消息，AI 消息里只保留「文件路径 + 内容摘要」，
-     * 避免完整工程源码落库（单条消息可达数十万字符）并参与后续多轮上下文。
+     * 只用于防止异常巨大的模型输出撑爆 message 字段（MEDIUMTEXT）导致插入失败，正常业务不会触发。
+     * 注意：对话历史会完整展示给用户，因此落库时<b>不做</b>内容层面的截断；
+     * 控制模型上下文长度的压缩统一放在加载对话记忆时进行。
      */
-    int FILE_CONTENT_MAX_LENGTH = 800;
+    int MESSAGE_MAX_LENGTH = 1_000_000;
 
     /**
-     * 单条非用户消息（AI 消息、错误消息）落库的最大字符数
+     * 加载对话记忆时，单个 Markdown 代码块保留的最大字符数
+     * <p>
+     * 进入模型上下文的只有代码块的头部预览，代码块之外的说明文字、文件路径等原样保留。
      */
-    int MESSAGE_MAX_LENGTH = 5000;
+    int MEMORY_CODE_BLOCK_MAX_LENGTH = 200;
 
     /**
      * 加载对话记忆时单条消息保留的最大字符数
      * <p>
-     * 兜底限制：历史数据中可能存在旧版本落库的超长消息（例如完整工程源码），加载进模型上下文前统一截断。
-     * 取值与 {@link #MESSAGE_MAX_LENGTH} 保持一致，避免新落库的消息在加载时被二次截断。
+     * 兜底限制：即使按代码块压缩后仍然过长（例如一条消息里写了几十个文件），也只保留头部。
      */
-    int MEMORY_MESSAGE_MAX_LENGTH = 5000;
+    int MEMORY_MESSAGE_MAX_LENGTH = 6000;
 }

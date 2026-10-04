@@ -6,12 +6,10 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.example.aicodebackend.ai.model.message.*;
 import com.example.aicodebackend.constant.AppConstant;
-import com.example.aicodebackend.constant.ChatHistoryConstant;
 import com.example.aicodebackend.core.builder.VueProjectBuilder;
 import com.example.aicodebackend.model.entity.User;
 import com.example.aicodebackend.model.enums.ChatMessageTypeEnum;
 import com.example.aicodebackend.service.ChatHistoryService;
-import com.example.aicodebackend.utils.TextUtils;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -130,8 +128,8 @@ public class JsonMessageStreamHandler {
      * 注意：FileWriteTool#writeToFile 的形参名是 relativePath，模型返回的 arguments 也使用该键名，
      * 因此这里以 relativePath 为准，同时兼容 relativeFilePath 以避免历史数据解析失败。
      * <p>
-     * 推送给前端的是完整文件内容；累积到 chatHistoryStringBuilder（用于落库、进入对话记忆）的
-     * 只保留「文件路径 + 内容摘要」，避免完整工程源码撑爆数据库与模型上下文。
+     * 推送给前端和累积到 chatHistoryStringBuilder（用于落库）的都是完整文件内容，
+     * 保证用户「查看对话」时能看到完整历史；压缩只发生在加载进对话记忆时。
      *
      * @param toolExecutedMessage    工具执行结果消息
      * @param chatHistoryStringBuilder 累积用于持久化的对话内容
@@ -158,12 +156,10 @@ public class JsonMessageStreamHandler {
             return "";
         }
         String suffix = StrUtil.blankToDefault(FileUtil.getSuffix(relativeFilePath), "text");
-        // 推送给前端的内容保持完整，用户在对话里仍能看到本次写入的文件内容
+        // 推送给前端和落库的内容都保持完整，保证用户「查看对话」时能看到完整历史；
+        // 进入模型上下文的压缩统一在加载对话记忆时处理（见 ChatHistoryServiceImpl#loadChatHistoryToMemory）
         String output = String.format("\n\n%s\n\n", formatFileBlock(relativeFilePath, suffix, content));
-        // 落库、进入对话记忆的内容只保留「文件路径 + 内容摘要」，
-        // 避免一整个工程的源码落库并参与后续多轮上下文（单条消息可达数十万字符）
-        String summaryContent = TextUtils.truncate(content, ChatHistoryConstant.FILE_CONTENT_MAX_LENGTH);
-        chatHistoryStringBuilder.append(String.format("\n\n%s\n\n", formatFileBlock(relativeFilePath, suffix, summaryContent)));
+        chatHistoryStringBuilder.append(output);
         return output;
     }
 
@@ -172,7 +168,7 @@ public class JsonMessageStreamHandler {
      *
      * @param relativeFilePath 文件相对路径
      * @param suffix           代码块语言标识
-     * @param content          代码块内容（完整内容或摘要）
+     * @param content          代码块内容
      *
      * @return 格式化后的 Markdown 文本
      */

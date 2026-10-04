@@ -12,22 +12,23 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 工具写入内容的落库摘要回归测试
+ * 工具写入内容落库的回归测试
  * <p>
- * 推送给前端的内容保持完整（用户仍能看到写入的文件内容），
- * 落库、进入对话记忆的内容只保留「文件路径 + 内容摘要」。
+ * 推送给前端和落库的内容都必须保持完整，保证用户「查看对话」时能看到完整历史；
+ * 控制模型上下文的压缩发生在加载对话记忆时（见 TextUtilsTest）。
  */
 class JsonMessageStreamHandlerTest {
 
     private static final int CONTENT_LENGTH = 5000;
 
     @Test
-    @DisplayName("工具写入大文件：前端拿到完整内容，落库内容被截断为摘要")
-    void shouldTruncatePersistedContentButKeepFullClientPayload() {
+    @DisplayName("工具写入大文件：前端与落库内容都保持完整")
+    void shouldKeepFullContentForClientAndHistory() {
         String content = "A".repeat(CONTENT_LENGTH);
         String arguments = JSONUtil.createObj()
                 .set("relativePath", "src/App.vue")
@@ -54,9 +55,8 @@ class JsonMessageStreamHandlerTest {
         assertEquals(1, persistedMessages.size(), "应落库一条 AI 消息");
         String persistedMessage = persistedMessages.get(0);
         assertTrue(persistedMessage.contains("src/App.vue"), "落库内容应保留文件路径");
-        assertTrue(persistedMessage.contains("已省略"), "落库内容应包含截断说明");
-        assertTrue(persistedMessage.length() < CONTENT_LENGTH,
-                "落库内容长度应远小于原始内容，实际: " + persistedMessage.length());
+        assertTrue(persistedMessage.contains(content), "落库内容应保持完整，保证「查看对话」能看到完整历史");
+        assertFalse(persistedMessage.contains("已省略"), "落库内容不应出现截断说明");
     }
 
     /**

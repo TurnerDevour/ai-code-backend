@@ -21,11 +21,21 @@ public class SimpleTextStreamHandler {
             return chunk;
         }).doOnComplete(() -> {
             String aiResponse = aiResponseBuilder.toString();
-            chatHistoryService.addChatMessage(appId, loginUser.getId(), aiResponse, ChatMessageTypeEnum.AI);
+            try {
+                chatHistoryService.addChatMessage(appId, loginUser.getId(), aiResponse, ChatMessageTypeEnum.AI);
+            } catch (Exception e) {
+                // 此时 SSE 响应已进入完成阶段，异常逃逸会让整个请求以 500 收尾，
+                // 且响应已按 text/event-stream 提交，Spring 无法再回写业务错误。因此这里只记录日志。
+                log.error("保存 AI 回复到对话历史失败，appId: {}", appId, e);
+            }
         }).doOnError(error -> {
             String errorMessage = "AI 回复异常: " + error.getMessage();
             log.error(errorMessage, error);
-            chatHistoryService.addChatMessage(appId, loginUser.getId(), errorMessage, ChatMessageTypeEnum.AI);
+            try {
+                chatHistoryService.addChatMessage(appId, loginUser.getId(), errorMessage, ChatMessageTypeEnum.AI);
+            } catch (Exception e) {
+                log.error("保存 AI 失败消息到对话历史失败，appId: {}", appId, e);
+            }
         });
     }
 }
