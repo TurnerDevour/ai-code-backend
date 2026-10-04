@@ -1,0 +1,86 @@
+package com.example.aicodebackend.core.handler;
+
+import cn.hutool.json.JSONUtil;
+import com.example.aicodebackend.model.entity.User;
+import com.example.aicodebackend.service.ChatHistoryService;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Flux;
+
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * 工具写入内容的落库摘要回归测试
+ * <p>
+ * 推送给前端的内容保持完整（用户仍能看到写入的文件内容），
+ * 落库、进入对话记忆的内容只保留「文件路径 + 内容摘要」。
+ */
+class JsonMessageStreamHandlerTest {
+
+    private static final int CONTENT_LENGTH = 5000;
+
+    @Test
+    @DisplayName("工具写入大文件：前端拿到完整内容，落库内容被截断为摘要")
+    void shouldTruncatePersistedContentButKeepFullClientPayload() {
+        String content = "A".repeat(CONTENT_LENGTH);
+        String arguments = JSONUtil.createObj()
+                .set("relativePath", "src/App.vue")
+                .set("content", content)
+                .toString();
+        String chunk = JSONUtil.createObj()
+                .set("type", "tool_executed")
+                .set("id", "1")
+                .set("name", "writeToFile")
+                .set("arguments", arguments)
+                .set("result", "写入成功")
+                .toString();
+
+        List<String> persistedMessages = new ArrayList<>();
+        List<String> pushedMessages = new JsonMessageStreamHandler()
+                .handle(Flux.just(chunk), stubChatHistoryService(persistedMessages), 1L, new User())
+                .collectList()
+                .block();
+
+        assertNotNull(pushedMessages, "推送给前端的消息列表不应为空");
+        assertEquals(1, pushedMessages.size(), "应向前端下发一条消息");
+        assertTrue(pushedMessages.get(0).contains(content), "推送给前端的内容应保持完整");
+
+        assertEquals(1, persistedMessages.size(), "应落库一条 AI 消息");
+        String persistedMessage = persistedMessages.get(0);
+        assertTrue(persistedMessage.contains("src/App.vue"), "落库内容应保留文件路径");
+        assertTrue(persistedMessage.contains("已省略"), "落库内容应包含截断说明");
+        assertTrue(persistedMessage.length() < CONTENT_LENGTH,
+                "落库内容长度应远小于原始内容，实际: " + persistedMessage.length());
+    }
+
+    /**
+     * 手写 ChatHistoryService 桩对象，仅捕获落库的消息内容
+     * <p>
+     * 这里用 JDK 动态代理而不是 Mockito —— 当前运行环境下 byte-buddy 无法初始化 MockMaker。
+     *
+     * @param persistedMessages 用于收集落库消息的列表
+     */
+    private ChatHistoryService stubChatHistoryService(List<String> persistedMessages) {
+        return (ChatHistoryService) Proxy.newProxyInstance(
+                ChatHistoryService.class.getClassLoader(),
+                new Class<?>[]{ChatHistoryService.class},
+                (proxy, method, args) -> {
+                    if ("addChatMessage".equals(method.getName()) && args != null && args.length >= 3) {
+                        persistedMessages.add(String.valueOf(args[2]));
+                        return 1L;
+                    }
+                    return switch (method.getName()) {
+                        case "toString" -> "StubChatHistoryService";
+                        case "hashCode" -> System.identityHashCode(proxy);
+                        case "equals" -> proxy == args[0];
+                        default -> null;
+                    };
+                });
+    }
+}

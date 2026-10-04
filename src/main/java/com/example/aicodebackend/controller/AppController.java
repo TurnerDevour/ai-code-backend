@@ -2,12 +2,15 @@ package com.example.aicodebackend.controller;
 
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONUtil;
+import com.example.aicodebackend.ai.model.message.ErrorMessage;
 import com.example.aicodebackend.annotation.AuthCheck;
 import com.example.aicodebackend.common.BaseResponse;
 import com.example.aicodebackend.common.DeleteRequest;
 import com.example.aicodebackend.common.ResultUtils;
 import com.example.aicodebackend.constant.AppConstant;
 import com.example.aicodebackend.constant.UserConstant;
+import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.exception.ThrowUtils;
 import com.example.aicodebackend.model.dto.app.*;
@@ -22,6 +25,7 @@ import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
 import jakarta.annotation.Resource;
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
@@ -31,6 +35,7 @@ import reactor.core.publisher.Mono;
 import java.time.LocalDateTime;
 import java.util.List;
 
+@Slf4j
 @RestController
 @RequestMapping("/app")
 public class AppController {
@@ -277,6 +282,11 @@ public class AppController {
 
     /**
      * 根据应用ID和用户输入的 prompt，调用服务生成代码，并通过 SSE 流式返回生成的代码块
+     * <p>
+     * 接口契约：本接口<b>始终</b>以 SSE（text/event-stream）形式响应，任何失败都以 type=error 的数据帧下发，
+     * 不使用 HTTP 错误码或 JSON 错误体。这样做的原因是：SSE 响应一旦按 text/event-stream 协商，
+     * 异常逃逸到 Servlet 层后 @RestControllerAdvice 无法再回写 JSON 结构的错误体，
+     * 只能抛出 HttpMessageNotWritableException 并引发连锁异常（且前端拿不到任何错误信息）。
      *
      * @param appId   应用ID
      * @param prompt  用户输入的 prompt
@@ -286,13 +296,24 @@ public class AppController {
      */
     @GetMapping(value = "/chat/gen/code", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId, @RequestParam String prompt, HttpServletRequest request) {
-        // 1. 校验参数
-        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
-        ThrowUtils.throwIf(StrUtil.isBlank(prompt), ErrorCode.PARAMS_ERROR, "prompt不能为空");
-        // 2. 获取当前登录用户
-        User loginUser = userService.getLoginUser(request);
-        // 3. 调用服务生成代码
-        Flux<String> chatToGenCodeFlux = appService.chatToGenCode(appId, prompt, loginUser);
+        Flux<String> chatToGenCodeFlux;
+        try {
+            // 1. 校验参数
+            ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+            ThrowUtils.throwIf(StrUtil.isBlank(prompt), ErrorCode.PARAMS_ERROR, "prompt不能为空");
+            // 2. 获取当前登录用户
+            User loginUser = userService.getLoginUser(request);
+            // 3. 调用服务生成代码（这一步的准备工作是同步执行的，可能直接抛异常）
+            chatToGenCodeFlux = appService.chatToGenCode(appId, prompt, loginUser);
+        } catch (BusinessException e) {
+            // 参数校验、鉴权、应用不存在等业务失败：直接以 error 数据帧结束，不抛出异常。
+            // 不依赖客户端的 Accept 头，也不依赖 @RestControllerAdvice 的媒体类型协商。
+            log.error("生成代码请求校验失败，appId: {}", appId, e);
+            return Flux.just(buildErrorEvent(e.getMessage()), buildDoneEvent());
+        } catch (RuntimeException e) {
+            log.error("生成代码请求处理失败，appId: {}", appId, e);
+            return Flux.just(buildErrorEvent("代码生成失败，请稍后重试"), buildDoneEvent());
+        }
 
         return chatToGenCodeFlux
                 .map(chunk -> ServerSentEvent.<String>builder()
@@ -302,13 +323,39 @@ public class AppController {
                         // 前端的 JSON.parse 只能拿到被转义的字符串，无法按 type 分发消息。
                         .data(chunk)
                         .build())
-                .concatWith(Mono.just(
-                        // 发送一个特殊的事件，表示流结束
-                        ServerSentEvent.<String>builder()
-                                .event("done")
-                                .data("")
-                                .build()
-                ));
+                .concatWith(Mono.just(buildDoneEvent()))
+                // 4. 流内异常同样不再向上抛出：此时 SSE 响应已经提交，异常逃逸到 Servlet 层后
+                //    @RestControllerAdvice 会尝试以 JSON 回写错误（与 text/event-stream 冲突）并引发连锁异常。
+                //    这里统一转成一个 type=error 的数据帧下发，前端可据此展示错误信息。
+                .onErrorResume(error -> {
+                    log.error("生成代码流式响应失败，appId: {}", appId, error);
+                    return Flux.just(buildErrorEvent("代码生成失败，请稍后重试"), buildDoneEvent());
+                });
+    }
+
+    /**
+     * 构建流式响应的结束事件（前端据此结束本次生成）
+     */
+    private static ServerSentEvent<String> buildDoneEvent() {
+        // 发送一个特殊的事件，表示流结束
+        return ServerSentEvent.<String>builder()
+                .event("done")
+                .data("")
+                .build();
+    }
+
+    /**
+     * 构建流式响应的错误数据帧
+     * <p>
+     * 与正常消息保持一致，仍然以 data 帧下发（type=error），不使用 SSE 具名的 error 事件，
+     * 避免与 EventSource 自身的连接错误事件混淆，前端按 type 分发即可。
+     *
+     * @param errorMessage 面向用户的错误提示（内部异常细节只记录日志，不对外暴露）
+     */
+    private static ServerSentEvent<String> buildErrorEvent(String errorMessage) {
+        return ServerSentEvent.<String>builder()
+                .data(JSONUtil.toJsonStr(new ErrorMessage(errorMessage)))
+                .build();
     }
 
     /**

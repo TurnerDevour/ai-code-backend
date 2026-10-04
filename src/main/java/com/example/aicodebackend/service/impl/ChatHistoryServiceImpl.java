@@ -2,6 +2,7 @@ package com.example.aicodebackend.service.impl;
 
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
+import com.example.aicodebackend.constant.ChatHistoryConstant;
 import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.exception.ThrowUtils;
 import com.example.aicodebackend.mapper.ChatHistoryMapper;
@@ -9,6 +10,7 @@ import com.example.aicodebackend.model.dto.chathistory.ChatHistoryQueryRequest;
 import com.example.aicodebackend.model.entity.ChatHistory;
 import com.example.aicodebackend.model.enums.ChatMessageTypeEnum;
 import com.example.aicodebackend.service.ChatHistoryService;
+import com.example.aicodebackend.utils.TextUtils;
 import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
@@ -59,10 +61,14 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
         ThrowUtils.throwIf(StrUtil.isBlank(message), ErrorCode.PARAMS_ERROR, "消息内容不能为空");
         ThrowUtils.throwIf(messageType == null, ErrorCode.PARAMS_ERROR, "消息类型不能为空");
         // 2. 构建对话历史实体
+        // 2.1 用户消息原样保存；AI / 错误消息可能包含工具写入的代码内容，统一限长，避免单条消息过大
+        String messageToSave = ChatMessageTypeEnum.USER.equals(messageType)
+                ? message
+                : TextUtils.truncate(message, ChatHistoryConstant.MESSAGE_MAX_LENGTH);
         ChatHistory chatHistory = new ChatHistory();
         chatHistory.setAppId(appId);
         chatHistory.setUserId(userId);
-        chatHistory.setMessage(message);
+        chatHistory.setMessage(messageToSave);
         chatHistory.setMessageType(messageType.getValue());
         chatHistory.setParentId(parentId);
         // 3. 保存消息
@@ -189,13 +195,19 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
             // 先清理记忆中的历史消息，避免重复加载
             chatMemory.clear();
             for (ChatHistory chatHistory : chatHistoryList) {
-                // 5.1 根据消息类型，将消息转换为对应的 ChatMessage 对象，并添加到记忆中
+                // 5.1 历史数据中可能存在旧版本落库的超长消息，加载进记忆前统一截断，避免撑爆模型上下文
+                String message = TextUtils.truncate(chatHistory.getMessage(), ChatHistoryConstant.MEMORY_MESSAGE_MAX_LENGTH);
+                // 5.2 过滤空消息，避免把无效内容塞进模型上下文
+                if (StrUtil.isBlank(message)) {
+                    continue;
+                }
+                // 5.3 根据消息类型，将消息转换为对应的 ChatMessage 对象，并添加到记忆中
                 if (ChatMessageTypeEnum.USER.getValue().equals(chatHistory.getMessageType())) {
-                    chatMemory.add(UserMessage.from(chatHistory.getMessage()));
+                    chatMemory.add(UserMessage.from(message));
                     loadedCount++;
-                    // 5.2 AI 消息
+                    // 5.4 AI 消息
                 } else if (ChatMessageTypeEnum.AI.getValue().equals(chatHistory.getMessageType())) {
-                    chatMemory.add(AiMessage.from(chatHistory.getMessage()));
+                    chatMemory.add(AiMessage.from(message));
                     loadedCount++;
                 }
             }
