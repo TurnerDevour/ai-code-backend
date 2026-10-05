@@ -1,7 +1,7 @@
 package com.example.aicodebackend.config;
 
 import com.example.aicodebackend.ai.AiCodeGeneratorService;
-import com.example.aicodebackend.ai.tools.FileWriteTool;
+import com.example.aicodebackend.ai.tools.*;
 import com.example.aicodebackend.constant.ChatHistoryConstant;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
@@ -35,11 +35,6 @@ import java.util.concurrent.TimeUnit;
 public class AiCodeGeneratorServiceFactory {
 
     /**
-     * 非流式模型，由 starter 自动装配
-     */
-    private final ChatModel chatModel;
-
-    /**
      * 按 AI 模型类型构建的流式模型，见 {@link AiModelConfig}。
      * <p>
      * 容器里共有多个 StreamingChatModel（含 starter 自动装配的那个），
@@ -53,22 +48,25 @@ public class AiCodeGeneratorServiceFactory {
 
     private final ChatHistoryService chatHistoryService;
 
+    private final ToolManager toolManager;
+
     /**
      * 模型类型 -> 流式模型
      */
     private final Map<AIModelTypeEnum, StreamingChatModel> streamingChatModelMap;
 
     public AiCodeGeneratorServiceFactory(
-            ChatModel chatModel,
             @Qualifier("deepSeekFlashStreamingChatModel") StreamingChatModel deepSeekFlashStreamingChatModel,
             @Qualifier("deepSeekV4ProStreamingChatModel") StreamingChatModel deepSeekV4ProStreamingChatModel,
+            ToolManager toolManager,
             RedisChatMemoryStore redisChatMemoryStore,
-            ChatHistoryService chatHistoryService) {
-        this.chatModel = chatModel;
+            ChatHistoryService chatHistoryService
+    ) {
         this.deepSeekFlashStreamingChatModel = deepSeekFlashStreamingChatModel;
         this.deepSeekV4ProStreamingChatModel = deepSeekV4ProStreamingChatModel;
         this.redisChatMemoryStore = redisChatMemoryStore;
         this.chatHistoryService = chatHistoryService;
+        this.toolManager = toolManager;
         Map<AIModelTypeEnum, StreamingChatModel> map = new EnumMap<>(AIModelTypeEnum.class);
         map.put(AIModelTypeEnum.DEEPSEEK_FLASH, deepSeekFlashStreamingChatModel);
         map.put(AIModelTypeEnum.DEEPSEEK_V4_PRO, deepSeekV4ProStreamingChatModel);
@@ -85,7 +83,6 @@ public class AiCodeGeneratorServiceFactory {
             .expireAfterAccess(10, TimeUnit.MINUTES)
             .removalListener((key, value, cause) -> {
                 // 当缓存项被移除时，可以在这里进行一些清理操作
-                // 例如，关闭资源或记录日志
                 log.info("AI 服务实例已被移除，cacheKey: {}, 原因: {}", key, cause);
             })
             .build();
@@ -107,9 +104,9 @@ public class AiCodeGeneratorServiceFactory {
     /**
      * 根据 appId、代码生成类型和 AI 模型类型获取服务（带缓存）
      *
-     * @param appId        应用 id
-     * @param codeGenType  代码生成类型
-     * @param aiModelType  AI 模型类型，为空时回落到 deepseek-flash
+     * @param appId       应用 id
+     * @param codeGenType 代码生成类型
+     * @param aiModelType AI 模型类型，为空时回落到 deepseek-flash
      *
      * @return AI 代码生成服务
      */
@@ -156,8 +153,10 @@ public class AiCodeGeneratorServiceFactory {
             case VUE_PROJECT -> AiServices.builder(AiCodeGeneratorService.class)
                     .streamingChatModel(selectedStreamingChatModel)
                     .chatMemoryProvider((memoryId) -> chatMemory)
-                    .tools(new FileWriteTool())
-                    .hallucinatedToolNameStrategy(toolExecutionRequest -> ToolExecutionResultMessage.from(toolExecutionRequest, "错误：不存在这个工具， " + toolExecutionRequest.name()))
+                    .tools((Object[]) toolManager.getAllTools())
+                    .hallucinatedToolNameStrategy(
+                            toolExecutionRequest -> ToolExecutionResultMessage.from(toolExecutionRequest, "错误：不存在这个工具， " + toolExecutionRequest.name())
+                    )
                     // langchain4j 1.21.0 起必须显式指定工具错误处理策略，否则会打印警告并沿用即将变更的默认行为。
                     // 工具入参解析失败（例如流式返回的 arguments 不完整）应把原因回给模型，让它自行纠正后重试；
                     // 工具执行期的异常则只在明确面向 LLM 时透出，其余情况直接让本次调用失败，避免泄露内部细节。
@@ -165,7 +164,6 @@ public class AiCodeGeneratorServiceFactory {
                     .toolExecutionErrorHandler(ToolExecutionErrorHandler.failInvocationUnlessVisibleToLlm())
                     .build();
             case HTML, MULTI_FILE -> AiServices.builder(AiCodeGeneratorService.class)
-                    .chatModel(chatModel)
                     .streamingChatModel(selectedStreamingChatModel)
                     .chatMemory(chatMemory)
                     .build();

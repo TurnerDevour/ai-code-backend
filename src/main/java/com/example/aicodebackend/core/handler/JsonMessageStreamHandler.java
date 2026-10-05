@@ -1,10 +1,11 @@
 package com.example.aicodebackend.core.handler;
 
-import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.example.aicodebackend.ai.model.message.*;
+import com.example.aicodebackend.ai.tools.BaseTool;
+import com.example.aicodebackend.ai.tools.ToolManager;
 import com.example.aicodebackend.constant.AppConstant;
 import com.example.aicodebackend.core.builder.VueProjectBuilder;
 import com.example.aicodebackend.model.entity.User;
@@ -21,13 +22,24 @@ import java.util.Set;
 /**
  * JSON 消息流处理器
  * 处理 VUE_PROJECT 类型的复杂流式响应，包含工具调用信息
+ * <p>
+ * 处理器只负责识别消息类型、按名称取到工具实例并统一包装流式格式，
+ * 具体展示成什么样由各个工具自己决定（见 {@link BaseTool}）。
  */
 @Slf4j
 @Component
 public class JsonMessageStreamHandler {
 
+    /**
+     * 工具输出的统一包装模板，保证工具消息与 AI 文本之间始终有清晰的分隔
+     */
+    private static final String TOOL_OUTPUT_TEMPLATE = "\n\n%s\n\n";
+
     @Resource
     private VueProjectBuilder vueProjectBuilder;
+
+    @Resource
+    private ToolManager toolManager;
 
     /**
      * 处理 TokenStream（VUE_PROJECT）
@@ -87,97 +99,118 @@ public class JsonMessageStreamHandler {
         // 解析 JSON
         StreamMessage streamMessage = JSONUtil.toBean(chunk, StreamMessage.class);
         StreamMessageTypeEnum typeEnum = StreamMessageTypeEnum.getEnumByValue(streamMessage.getType());
-        if (typeEnum != null) {
-            switch (typeEnum) {
-                case AI_RESPONSE -> {
-                    AiResponseMessage aiMessage = JSONUtil.toBean(chunk, AiResponseMessage.class);
-                    String data = aiMessage.getData();
-                    // 直接拼接响应
-                    chatHistoryStringBuilder.append(data);
-                    return data;
-                }
-                case TOOL_REQUEST -> {
-                    ToolRequestMessage toolRequestMessage = JSONUtil.toBean(chunk, ToolRequestMessage.class);
-                    String toolId = toolRequestMessage.getId();
-                    // 检查是否是第一次看到这个工具 ID
-                    if (toolId != null && !seenToolIds.contains(toolId)) {
-                        // 第一次调用这个工具，记录 ID 并完整返回工具信息
-                        seenToolIds.add(toolId);
-                        return "\n\n[🔧 选择工具] 写入文件\n\n";
-                    } else {
-                        // 不是第一次调用这个工具，直接返回空
-                        return "";
-                    }
-                }
-                case TOOL_EXECUTED -> {
-                    ToolExecutedMessage toolExecutedMessage = JSONUtil.toBean(chunk, ToolExecutedMessage.class);
-                    return handleToolExecutedMessage(toolExecutedMessage, chatHistoryStringBuilder);
-                }
-                default -> {
-                    log.error("不支持的消息类型: {}", typeEnum);
-                    return "";
-                }
-            }
+        if (typeEnum == null) {
+            return "";
         }
-        return "";
+        return switch (typeEnum) {
+            case AI_RESPONSE -> handleAiResponseMessage(chunk, chatHistoryStringBuilder);
+            case TOOL_REQUEST -> handleToolRequestMessage(chunk, seenToolIds);
+            case TOOL_EXECUTED -> handleToolExecutedMessage(chunk, chatHistoryStringBuilder);
+            default -> {
+                log.error("不支持的消息类型: {}", typeEnum);
+                yield "";
+            }
+        };
     }
 
     /**
-     * 处理工具执行结果消息：把写入的文件路径与内容格式化为前端可直接渲染的 Markdown 代码块。
+     * 处理 AI 响应消息：文本增量直接透传给前端并累积到对话历史
+     */
+    private String handleAiResponseMessage(String chunk, StringBuilder chatHistoryStringBuilder) {
+        AiResponseMessage aiMessage = JSONUtil.toBean(chunk, AiResponseMessage.class);
+        String data = StrUtil.nullToEmpty(aiMessage.getData());
+        chatHistoryStringBuilder.append(data);
+        return data;
+    }
+
+    /**
+     * 处理工具请求消息：取到对应的工具实例，由工具自己生成展示内容。
      * <p>
-     * 注意：FileWriteTool#writeToFile 的形参名是 relativePath，模型返回的 arguments 也使用该键名，
-     * 因此这里以 relativePath 为准，同时兼容 relativeFilePath 以避免历史数据解析失败。
+     * 同一个工具 ID 只在第一次请求时展示，避免流式过程中重复推送。
+     */
+    private String handleToolRequestMessage(String chunk, Set<String> seenToolIds) {
+        ToolRequestMessage toolRequestMessage = JSONUtil.toBean(chunk, ToolRequestMessage.class);
+        String toolId = toolRequestMessage.getId();
+        if (toolId != null && !seenToolIds.add(toolId)) {
+            return "";
+        }
+        BaseTool tool = findTool(toolRequestMessage.getName());
+        return tool == null ? "" : wrapToolOutput(tool.generateToolRequestResponse());
+    }
+
+    /**
+     * 处理工具执行结果消息：取到对应的工具实例，由工具自己把入参格式化为展示内容。
      * <p>
-     * 推送给前端和累积到 chatHistoryStringBuilder（用于落库）的都是完整文件内容，
+     * 推送给前端和累积到 chatHistoryStringBuilder（用于落库）的都是完整内容，
      * 保证用户「查看对话」时能看到完整历史；压缩只发生在加载进对话记忆时。
      *
-     * @param toolExecutedMessage    工具执行结果消息
+     * @param chunk                    工具执行结果的 JSON 消息
      * @param chatHistoryStringBuilder 累积用于持久化的对话内容
      *
      * @return 需要推送给前端的内容，无需推送时返回空字符串
      */
-    private String handleToolExecutedMessage(ToolExecutedMessage toolExecutedMessage, StringBuilder chatHistoryStringBuilder) {
-        String arguments = toolExecutedMessage.getArguments();
-        if (StrUtil.isBlank(arguments)) {
-            log.warn("工具执行结果缺少参数，已跳过展示，工具: {}", toolExecutedMessage.getName());
+    private String handleToolExecutedMessage(String chunk, StringBuilder chatHistoryStringBuilder) {
+        ToolExecutedMessage toolExecutedMessage = JSONUtil.toBean(chunk, ToolExecutedMessage.class);
+        BaseTool tool = findTool(toolExecutedMessage.getName());
+        if (tool == null) {
             return "";
         }
-        JSONObject jsonObject;
-        try {
-            jsonObject = JSONUtil.parseObj(arguments);
-        } catch (Exception e) {
-            log.warn("工具参数不是合法 JSON，已跳过展示，工具: {}，参数: {}", toolExecutedMessage.getName(), arguments);
+        JSONObject arguments = parseArguments(toolExecutedMessage);
+        if (arguments == null) {
             return "";
         }
-        String relativeFilePath = jsonObject.getStr("relativePath", jsonObject.getStr("relativeFilePath", ""));
-        String content = jsonObject.getStr("content", "");
-        if (StrUtil.isBlank(relativeFilePath)) {
-            log.warn("工具执行结果缺少文件路径，已跳过展示，工具: {}", toolExecutedMessage.getName());
+        String output = wrapToolOutput(tool.generateToolExecutedResult(arguments));
+        if (StrUtil.isEmpty(output)) {
             return "";
         }
-        String suffix = StrUtil.blankToDefault(FileUtil.getSuffix(relativeFilePath), "text");
-        // 推送给前端和落库的内容都保持完整，保证用户「查看对话」时能看到完整历史；
-        // 进入模型上下文的压缩统一在加载对话记忆时处理（见 ChatHistoryServiceImpl#loadChatHistoryToMemory）
-        String output = String.format("\n\n%s\n\n", formatFileBlock(relativeFilePath, suffix, content));
         chatHistoryStringBuilder.append(output);
         return output;
     }
 
     /**
-     * 把文件写入结果格式化为 Markdown 代码块
+     * 按工具名称取出工具实例
      *
-     * @param relativeFilePath 文件相对路径
-     * @param suffix           代码块语言标识
-     * @param content          代码块内容
+     * @param toolName 工具英文名称
      *
-     * @return 格式化后的 Markdown 文本
+     * @return 工具实例，未注册时返回 null
      */
-    private String formatFileBlock(String relativeFilePath, String suffix, String content) {
-        return String.format("""
-                [🔧 工具调用] 写入文件 %s
-                ```%s
-                %s
-                ```
-                """, relativeFilePath, suffix, content);
+    private BaseTool findTool(String toolName) {
+        BaseTool tool = StrUtil.isBlank(toolName) ? null : toolManager.getTool(toolName);
+        if (tool == null) {
+            log.warn("未注册的工具，已跳过展示: {}", toolName);
+        }
+        return tool;
+    }
+
+    /**
+     * 解析工具执行参数
+     *
+     * @param toolExecutedMessage 工具执行结果消息
+     *
+     * @return 参数对象，参数缺失或非法时返回 null
+     */
+    private JSONObject parseArguments(ToolExecutedMessage toolExecutedMessage) {
+        String arguments = toolExecutedMessage.getArguments();
+        if (StrUtil.isBlank(arguments)) {
+            log.warn("工具执行结果缺少参数，已跳过展示，工具: {}", toolExecutedMessage.getName());
+            return null;
+        }
+        try {
+            return JSONUtil.parseObj(arguments);
+        } catch (Exception e) {
+            log.warn("工具参数不是合法 JSON，已跳过展示，工具: {}，参数: {}", toolExecutedMessage.getName(), arguments);
+            return null;
+        }
+    }
+
+    /**
+     * 统一包装工具输出，保证工具消息与 AI 文本之间始终有清晰的分隔
+     *
+     * @param content 工具生成的展示内容
+     *
+     * @return 包装后的内容，内容为空时返回空字符串
+     */
+    private String wrapToolOutput(String content) {
+        return StrUtil.isBlank(content) ? "" : String.format(TOOL_OUTPUT_TEMPLATE, content.strip());
     }
 }

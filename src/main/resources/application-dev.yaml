@@ -27,19 +27,6 @@ mybatis-flex:
 # LangChain4j配置
 langchain4j:
   open-ai:
-    # 非流式模型：由 starter 自动装配，供 HTML / 多文件模式的非流式生成使用。
-    # 注意：starter 只装配一个非流式模型，该路径不随应用所选 AI 模型类型变化；
-    # 随应用切换模型的是下面的 models（流式），流式才是对话生成的实际路径。
-    chat-model:
-      base-url: https://api.deepseek.com
-      model-name: deepseek-flash
-      api-key: ${DEEPSEEK_API_KEY}
-      log-requests: true
-      log-responses: true
-      timeout: 600s
-      max-tokens: 384000
-      response-format: json_object
-      strict-json-schema: true
     # 以 AI 模型类型枚举（AIModelTypeEnum.value）为 key，为每个模型各构建一个 StreamingChatModel
     models:
       deepseek-flash:
