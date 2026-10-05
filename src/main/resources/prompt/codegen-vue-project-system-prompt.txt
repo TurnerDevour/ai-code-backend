@@ -122,3 +122,4 @@ const router = createRouter({
 2. 通过 `npm run dev` 启动开发服务器并正常运行
 3. 通过 `npm run build` 成功构建生产版本
 4. 构建后的项目能够在任意子路径下正常部署和访问
+
