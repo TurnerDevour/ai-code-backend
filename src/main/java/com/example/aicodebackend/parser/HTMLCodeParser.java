@@ -24,9 +24,11 @@ public class HTMLCodeParser implements CodeParser<HTMLCodeResult> {
 
     /**
      * 兜底提取：整段内容里没有代码块时，从第一个 HTML 起始标记开始截取
+     * <p>
+     * {@code \s*} 而不是 {@code \s+}：模型丢空格时 doctype 会被粘成 {@code <!DOCTYPEhtml>}
      */
     private static final Pattern HTML_START_PATTERN =
-            Pattern.compile("<!doctype\\s+html|<html[\\s>]", Pattern.CASE_INSENSITIVE);
+            Pattern.compile("<!doctype\\s*html|<html[\\s>]", Pattern.CASE_INSENSITIVE);
 
     @Override
     public HTMLCodeResult parserCode(String codeContent) {
@@ -34,8 +36,16 @@ public class HTMLCodeParser implements CodeParser<HTMLCodeResult> {
         String content = codeContent == null ? "" : codeContent;
         String htmlCode = extractHtmlCode(content);
         if (htmlCode == null || htmlCode.isBlank()) {
-            // 没有代码块或代码块为空：回退到整段内容（尽量从 HTML 起始标记开始，丢掉解释文字）
-            htmlCode = fallbackToWholeContent(content);
+            // 结构化输出（LangChain4j 给 POJO 返回类型追加的 JSON 格式要求）：
+            // 模型可能直接回 {"htmlCode":"…","description":"…"}，而不是 ```html 代码块
+            StructuredCodeAnswer answer = StructuredCodeAnswer.parse(content);
+            htmlCode = answer.htmlCode();
+            if (answer.isEmpty() && content.indexOf('<') >= 0) {
+                // 没有代码块、也没有结构化字段，但内容里确实有标签：
+                // 回退到整段内容（尽量从 HTML 起始标记开始，丢掉解释文字）；
+                // 完全不回退的话，模型把 JSON 原文铺出来时又会被整段当成 HTML 落盘
+                htmlCode = fallbackToWholeContent(content);
+            }
         }
         if (htmlCode != null && !htmlCode.isBlank()) {
             String trimmed = htmlCode.trim();

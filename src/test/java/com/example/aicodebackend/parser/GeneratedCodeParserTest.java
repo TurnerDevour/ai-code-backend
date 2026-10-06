@@ -221,4 +221,90 @@ class GeneratedCodeParserTest {
         MultiFileCodeResult result = new MultiFileCodeParser().parserCode(markdown);
         assertNotNull(result.getCssCode(), "有损情况下也要尽量给出 CSS");
     }
+
+    /**
+     * JSON 转义文本不能被"标签修复"改坏
+     * <p>
+     * 实测事故：把结构化 JSON 原文当成 HTML 交给修复逻辑，{@code lang=\"zh-CN\"} 里的反斜杠与引号
+     * 被当成了"新属性名"，于是补出一个空格，变成 {@code lang=\ " zh-CN\ "}（产物目录里出现过 700 多处）。
+     */
+    @Test
+    void repairHtmlShouldNotMangleJsonEscapedQuotes() {
+        String escaped = "<html lang=\\\"zh-CN\\\">";
+        assertEquals(escaped, GeneratedCodeRepair.repairHtml(escaped), "JSON 转义文本不能被改动");
+        assertFalse(GeneratedCodeRepair.hasGluedTags(escaped), "转义引号不应被当成粘连特征");
+
+        // 粘连与转义混在一起时：只补标签名与属性之间的空格，反斜杠与引号原样保留
+        assertEquals("<html lang=\\\"zh-CN\\\">",
+                GeneratedCodeRepair.repairHtml("<htmllang=\\\"zh-CN\\\">"));
+    }
+
+    /**
+     * 真实样本：模型按 LangChain4j 的 JSON 格式要求回答（而不是 Markdown 代码块），
+     * 并且这一轮把代码里的行内空格全吞掉了——必须能按字段拆出三个文件，
+     * 而不是把 JSON 原文（连 "cssCode" 字段名一起）写进 index.html。
+     */
+    @Test
+    void multiFileParserShouldUnderstandStructuredJsonAnswer() {
+        String json = """
+                {
+                  "htmlCode": "<!DOCTYPEhtml>\\n<htmllang=\\"zh-CN\\">\\n<head>\\n  <linkrel=\\"stylesheet\\"href=\\"style.css\\">\\n</head>\\n<body>\\n  <divclass=\\"containerhero-inner\\">首页</div>\\n  <scriptsrc=\\"script.js\\"></script>\\n</body>\\n</html>",
+                  "cssCode": ":root{\\n  --shadow-sm:04px16pxrgba(15,27,45,.06);\\n}\\nbody{\\n  margin:0auto;\\n}",
+                  "jsCode": "(function(){\\n'usestrict';\\nvartimer=null;\\n})();",
+                  "description": "本次输出为演示网站的完整三文件实现。"
+                }
+                """;
+
+        MultiFileCodeResult result = new MultiFileCodeParser().parserCode(json);
+
+        String html = result.getHtmlCode();
+        assertNotNull(html, "JSON 取值里的 HTML 必须能解析出来");
+        assertTrue(html.startsWith("<!DOCTYPE html>"),
+                "doctype 的粘连要被修复: " + html.substring(0, Math.min(60, html.length())));
+        assertFalse(html.contains("cssCode"), "index.html 里不应出现 JSON 字段名: " + html);
+        assertFalse(html.contains("\\\""), "index.html 里不应残留 JSON 转义: " + html);
+        assertTrue(html.contains("<html lang=\"zh-CN\">"), "标签粘连要被修复且引号保持原样");
+        assertTrue(html.contains("<link rel=\"stylesheet\" href=\"style.css\">"));
+        assertTrue(html.contains("<script src=\"script.js\"></script>"));
+        assertEquals(":root{\n  --shadow-sm:04px16pxrgba(15,27,45,.06);\n}\nbody{\n  margin:0auto;\n}",
+                result.getCssCode());
+        assertEquals("(function(){\n'usestrict';\nvartimer=null;\n})();", result.getJsCode());
+    }
+
+    /** HTML 单文件模式同样要认结构化 JSON 答案 */
+    @Test
+    void htmlParserShouldUnderstandStructuredJsonAnswer() {
+        String json = "{\"htmlCode\":\"<!DOCTYPEhtml>\\n<htmllang=\\\"zh-CN\\\">\\n<body><h1>你好</h1></body>\\n</html>\","
+                + "\"description\":\"说明文字\"}";
+
+        HTMLCodeResult result = new HTMLCodeParser().parserCode(json);
+
+        String html = result.getHtmlCode();
+        assertNotNull(html);
+        assertTrue(html.startsWith("<!DOCTYPE html>"));
+        assertTrue(html.contains("<html lang=\"zh-CN\">"));
+        assertFalse(html.contains("description"), "解释性字段不应混进 HTML: " + html);
+    }
+
+    /**
+     * 结构化字段存在但内容不像一个页面时，不能把 JSON / 散文当成 index.html 落盘
+     */
+    @Test
+    void multiFileParserShouldNotFallbackToJsonTextAsHtml() {
+        String json = "{\"cssCode\":\"body{margin:0}\",\"description\":\"只给了样式\"}";
+
+        MultiFileCodeResult result = new MultiFileCodeParser().parserCode(json);
+
+        assertNull(result.getHtmlCode(), "没有 HTML 字段时不应把 JSON 原文当成页面");
+        assertNotNull(result.getCssCode(), "CSS 字段仍应被取出");
+    }
+
+    /** HTML 单文件模式同理：只有 description 字段时不能把 JSON 原文当成 HTML */
+    @Test
+    void htmlParserShouldNotFallbackToJsonTextAsHtml() {
+        HTMLCodeResult result = new HTMLCodeParser()
+                .parserCode("{\"description\":\"这次只给了说明，没有 HTML 代码\"}");
+
+        assertNull(result.getHtmlCode(), "没有 htmlCode 字段时不应把 JSON 原文当成页面");
+    }
 }

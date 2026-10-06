@@ -1,8 +1,6 @@
 package com.example.aicodebackend.core;
 
 import com.example.aicodebackend.ai.AiCodeGeneratorService;
-import com.example.aicodebackend.ai.model.HTMLCodeResult;
-import com.example.aicodebackend.ai.model.MultiFileCodeResult;
 import com.example.aicodebackend.config.AiCodeGeneratorServiceFactory;
 import com.example.aicodebackend.constant.AppConstant;
 import com.example.aicodebackend.model.enums.AIModelTypeEnum;
@@ -14,7 +12,6 @@ import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
 
 import java.io.File;
-import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -24,38 +21,125 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * 多文件模式「缺少 CSS / JavaScript 代码块」的服务端补齐测试
+ * 多文件模式「生成结果自检 + 一次自动修复」的测试
  * <p>
- * 实测场景：模型只输出 {@code ```html} 一个代码块（有时连 CSS 一起漏掉），
- * 产物目录里没有 style.css / script.js，预览表现为"没有样式、没有交互"。
- * 这里用桩服务模拟该输出，验证门面层会用一次非流式生成把缺失文件补齐并落盘。
- * <p>
- * 不启动 Spring 容器、不调用真实模型。
+ * 覆盖三类实测问题：
+ * <ol>
+ *     <li>模型只输出 {@code ```html} 一个代码块，style.css / script.js 整个缺失；</li>
+ *     <li>模型把代码里的行内空格全部吞掉（{@code <divclass="box">}、{@code padding:024px}、
+ *     {@code varheader=null;}、{@code functionsetYear(){}）——HTML 可以纯文本修复，
+ *     CSS / JavaScript 必须让模型按原内容补回空格；</li>
+ *     <li>模型返回的是结构化 JSON（{@code {"htmlCode":"…"}}）而不是代码块。</li>
+ * </ol>
+ * 不启动 Spring 容器、不调用真实模型：用桩服务记录"修复请求"，验证落盘内容与采纳规则。
  */
 class AiCodeGeneratorFacadeCompletionTest {
 
+    /** 丢空格的 HTML（标签名与属性粘连，正文与缩进正常） */
+    private static final String GLUED_HTML = """
+            <!DOCTYPEhtml>
+            <htmllang="zh-CN">
+            <head>
+              <metacharset="UTF-8">
+              <linkrel="stylesheet"href="style.css">
+            </head>
+            <body>
+              <divclass="containerhero-inner">首页</div>
+              <scriptsrc="script.js"></script>
+            </body>
+            </html>
+            """;
+
+    /** 上面那份 HTML 补回空格后的样子 */
+    private static final String CLEAN_HTML = """
+            <!DOCTYPE html>
+            <html lang="zh-CN">
+            <head>
+              <meta charset="UTF-8">
+              <link rel="stylesheet" href="style.css">
+            </head>
+            <body>
+              <div class="container hero-inner">首页</div>
+              <script src="script.js"></script>
+            </body>
+            </html>
+            """;
+
+    /** 丢空格的 CSS（选择器本身完好，便于验证"类名粘连"检查） */
+    private static final String GLUED_CSS = """
+            .container{
+            width:100%;
+            }
+            .hero-inner{
+            display:flex;
+            }
+            :root{
+              --shadow-sm:04px16pxrgba(15,27,45,.06);
+            }
+            body{
+              margin:0auto;
+            }
+            """;
+
+    /** 上面那份 CSS 补回空格后的样子（模型修复后的标准输出） */
+    private static final String CLEAN_CSS = """
+            .container {
+              width: 100%;
+            }
+            .hero-inner {
+              display: flex;
+            }
+            :root {
+              --shadow-sm: 0 4px 16px rgba(15, 27, 45, .06);
+            }
+            body {
+              margin: 0 auto;
+            }
+            """;
+
+    /** 丢空格的 JavaScript */
+    private static final String GLUED_JS = """
+            (function(){
+            'usestrict';
+            vartimer=null;
+            functionsetYear(){
+              if(el)el.textContent=newDate().getFullYear();
+              returnfalse;
+            }
+            })();
+            """;
+
+    /** 上面那份 JavaScript 补回空格后的样子 */
+    private static final String CLEAN_JS = """
+            (function () {
+              'use strict';
+              var timer = null;
+              function setYear() {
+                if (el) el.textContent = new Date().getFullYear();
+                return false;
+              }
+            })();
+            """;
+
+    /** 真实形态：结构化 JSON 答案 + 整轮丢空格（换行与缩进还在，行内空格全没了） */
+    private static final String GLUED_JSON_ANSWER = "{\n"
+            + "  \"htmlCode\": " + jsonString(GLUED_HTML) + ",\n"
+            + "  \"cssCode\": " + jsonString(GLUED_CSS) + ",\n"
+            + "  \"jsCode\": " + jsonString(GLUED_JS) + ",\n"
+            + "  \"description\": \"本次输出为演示网站的完整三文件实现。\"\n"
+            + "}";
+
     /**
-     * 记录调用并返回预置结果的桩服务
+     * 记录修复请求并返回预置结果的桩服务
      */
     private static class StubAiCodeGeneratorService implements AiCodeGeneratorService {
         private final String streamResponse;
-        private final MultiFileCodeResult completionResponse;
-        final List<String> completionPrompts = new ArrayList<>();
+        private final String repairResponse;
+        final List<String> repairPrompts = new ArrayList<>();
 
-        StubAiCodeGeneratorService(String streamResponse, MultiFileCodeResult completionResponse) {
+        StubAiCodeGeneratorService(String streamResponse, String repairResponse) {
             this.streamResponse = streamResponse;
-            this.completionResponse = completionResponse;
-        }
-
-        @Override
-        public HTMLCodeResult generateHTMLCode(String prompt) {
-            return null;
-        }
-
-        @Override
-        public MultiFileCodeResult generateMultipleFileCode(String prompt) {
-            completionPrompts.add(prompt);
-            return completionResponse;
+            this.repairResponse = repairResponse;
         }
 
         @Override
@@ -77,6 +161,17 @@ class AiCodeGeneratorFacadeCompletionTest {
         @Override
         public TokenStream generateVueProjectCodeStream(long appId, String prompt) {
             throw new UnsupportedOperationException("本测试不涉及 Vue 工程模式");
+        }
+
+        @Override
+        public Flux<String> repairGeneratedCodeStream(String prompt) {
+            repairPrompts.add(prompt);
+            List<String> chunks = new ArrayList<>();
+            int step = 37;
+            for (int i = 0; i < repairResponse.length(); i += step) {
+                chunks.add(repairResponse.substring(i, Math.min(repairResponse.length(), i + step)));
+            }
+            return Flux.fromIterable(chunks);
         }
     }
 
@@ -102,90 +197,174 @@ class AiCodeGeneratorFacadeCompletionTest {
     /** 模型只输出 HTML 代码块：应补齐 CSS 与 JS 并落盘 */
     @Test
     void shouldCompleteMissingCssAndJsAndSaveFiles(@TempDir Path tempRoot) throws Exception {
-        String modelOutput = """
-                这是为您生成的暗黑话题社区HTML代码。
-                ```html
-                <!DOCTYPEhtml>
-                <htmllang="zh-CN">
-                <head><linkrel="stylesheet"href="style.css"></head>
-                <body><scriptsrc="script.js"></script></body>
-                </html>
-                ```
-                页面包含导航、话题列表与发帖弹窗。
-                """;
-        MultiFileCodeResult completion = new MultiFileCodeResult();
-        completion.setCssCode("body { background: #111; }");
-        completion.setJsCode("console.log('ready')");
-        StubAiCodeGeneratorService stub = new StubAiCodeGeneratorService(modelOutput, completion);
+        String modelOutput = "这是为您生成的暗黑话题社区HTML代码。\n```html\n" + GLUED_HTML + "```\n页面包含导航与话题列表。\n";
+        String repairResponse = fenced("css", CLEAN_CSS) + fenced("javascript", CLEAN_JS);
+        StubAiCodeGeneratorService stub = new StubAiCodeGeneratorService(modelOutput, repairResponse);
 
         long appId = 990001L;
-        AiCodeGeneratorServiceFactory factory = new StubFactory(stub);
-
-        AiCodeGeneratorFacade facade = new AiCodeGeneratorFacade();
-        ReflectionTestUtils.setField(facade, "aiCodeGeneratorServiceFactory", factory);
-
-        String originalRoot = AppConstant.CODE_OUTPUT_ROOT_DIR;
+        File dir = productDir(appId);
         try {
-            // 产物目录固定在 AppConstant（常量，不能注入）：这里通过目录名做隔离，
-            // 只断言该 appId 对应目录里的文件内容，不影响其它用例
-            List<String> chunks = facade
-                    .generateAndSaveCodeStream("暗黑话题社区", CodeGenTypeEnum.MULTI_FILE, appId)
-                    .collectList()
-                    .block();
-            assertNotNull(chunks);
+            facadeWith(stub).generateAndSaveCodeStream("暗黑话题社区", CodeGenTypeEnum.MULTI_FILE, appId)
+                    .collectList().block();
 
-            assertEquals(1, stub.completionPrompts.size(), "缺少 CSS/JS 时应发起一次补全请求");
-            String instruction = stub.completionPrompts.get(0);
+            assertEquals(1, stub.repairPrompts.size(), "缺少 CSS/JS 时应发起一次补全请求");
+            String instruction = stub.repairPrompts.get(0);
             assertTrue(instruction.contains("style.css"), "补全指令要指明缺失文件: " + instruction);
             assertTrue(instruction.contains("script.js"));
             assertTrue(instruction.contains("暗黑话题社区"), "补全指令要带原始需求");
+            assertTrue(instruction.contains("参考"), "index.html 应作为参考给出，保证类名对得上");
 
-            File dir = new File(originalRoot + File.separator + "multi_file_" + appId);
-            assertTrue(dir.isDirectory(), "产物目录应已创建: " + dir.getAbsolutePath());
-            String html = Files.readString(new File(dir, "index.html").toPath(), StandardCharsets.UTF_8);
-            String css = Files.readString(new File(dir, "style.css").toPath(), StandardCharsets.UTF_8);
-            String js = Files.readString(new File(dir, "script.js").toPath(), StandardCharsets.UTF_8);
-
+            String html = read(dir, "index.html");
             assertTrue(html.contains("<link rel=\"stylesheet\" href=\"style.css\">"),
                     "粘连的 HTML 应被修复，否则 link 不生效: " + html.substring(0, Math.min(200, html.length())));
             assertTrue(html.contains("<script src=\"script.js\"></script>"), "script 引用应被修复");
-            assertEquals("body { background: #111; }", css, "style.css 应为补全内容");
-            assertEquals("console.log('ready')", js, "script.js 应为补全内容");
+            assertEquals(CLEAN_CSS.strip(), read(dir, "style.css").strip(), "style.css 应为补全内容");
+            assertEquals(CLEAN_JS.strip(), read(dir, "script.js").strip(), "script.js 应为补全内容");
         } finally {
-            deleteQuietly(new File(originalRoot + File.separator + "multi_file_" + appId));
+            deleteQuietly(dir);
         }
     }
 
-    /** 三个代码块齐全时不应触发补全 */
+    /** 三个代码块齐全且干净时不应触发修复 */
     @Test
-    void shouldNotCompleteWhenAllFilesPresent() throws Exception {
-        String modelOutput = """
-                ```html
-                <!DOCTYPE html>
-                <html lang="zh-CN"><head><link rel="stylesheet" href="style.css"></head>
-                <body><script src="script.js"></script></body></html>
-                ```
-                ```css
-                body { margin: 0; }
-                ```
-                ```javascript
-                console.log(1)
-                ```
-                """;
-        StubAiCodeGeneratorService stub = new StubAiCodeGeneratorService(modelOutput, new MultiFileCodeResult());
+    void shouldNotRepairWhenAllFilesPresentAndClean(@TempDir Path tempRoot) throws Exception {
+        String modelOutput = fenced("html", CLEAN_HTML) + fenced("css", CLEAN_CSS) + fenced("javascript", CLEAN_JS);
+        StubAiCodeGeneratorService stub = new StubAiCodeGeneratorService(modelOutput, "");
 
         long appId = 990002L;
-        AiCodeGeneratorServiceFactory factory = new StubFactory(stub);
-
-        AiCodeGeneratorFacade facade = new AiCodeGeneratorFacade();
-        ReflectionTestUtils.setField(facade, "aiCodeGeneratorServiceFactory", factory);
-
+        File dir = productDir(appId);
         try {
-            facade.generateAndSaveCodeStream("博客首页", CodeGenTypeEnum.MULTI_FILE, appId).collectList().block();
-            assertEquals(0, stub.completionPrompts.size(), "文件齐全时不应发起补全请求");
+            facadeWith(stub).generateAndSaveCodeStream("博客首页", CodeGenTypeEnum.MULTI_FILE, appId)
+                    .collectList().block();
+            assertEquals(0, stub.repairPrompts.size(), "文件齐全且没有丢空格时不应发起修复请求");
         } finally {
-            deleteQuietly(new File(AppConstant.CODE_OUTPUT_ROOT_DIR + File.separator + "multi_file_" + appId));
+            deleteQuietly(dir);
         }
+    }
+
+    /**
+     * 结构化 JSON 答案 + 整轮丢空格：既要按字段拆出三个文件，
+     * 也要把受损的 CSS / JavaScript 用一次修复调用换回干净版本
+     */
+    @Test
+    void shouldRepairWhitespaceDamagedFilesFromStructuredAnswer(@TempDir Path tempRoot) throws Exception {
+        String repairResponse = fenced("html", CLEAN_HTML) + fenced("css", CLEAN_CSS) + fenced("javascript", CLEAN_JS);
+        StubAiCodeGeneratorService stub = new StubAiCodeGeneratorService(GLUED_JSON_ANSWER, repairResponse);
+
+        long appId = 990003L;
+        File dir = productDir(appId);
+        try {
+            facadeWith(stub).generateAndSaveCodeStream("企业官网", CodeGenTypeEnum.MULTI_FILE, appId)
+                    .collectList().block();
+
+            assertEquals(1, stub.repairPrompts.size(), "检测到丢空格时应发起一次修复请求");
+            String instruction = stub.repairPrompts.get(0);
+            assertTrue(instruction.contains("丢了空格"), "修复指令要说明问题: " + instruction);
+            assertTrue(instruction.contains("--shadow-sm:04px16pxrgba"),
+                    "修复指令要带上受损内容（让模型按原内容补空格，而不是重写一遍）");
+            assertTrue(instruction.contains("class=\"containerhero-inner\""),
+                    "类名被粘起来的问题要写进指令，否则模型不知道要拆开: " + instruction);
+
+            String html = read(dir, "index.html");
+            assertTrue(html.startsWith("<!DOCTYPE html>"), "HTML 应从 JSON 取值里解码出来并修复: "
+                    + html.substring(0, Math.min(80, html.length())));
+            assertFalse(html.contains("cssCode"), "index.html 里不应出现 JSON 字段名");
+            assertFalse(html.contains("\\\""), "HTML 里不应残留 JSON 转义: " + html);
+            assertTrue(html.contains("class=\"container hero-inner\""),
+                    "粘连的类名要被拆回两个类名，否则 CSS 选择器匹配不上: " + html);
+            assertTrue(html.contains("<script src=\"script.js\"></script>"));
+            assertEquals(CLEAN_CSS.strip(), read(dir, "style.css").strip(), "style.css 应换成修复后的干净版本");
+            assertEquals(CLEAN_JS.strip(), read(dir, "script.js").strip(), "script.js 应换成修复后的干净版本");
+        } finally {
+            deleteQuietly(dir);
+        }
+    }
+
+    /** 修复结果依然粘连时：必须保留原内容（不能把结果改差），也不能抛异常 */
+    @Test
+    void shouldKeepOriginalWhenRepairIsNotBetter(@TempDir Path tempRoot) throws Exception {
+        String modelOutput = fenced("html", CLEAN_HTML) + fenced("css", GLUED_CSS) + fenced("javascript", GLUED_JS);
+        // 修复调用返回的还是粘连内容（修复本身也可能再次丢空格）
+        String repairResponse = fenced("css", GLUED_CSS) + fenced("javascript", GLUED_JS);
+        StubAiCodeGeneratorService stub = new StubAiCodeGeneratorService(modelOutput, repairResponse);
+
+        long appId = 990004L;
+        File dir = productDir(appId);
+        try {
+            facadeWith(stub).generateAndSaveCodeStream("登录页", CodeGenTypeEnum.MULTI_FILE, appId)
+                    .collectList().block();
+
+            assertEquals(1, stub.repairPrompts.size());
+            assertEquals(GLUED_CSS.strip(), read(dir, "style.css").strip(), "修复没有变好时必须保留原内容");
+            assertEquals(GLUED_JS.strip(), read(dir, "script.js").strip(), "修复没有变好时必须保留原内容");
+        } finally {
+            deleteQuietly(dir);
+        }
+    }
+
+    /** 修复回复无法解析（模型只回了一段解释）时：保留原内容，不抛异常 */
+    @Test
+    void shouldKeepOriginalWhenRepairResponseIsNotParseable(@TempDir Path tempRoot) throws Exception {
+        String modelOutput = fenced("html", CLEAN_HTML) + fenced("css", GLUED_CSS) + fenced("javascript", GLUED_JS);
+        StubAiCodeGeneratorService stub = new StubAiCodeGeneratorService(modelOutput, "抱歉，我无法完成这次修复。");
+
+        long appId = 990005L;
+        File dir = productDir(appId);
+        try {
+            assertNotNull(facadeWith(stub)
+                    .generateAndSaveCodeStream("登录页", CodeGenTypeEnum.MULTI_FILE, appId)
+                    .collectList().block());
+            assertEquals(1, stub.repairPrompts.size());
+            assertEquals(GLUED_CSS.strip(), read(dir, "style.css").strip());
+        } finally {
+            deleteQuietly(dir);
+        }
+    }
+
+    /** 修复候选明显缩水（模型只回了一小段）时：必须丢弃，保留原内容 */
+    @Test
+    void shouldRejectRepairCandidateThatIsMuchShorter(@TempDir Path tempRoot) throws Exception {
+        String modelOutput = fenced("html", CLEAN_HTML) + fenced("css", GLUED_CSS) + fenced("javascript", GLUED_JS);
+        String repairResponse = fenced("css", "body { margin: 0 auto; }");
+        StubAiCodeGeneratorService stub = new StubAiCodeGeneratorService(modelOutput, repairResponse);
+
+        long appId = 990006L;
+        File dir = productDir(appId);
+        try {
+            facadeWith(stub).generateAndSaveCodeStream("登录页", CodeGenTypeEnum.MULTI_FILE, appId)
+                    .collectList().block();
+
+            assertEquals(GLUED_CSS.strip(), read(dir, "style.css").strip(),
+                    "明显缩水的候选必须被丢弃（不能让模型用片段替换整份样式）");
+        } finally {
+            deleteQuietly(dir);
+        }
+    }
+
+    private static AiCodeGeneratorFacade facadeWith(AiCodeGeneratorService stub) {
+        AiCodeGeneratorFacade facade = new AiCodeGeneratorFacade();
+        ReflectionTestUtils.setField(facade, "aiCodeGeneratorServiceFactory", new StubFactory(stub));
+        return facade;
+    }
+
+    private static File productDir(long appId) {
+        return new File(AppConstant.CODE_OUTPUT_ROOT_DIR + File.separator + "multi_file_" + appId);
+    }
+
+    private static String read(File dir, String name) throws Exception {
+        return Files.readString(new File(dir, name).toPath(), StandardCharsets.UTF_8);
+    }
+
+    /** 包一个 Markdown 代码块 */
+    private static String fenced(String language, String content) {
+        return "```" + language + "\n" + content + "```\n";
+    }
+
+    /** 把文本转成 JSON 字符串字面量（测试里用真实形态的转义，而不是手写转义） */
+    private static String jsonString(String text) {
+        return '"' + text.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n") + '"';
     }
 
     private static void deleteQuietly(File file) {

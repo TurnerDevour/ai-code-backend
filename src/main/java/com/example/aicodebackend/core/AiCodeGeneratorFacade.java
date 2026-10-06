@@ -13,7 +13,9 @@ import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.model.enums.AIModelTypeEnum;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
+import com.example.aicodebackend.parser.CodeDamageDetector;
 import com.example.aicodebackend.parser.CodeParserExecutor;
+import com.example.aicodebackend.parser.GeneratedCodeRepair;
 import com.example.aicodebackend.saver.CodeFileSaverExecutor;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
@@ -24,6 +26,11 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.io.File;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.ToIntFunction;
 
 /**
  * AiCodeGeneratorFacade 是一个外观类，用于简化与 AI 代码生成器的交互。
@@ -33,47 +40,18 @@ import java.io.File;
 @Service
 public class AiCodeGeneratorFacade {
 
+    /** 单文件模式的文件名（修复指令与日志里用它） */
+    private static final String GENERATED_FILE_HTML = "index.html";
+
+    /**
+     * 采纳修复结果时允许的最小长度比例
+     * <p>
+     * 修复只应该"补空格"，长度基本不变；明显缩水说明模型返回的是片段或改写过的版本，必须丢弃。
+     */
+    private static final double MIN_REPAIR_LENGTH_RATIO = 0.9;
+
     @Resource
     private AiCodeGeneratorServiceFactory aiCodeGeneratorServiceFactory;
-
-    /**
-     * 根据给定的提示和代码生成类型生成代码，并将其保存到文件中（非流式输出）。
-     *
-     * @param prompt          用户提供的提示，用于指导代码生成。
-     * @param codeGenTypeEnum 代码生成类型枚举，指定生成 HTML 代码或多文件代码。
-     * @param appId           应用 id
-     * @param aiModelTypeEnum AI 模型类型枚举，为空时使用默认模型
-     *
-     * @return 生成的代码文件。
-     *
-     * @throws BusinessException 如果 codeGenTypeEnum 为 null，则抛出参数错误异常。
-     */
-    public File generateAndSaveCode(String prompt, CodeGenTypeEnum codeGenTypeEnum, Long appId, AIModelTypeEnum aiModelTypeEnum) {
-        if (codeGenTypeEnum == null) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR, "codeGenTypeEnum 不可以为空");
-        }
-
-        return switch (codeGenTypeEnum) {
-            case HTML -> {
-                AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum, aiModelTypeEnum);
-                HTMLCodeResult htmlCodeResult = aiCodeGeneratorService.generateHTMLCode(prompt);
-                yield CodeFileSaverExecutor.executeSaver(htmlCodeResult, CodeGenTypeEnum.HTML, appId);
-            }
-            case MULTI_FILE -> {
-                AiCodeGeneratorService aiCodeGeneratorService = aiCodeGeneratorServiceFactory.getAiCodeGeneratorService(appId, codeGenTypeEnum, aiModelTypeEnum);
-                MultiFileCodeResult multiFileResult = aiCodeGeneratorService.generateMultipleFileCode(prompt);
-                yield CodeFileSaverExecutor.executeSaver(multiFileResult, CodeGenTypeEnum.MULTI_FILE, appId);
-            }
-            default -> throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Unexpected value: " + codeGenTypeEnum);
-        };
-    }
-
-    /**
-     * 根据给定的提示和代码生成类型生成代码，并将其保存到文件中（非流式输出，使用默认模型）。
-     */
-    public File generateAndSaveCode(String prompt, CodeGenTypeEnum codeGenTypeEnum, Long appId) {
-        return generateAndSaveCode(prompt, codeGenTypeEnum, appId, AIModelTypeEnum.DEEPSEEK_FLASH);
-    }
 
     /**
      * 根据给定的提示和代码生成类型生成代码，并以流式方式返回生成的代码。
@@ -105,7 +83,7 @@ public class AiCodeGeneratorFacade {
             }
             case VUE_PROJECT -> {
                 TokenStream tokenStream = aiCodeGeneratorService.generateVueProjectCodeStream(appId, prompt);
-                yield processCodeTokenStream(tokenStream);
+                yield processCodeTokenStream(tokenStream, appId);
             }
         };
     }
@@ -128,6 +106,24 @@ public class AiCodeGeneratorFacade {
      * @return 处理后的代码流。
      */
     private Flux<String> processCodeTokenStream(TokenStream tokenStream) {
+        return processCodeTokenStream(tokenStream, null);
+    }
+
+    /**
+     * 处理 TokenStream（VUE_PROJECT 模式），并在记忆损坏时自愈
+     * <p>
+     * 自愈场景（实测）：模型流式发出工具调用后连接异常中断，记忆里留下"有 tool_calls、没有工具结果"的
+     * assistant 消息，之后每次请求都被接口拒绝：
+     * {@code An assistant message with 'tool_calls' must be followed by tool messages ...}。
+     * 记忆本身会在读取时被清洗，但已缓存的生成服务仍持有坏快照，因此这里同时把该应用的
+     * 生成服务缓存失效掉——用户再发一次消息即可成功，不必重启后端。
+     *
+     * @param tokenStream 生成的代码流
+     * @param appId       应用 id（为 null 时不做缓存失效）
+     *
+     * @return 处理后的代码流
+     */
+    private Flux<String> processCodeTokenStream(TokenStream tokenStream, Long appId) {
         return Flux.create(sink -> {
             tokenStream.onPartialResponse(partialResponse -> {
                 log.info("VUE_PROJECT 文本增量: {}", StrUtil.maxLength(partialResponse, 200));
@@ -152,9 +148,34 @@ public class AiCodeGeneratorFacade {
                 sink.complete();
             }).onError(throwable -> {
                 log.error("处理代码流时发生错误", throwable);
+                invalidateServiceCacheIfToolMessagesInvalid(throwable, appId);
                 sink.error(throwable);
             }).start();
         });
+    }
+
+    /**
+     * 判断异常是否为"工具消息不完整"这类记忆损坏，是的话失效该应用的生成服务缓存
+     * <p>
+     * 只有清掉缓存的实例，下一次请求才会重新加载（已被清洗的）对话记忆。
+     *
+     * @param throwable 生成异常
+     * @param appId     应用 id
+     */
+    private void invalidateServiceCacheIfToolMessagesInvalid(Throwable throwable, Long appId) {
+        if (appId == null || throwable == null) {
+            return;
+        }
+        Throwable current = throwable;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null && message.contains("tool_calls") && message.contains("tool messages")) {
+                log.warn("检测到工具消息不完整的记忆损坏，失效生成服务缓存以便按清洗后的记忆重建，appId: {}", appId);
+                aiCodeGeneratorServiceFactory.invalidateAiCodeGeneratorService(appId);
+                return;
+            }
+            current = current.getCause();
+        }
     }
 
     /**
@@ -163,7 +184,7 @@ public class AiCodeGeneratorFacade {
      * 实测背景：HTML / 多文件模式下，模型并不总是遵守系统提示词——多文件模式经常只输出
      * {@code index.html} 一个代码块（有时连 CSS 一起漏掉），此时产物目录里没有 style.css / script.js，
      * 预览自然"没有样式、没有交互"。这里在流结束、落盘之前做一次补全：
-     * 先把流内容累积下来，解析后发现缺少文件就用一次非流式生成把缺失部分补齐并一起落盘。
+     * 先把流内容累积下来，解析后发现缺少文件就用一次流式"修复"调用把缺失部分补齐并一起落盘。
      * <p>
      * 累积仍然内联在这条链上（写的是 StringBuilder，不需要客户端在线）；
      * 客户端断开时 Reactor 会取消这条链，{@code doOnComplete} 不再触发，与原有语义一致。
@@ -188,7 +209,7 @@ public class AiCodeGeneratorFacade {
                     try {
                         String completeCode = codeBuilder.toString();
                         Object parserResult = CodeParserExecutor.executorParser(completeCode, codeGenTypeEnum);
-                        parserResult = completeMissingFiles(parserResult, codeGenTypeEnum, aiCodeGeneratorService, prompt);
+                        parserResult = repairGeneratedFiles(parserResult, codeGenTypeEnum, aiCodeGeneratorService, prompt);
                         File saveDir = CodeFileSaverExecutor.executeSaver(parserResult, codeGenTypeEnum, appId);
                         log.info("{}代码已保存到文件: {}", codeGenTypeEnum, saveDir.getAbsolutePath());
                     } catch (Exception e) {
@@ -199,64 +220,352 @@ public class AiCodeGeneratorFacade {
     }
 
     /**
-     * 多文件模式的补全重试：模型漏输出 CSS / JavaScript 代码块时，用一次非流式调用补齐
+     * 生成结果自检 + 一次自动修复（补齐缺失文件、修复丢失的空格）
      * <p>
-     * 为什么必须补：{@code index.html} 里已经有 {@code <link href="style.css">} 与
-     * {@code <script src="script.js">}，文件缺失时页面就是"裸 HTML"，用户看到的就是
-     * "没有生成 CSS 和 JS"。让前端再让用户手动追问一轮，不如在服务端补一次。
+     * 为什么必须有这一步（均为实测现象）：
+     * <ol>
+     *     <li>模型偶尔只输出 {@code ```html} 一个代码块，style.css / script.js 整个缺失，
+     *     页面就是"裸 HTML"；</li>
+     *     <li>模型偶尔会把代码里的行内空格全部吞掉：{@code <divclass="box"id="a">}、{@code padding:024px}、
+     *     {@code varheader=null;}、{@code functionsetYear(){}。这种代码落盘后 link / script 不生效、
+     *     CSS 声明整体失效、JavaScript 直接语法错误——用户看到的就是"没有样式、没有交互"。
+     *     HTML 还能靠纯文本规则补回标签里的空格，CSS / JavaScript 无法安全还原，只能让模型重做一遍；</li>
+     *     <li>模型偶尔返回的是结构化 JSON（{@code {"htmlCode":"…"}}）而不是代码块（解析层已容错）。</li>
+     * </ol>
+     * 因此这里在流结束、落盘之前做一次自检：只有确实发现问题时才发起一次流式修复调用，
+     * 并且用"受损分值必须下降"的规则决定是否采纳修复结果——修不好就保留原内容，绝不把结果改差。
      * <p>
-     * 补全失败只记日志：宁可用已有内容落盘（用户可再追问），也不要让整轮生成失败。
+     * 修复失败只记日志：宁可用已有内容落盘（用户可再追问），也不要让整轮生成失败。
      *
      * @param parserResult           已解析的生成结果
      * @param codeGenTypeEnum        代码生成类型
-     * @param aiCodeGeneratorService 生成服务
+     * @param aiCodeGeneratorService 生成服务（复用同一个实例，保持对话记忆）
      * @param prompt                 用户本轮提示词
      *
-     * @return 补齐后的结果（无需补全时原样返回）
+     * @return 自检/修复后的结果（无需处理时原样返回）
      */
-    private Object completeMissingFiles(Object parserResult,
+    private Object repairGeneratedFiles(Object parserResult,
                                         CodeGenTypeEnum codeGenTypeEnum,
                                         AiCodeGeneratorService aiCodeGeneratorService,
                                         String prompt) {
-        if (codeGenTypeEnum != CodeGenTypeEnum.MULTI_FILE || !(parserResult instanceof MultiFileCodeResult multiFile)) {
-            return parserResult;
+        if (parserResult instanceof MultiFileCodeResult multiFileResult) {
+            // 先做纯语法的标签修复：只有标签粘连（类名没被粘）时页面本来就可用，不必多花一次调用
+            multiFileResult.setHtmlCode(normalizeHtml(multiFileResult.getHtmlCode()));
+            return repairMultiFileResult(multiFileResult, aiCodeGeneratorService, prompt);
         }
-        boolean missingCss = StrUtil.isBlank(multiFile.getCssCode());
-        boolean missingJs = StrUtil.isBlank(multiFile.getJsCode());
-        if (!missingCss && !missingJs) {
-            return parserResult;
-        }
-        log.warn("多文件模式本次输出缺少代码块（css={}, js={}），尝试补全", !missingCss, !missingJs);
-        StringBuilder instruction = new StringBuilder();
-        instruction.append("你上一次的回复不符合要求：");
-        if (missingCss) {
-            instruction.append("缺少 ```css 代码块（style.css）");
-        }
-        if (missingCss && missingJs) {
-            instruction.append("、");
-        }
-        if (missingJs) {
-            instruction.append("缺少 ```javascript 代码块（script.js）");
-        }
-        instruction.append("。\n原始需求：").append(StrUtil.nullToEmpty(prompt));
-        instruction.append("\n请严格按要求补齐：只输出缺失的代码块本身（```css ... ``` 与 ```javascript ... ```），")
-                .append("针对上面这个页面的完整实现，不要输出 index.html，不要有任何解释文字。");
-        try {
-            MultiFileCodeResult completion = aiCodeGeneratorService.generateMultipleFileCode(instruction.toString());
-            if (completion == null) {
-                return parserResult;
-            }
-            if (missingCss && StrUtil.isNotBlank(completion.getCssCode())) {
-                multiFile.setCssCode(completion.getCssCode().trim());
-            }
-            if (missingJs && StrUtil.isNotBlank(completion.getJsCode())) {
-                multiFile.setJsCode(completion.getJsCode().trim());
-            }
-            log.info("多文件补全完成：css={}, js={}",
-                    StrUtil.isNotBlank(multiFile.getCssCode()), StrUtil.isNotBlank(multiFile.getJsCode()));
-        } catch (Exception e) {
-            log.warn("多文件补全失败（按已有内容落盘，用户可再追问）：{}", e.getMessage());
+        if (codeGenTypeEnum == CodeGenTypeEnum.HTML && parserResult instanceof HTMLCodeResult htmlCodeResult) {
+            htmlCodeResult.setHtmlCode(normalizeHtml(htmlCodeResult.getHtmlCode()));
+            return repairHtmlResult(htmlCodeResult, aiCodeGeneratorService, prompt);
         }
         return parserResult;
+    }
+
+    /**
+     * 调用一次"修复"生成，并把流式增量拼成完整文本
+     * <p>
+     * 修复走的是流式方法（见 {@link AiCodeGeneratorService#repairGeneratedCodeStream}），
+     * 这里把增量流聚合成完整文本后再交给代码块解析器。
+     *
+     * @param aiCodeGeneratorService 生成服务
+     * @param instruction            修复指令
+     *
+     * @return 模型输出的完整文本
+     */
+    private String callRepairModel(AiCodeGeneratorService aiCodeGeneratorService, String instruction) {
+        List<String> chunks = aiCodeGeneratorService.repairGeneratedCodeStream(instruction).collectList().block();
+        return chunks == null ? "" : String.join("", chunks);
+    }
+
+    /**
+     * 多文件模式自检与修复：缺失的补、丢空格的修
+     *
+     * @param result                 解析结果
+     * @param aiCodeGeneratorService 生成服务
+     * @param prompt                 用户本轮提示词
+     *
+     * @return 处理后的结果
+     */
+    private MultiFileCodeResult repairMultiFileResult(MultiFileCodeResult result,
+                                                      AiCodeGeneratorService aiCodeGeneratorService,
+                                                      String prompt) {
+        String html = result.getHtmlCode();
+        String css = result.getCssCode();
+        String js = result.getJsCode();
+        CodeDamageDetector.Damage damage = CodeDamageDetector.detect(html, css, js);
+
+        Set<String> missing = new LinkedHashSet<>();
+        if (StrUtil.isBlank(html)) {
+            missing.add(GeneratedCodeRepair.FILE_HTML);
+        }
+        if (StrUtil.isBlank(css)) {
+            missing.add(GeneratedCodeRepair.FILE_CSS);
+        }
+        if (StrUtil.isBlank(js)) {
+            missing.add(GeneratedCodeRepair.FILE_JS);
+        }
+
+        Set<String> damaged = new LinkedHashSet<>();
+        if (damage.html()) {
+            damaged.add(GeneratedCodeRepair.FILE_HTML);
+        }
+        if (damage.css()) {
+            damaged.add(GeneratedCodeRepair.FILE_CSS);
+        }
+        if (damage.js()) {
+            damaged.add(GeneratedCodeRepair.FILE_JS);
+        }
+        // 本来就缺的文件只需要"补"，不需要"修"
+        damaged.removeAll(missing);
+
+        if (missing.isEmpty() && damaged.isEmpty()) {
+            return result;
+        }
+
+        log.warn("多文件生成结果自检：缺失文件={}，丢空格受损文件={}（html 损伤分值 {} / css {} / js {}），尝试自动修复",
+                missing, damaged, damage.htmlScore(), damage.cssScore(), damage.jsScore());
+
+        String reply;
+        try {
+            reply = callRepairModel(aiCodeGeneratorService,
+                    buildMultiFileRepairInstruction(prompt, result, missing, damaged));
+        } catch (Exception e) {
+            log.warn("自动修复调用失败（按已有内容落盘，用户可再追问）：{}", e.getMessage());
+            return result;
+        }
+        Map<String, String> repaired = GeneratedCodeRepair.extractFiles(reply);
+        if (repaired.isEmpty()) {
+            log.warn("自动修复没有解析出任何文件（回复长度 {}），按已有内容落盘", StrUtil.length(reply));
+            return result;
+        }
+
+        Set<String> wanted = new LinkedHashSet<>(missing);
+        wanted.addAll(damaged);
+        // 先落 CSS / JavaScript，再用"修复后的 CSS"当字典判断 HTML 里是否还有类名粘连
+        if (wanted.contains(GeneratedCodeRepair.FILE_CSS)) {
+            result.setCssCode(accept(css, repaired.get(GeneratedCodeRepair.FILE_CSS),
+                    damage.cssScore(), CodeDamageDetector::scoreCss));
+        }
+        if (wanted.contains(GeneratedCodeRepair.FILE_JS)) {
+            result.setJsCode(accept(js, repaired.get(GeneratedCodeRepair.FILE_JS),
+                    damage.jsScore(), CodeDamageDetector::scoreJs));
+        }
+        if (wanted.contains(GeneratedCodeRepair.FILE_HTML)) {
+            String cssDictionary = result.getCssCode();
+            result.setHtmlCode(normalizeHtml(accept(html, htmlCandidate(repaired), damage.htmlScore(),
+                    candidate -> CodeDamageDetector.scoreHtml(candidate, cssDictionary))));
+        }
+        result.setHtmlCode(normalizeHtml(result.getHtmlCode()));
+
+        CodeDamageDetector.Damage after = CodeDamageDetector.detect(
+                result.getHtmlCode(), result.getCssCode(), result.getJsCode());
+        if (after.any()) {
+            log.warn("自动修复后仍检测到空格丢失（html={}, css={}, js={}），已按修复结果落盘；如页面仍异常，可让用户再追问一次",
+                    after.html(), after.css(), after.js());
+        } else {
+            log.info("自动修复完成：缺失={}，受损={}，落盘内容已通过自检", missing, damaged);
+        }
+        return result;
+    }
+
+    /**
+     * HTML 模式自检与修复（CSS / JavaScript 内联在 {@code <style>} / {@code <script>} 里，一并交给模型补空格）
+     *
+     * @param result                 解析结果
+     * @param aiCodeGeneratorService 生成服务
+     * @param prompt                 用户本轮提示词
+     *
+     * @return 处理后的结果
+     */
+    private HTMLCodeResult repairHtmlResult(HTMLCodeResult result,
+                                            AiCodeGeneratorService aiCodeGeneratorService,
+                                            String prompt) {
+        String html = result.getHtmlCode();
+        int score = CodeDamageDetector.scoreHtml(html, CodeDamageDetector.extractInlineStyles(html));
+        boolean missing = StrUtil.isBlank(html);
+        if (!missing && score == 0) {
+            return result;
+        }
+        log.warn("HTML 生成结果自检：{}（损伤分值 {}），尝试自动修复", missing ? "没有解析出 HTML" : "检测到空格丢失", score);
+
+        StringBuilder instruction = new StringBuilder();
+        instruction.append("你上一次的输出有问题，请修复后重新输出 index.html。\n\n原始需求：\n")
+                .append(StrUtil.nullToEmpty(prompt))
+                .append("\n\n问题：\nindex.html：标签名与属性之间、属性与属性之间丢了空格")
+                .append("（例如 <divclass=\"box\"id=\"a\">、<metacharset=\"UTF-8\">），")
+                .append("class 取值里的多个类名也被粘成了一个（例如 class=\"containerhero-inner\"），")
+                .append("内联在 <style> / <script> 里的 CSS / JavaScript 同样可能丢了空格，请一并补回。\n\n");
+        appendFileSection(instruction, GENERATED_FILE_HTML, html,
+                missing ? "需要新建" : "需要修复");
+        instruction.append("请只输出 index.html 一个 Markdown 代码块；除补回丢失的空格外，不要改动任何内容。");
+
+        try {
+            Map<String, String> repaired = GeneratedCodeRepair.extractFiles(
+                    callRepairModel(aiCodeGeneratorService, instruction.toString()));
+            result.setHtmlCode(normalizeHtml(accept(html, htmlCandidate(repaired), score,
+                    candidate -> CodeDamageDetector.scoreHtml(
+                            candidate, CodeDamageDetector.extractInlineStyles(candidate)))));
+        } catch (Exception e) {
+            log.warn("自动修复调用失败（按已有内容落盘，用户可再追问）：{}", e.getMessage());
+            return result;
+        }
+        if (CodeDamageDetector.scoreHtml(result.getHtmlCode(),
+                CodeDamageDetector.extractInlineStyles(result.getHtmlCode())) > 0) {
+            log.warn("自动修复后 index.html 仍检测到空格丢失，已按修复结果落盘；如页面仍异常，可让用户再追问一次");
+        }
+        return result;
+    }
+
+    /**
+     * 构造多文件模式的修复指令
+     * <p>
+     * 指令里会带上待修复文件的现有内容：让模型"补空格"而不是"重写一遍"，可以最大限度保住原有设计；
+     * 补齐缺失文件时，index.html 会作为「参考」一起给出，保证类名 / ID 对得上。
+     *
+     * @param prompt  用户本轮提示词
+     * @param result  解析结果
+     * @param missing 缺失的文件集合
+     * @param damaged 丢空格受损的文件集合
+     *
+     * @return 修复指令
+     */
+    private String buildMultiFileRepairInstruction(String prompt,
+                                                   MultiFileCodeResult result,
+                                                   Set<String> missing,
+                                                   Set<String> damaged) {
+        StringBuilder instruction = new StringBuilder();
+        instruction.append("你上一次的输出有问题，请修复后重新输出下面这些文件。\n\n原始需求：\n")
+                .append(StrUtil.nullToEmpty(prompt)).append("\n\n问题清单：\n");
+        int order = 1;
+        if (missing.contains(GeneratedCodeRepair.FILE_HTML)) {
+            instruction.append(order++).append(") index.html：本次输出里没有这个文件，需要按原始需求补一份完整页面。\n");
+        }
+        if (damaged.contains(GeneratedCodeRepair.FILE_HTML)) {
+            instruction.append(order++).append(") index.html：标签名与属性之间、属性与属性之间丢了空格")
+                    .append("（例如 <divclass=\"box\"id=\"a\">），class 取值里的多个类名也被粘成了一个")
+                    .append("（例如 class=\"containerhero-inner\"，应为 class=\"container hero-inner\"），需要补回。\n");
+        }
+        if (missing.contains(GeneratedCodeRepair.FILE_CSS)) {
+            instruction.append(order++).append(") style.css：本次输出里没有这个文件，需要补一份完整样式，类名必须与 index.html 完全一致。\n");
+        }
+        if (damaged.contains(GeneratedCodeRepair.FILE_CSS)) {
+            instruction.append(order++).append(") style.css：属性值与单位、值与值之间丢了空格")
+                    .append("（例如 padding:024px、transform:translateY(-2px)scale(1)），需要补回。\n");
+        }
+        if (missing.contains(GeneratedCodeRepair.FILE_JS)) {
+            instruction.append(order++).append(") script.js：本次输出里没有这个文件，需要补一份完整交互脚本，选择器必须与 index.html 完全一致。\n");
+        }
+        if (damaged.contains(GeneratedCodeRepair.FILE_JS)) {
+            instruction.append(order++).append(") script.js：关键字与标识符、标识符与运算符之间丢了空格")
+                    .append("（例如 'usestrict';、varheader=null;、functionsetYear(){），需要补回。\n");
+        }
+        instruction.append("\n下面是相关文件的内容。标注为「需要修复」的文件只补回丢失的空格，")
+                .append("逻辑、结构、类名、ID、文案一律不要改；标注为「参考」的文件内容是正确的，只用于对齐类名与结构。\n\n");
+        appendFileSection(instruction, GENERATED_FILE_HTML, result.getHtmlCode(),
+                sectionStatus(GeneratedCodeRepair.FILE_HTML, missing, damaged));
+        appendFileSection(instruction, "style.css", result.getCssCode(),
+                sectionStatus(GeneratedCodeRepair.FILE_CSS, missing, damaged));
+        appendFileSection(instruction, "script.js", result.getJsCode(),
+                sectionStatus(GeneratedCodeRepair.FILE_JS, missing, damaged));
+        instruction.append("\n请只输出上面「需要修复」或「需要新建」的文件，按系统要求的 Markdown 代码块格式。");
+        return instruction.toString();
+    }
+
+    /**
+     * 文件在修复指令里的标注
+     */
+    private static String sectionStatus(String file, Set<String> missing, Set<String> damaged) {
+        if (missing.contains(file)) {
+            return "需要新建";
+        }
+        return damaged.contains(file) ? "需要修复" : "参考";
+    }
+
+    /**
+     * 往修复指令里追加一个文件的内容
+     *
+     * @param instruction 指令
+     * @param fileName    文件名
+     * @param content     文件内容（可为空）
+     * @param status      标注（需要修复 / 需要新建 / 参考）
+     */
+    private static void appendFileSection(StringBuilder instruction, String fileName, String content, String status) {
+        instruction.append("【").append(fileName).append("｜").append(status).append("】\n");
+        if (StrUtil.isBlank(content)) {
+            instruction.append("（本次输出中没有这个文件的内容，请按原始需求与 index.html 的结构新写一份完整实现）\n\n");
+            return;
+        }
+        instruction.append("```").append(languageOf(fileName)).append('\n')
+                .append(content.strip()).append("\n```\n\n");
+    }
+
+    /**
+     * 文件名 -> Markdown 代码块语言标记
+     */
+    private static String languageOf(String fileName) {
+        if (GENERATED_FILE_HTML.equals(fileName)) {
+            return "html";
+        }
+        return fileName.endsWith(".css") ? "css" : "javascript";
+    }
+
+    /**
+     * 取修复回复里的 index.html：不像完整页面的一律丢弃（避免把半截内容当成网页落盘）
+     *
+     * @param repaired 修复回复解析出的文件映射
+     *
+     * @return index.html 内容，无效时返回 null
+     */
+    private static String htmlCandidate(Map<String, String> repaired) {
+        String candidate = repaired.get(GeneratedCodeRepair.FILE_HTML);
+        if (candidate == null) {
+            return null;
+        }
+        if (!GeneratedCodeRepair.looksLikeHtmlDocument(candidate)) {
+            log.warn("自动修复返回的 index.html 不像完整页面，已丢弃该候选");
+            return null;
+        }
+        return candidate;
+    }
+
+    /**
+     * 决定是否采纳修复结果
+     * <p>
+     * 采纳条件：原值缺失时任何非空候选都可以；否则要求受损分值<strong>严格下降</strong>，
+     * 并且长度不能明显缩水（防止模型用一小段片段"修复"整份文件）。
+     *
+     * @param original      原内容
+     * @param candidate     修复候选
+     * @param originalScore 原内容的受损分值
+     * @param scorer        受损分值计算函数
+     *
+     * @return 采纳后的内容
+     */
+    private static String accept(String original, String candidate, int originalScore, ToIntFunction<String> scorer) {
+        if (StrUtil.isBlank(candidate)) {
+            return original;
+        }
+        String trimmed = candidate.strip();
+        if (StrUtil.isBlank(original)) {
+            return trimmed;
+        }
+        if (trimmed.length() < original.strip().length() * MIN_REPAIR_LENGTH_RATIO) {
+            log.warn("自动修复候选明显比原内容短（{} -> {}），已丢弃", original.strip().length(), trimmed.length());
+            return original;
+        }
+        return scorer.applyAsInt(trimmed) < originalScore ? trimmed : original;
+    }
+
+    /**
+     * HTML 兜底修复：采纳/保留的内容里若仍有粘连标签，用纯语法规则再补一层
+     *
+     * @param html HTML 内容
+     *
+     * @return 修复后的内容
+     */
+    private static String normalizeHtml(String html) {
+        if (StrUtil.isBlank(html) || !GeneratedCodeRepair.hasGluedTags(html)) {
+            return html;
+        }
+        return GeneratedCodeRepair.repairHtml(html);
     }
 }

@@ -76,6 +76,12 @@ public class JedisChatMemoryStore implements ChatMemoryStore {
 
     /**
      * 读取某个会话的全部消息
+     * <p>
+     * 读取时做一次工具消息配对清洗：模型在流式输出中发出工具调用后如果异常中断
+     * （例如 {@code AI回复失败: null}），这条 assistant 消息就会"有 tool_calls、没有 tool 结果"地留在
+     * Redis 里，之后每次请求都会被 OpenAI 兼容接口拒绝
+     * （{@code An assistant message with 'tool_calls' must be followed by tool messages ...}），
+     * 该应用的对话会永久失败。清洗掉未完成的那一轮工具上下文即可恢复可用。
      *
      * @param memoryId 记忆 id（本项目中为 appId）
      *
@@ -89,7 +95,13 @@ public class JedisChatMemoryStore implements ChatMemoryStore {
             if (json == null || json.isBlank()) {
                 return new ArrayList<>();
             }
-            return ChatMessageDeserializer.messagesFromJson(json);
+            List<ChatMessage> messages = ChatMessageDeserializer.messagesFromJson(json);
+            List<ChatMessage> sanitized = ChatMemorySanitizer.sanitizeToolMessages(messages);
+            if (sanitized.size() != messages.size()) {
+                // 把清洗结果写回：否则每次加载都要重新清洗一遍，而且脏数据会一直躺在 Redis 里
+                updateMessages(memoryId, sanitized);
+            }
+            return sanitized;
         } catch (JedisException e) {
             log.error("读取对话记忆失败，key: {}", key, e);
             return new ArrayList<>();

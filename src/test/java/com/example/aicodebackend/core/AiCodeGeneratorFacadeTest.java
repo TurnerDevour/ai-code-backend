@@ -1,7 +1,5 @@
 package com.example.aicodebackend.core;
 
-import com.example.aicodebackend.ai.AiCodeGeneratorService;
-import com.example.aicodebackend.ai.model.HTMLCodeResult;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import jakarta.annotation.Resource;
 import org.junit.jupiter.api.Assertions;
@@ -9,7 +7,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import reactor.core.publisher.Flux;
 
-import java.io.File;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -19,12 +16,6 @@ class AiCodeGeneratorFacadeTest {
 
     @Resource
     private AiCodeGeneratorFacade aiCodeGeneratorFacade;
-
-    @Test
-    void generateAndSaveCode() {
-        File generated = aiCodeGeneratorFacade.generateAndSaveCode("生成一个博客网站", CodeGenTypeEnum.MULTI_FILE, 1L);
-        assertNotNull(generated);
-    }
 
     @Test
     void generateAndSaveCodeStream() {

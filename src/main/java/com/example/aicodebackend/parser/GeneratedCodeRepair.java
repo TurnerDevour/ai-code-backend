@@ -55,7 +55,102 @@ public final class GeneratedCodeRepair {
             "param", "del", "ins", "q", "cite", "dfn", "kbd", "samp", "var", "sub", "sup", "ruby", "rt", "rp",
             "wbr", "bdi", "bdo", "data", "address", "center", "font", "big", "strike", "tt", "marquee");
 
+    /**
+     * 三个文件的键名（解析结果、修复指令、日志统一用它，避免各处硬编码字符串）
+     */
+    public static final String FILE_HTML = "html";
+    public static final String FILE_CSS = "css";
+    public static final String FILE_JS = "js";
+
+    /**
+     * 代码块语言别名：HTML
+     */
+    public static final String[] HTML_BLOCK_ALIASES = {"html", "htm", "xhtml"};
+
+    /**
+     * 代码块语言别名：CSS（模型偶尔写 scss / less）
+     */
+    public static final String[] CSS_BLOCK_ALIASES = {"css", "scss", "sass", "less"};
+
+    /**
+     * 代码块语言别名：JavaScript（模型偶尔写 ts / mjs）
+     */
+    public static final String[] JS_BLOCK_ALIASES = {"js", "javascript", "mjs", "cjs", "ts", "typescript"};
+
     private GeneratedCodeRepair() {
+    }
+
+    /**
+     * HTML 起始标记
+     * <p>
+     * {@code \s*} 而不是 {@code \s+}：模型丢空格时 doctype 会被粘成 {@code <!DOCTYPEhtml>}
+     */
+    private static final Pattern HTML_START_PATTERN =
+            Pattern.compile("<!doctype\\s*html|<html[\\s>]", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * 判断文本是否像一个完整的 HTML 页面
+     *
+     * @param text 文本
+     *
+     * @return true 表示包含 {@code <!DOCTYPE html>} 或 {@code <html …>}
+     */
+    public static boolean looksLikeHtmlDocument(String text) {
+        return StrUtil.isNotBlank(text) && HTML_START_PATTERN.matcher(text).find();
+    }
+
+    /**
+     * 从模型输出里取三个文件的内容
+     * <p>
+     * 两种形态都支持，代码块优先（那是系统提示词要求的格式）：
+     * <ol>
+     *     <li>Markdown 代码块：{@code ```html … ```} / {@code ```css … ```} / {@code ```javascript … ```}；</li>
+     *     <li>结构化输出：{@code {"htmlCode":"…","cssCode":"…","jsCode":"…"}}（LangChain4j 对 POJO 返回类型的要求）。</li>
+     * </ol>
+     *
+     * @param content 模型输出的原始文本
+     *
+     * @return 键为 {@code html} / {@code css} / {@code js} 的有序映射；缺失的文件不会出现在映射里
+     */
+    public static Map<String, String> extractFiles(String content) {
+        Map<String, String> files = new LinkedHashMap<>();
+        if (StrUtil.isBlank(content)) {
+            return files;
+        }
+        Map<String, String> blocks = extractCodeBlocks(content);
+        StructuredCodeAnswer answer = StructuredCodeAnswer.parse(content);
+        putIfNotBlank(files, FILE_HTML,
+                firstNonBlank(blocks, HTML_BLOCK_ALIASES), answer.htmlCode());
+        putIfNotBlank(files, FILE_CSS,
+                firstNonBlank(blocks, CSS_BLOCK_ALIASES), answer.cssCode());
+        putIfNotBlank(files, FILE_JS,
+                firstNonBlank(blocks, JS_BLOCK_ALIASES), answer.jsCode());
+        return files;
+    }
+
+    /**
+     * 按别名顺序取第一个非空代码块
+     *
+     * @param blocks  代码块映射
+     * @param aliases 语言别名
+     *
+     * @return 代码内容，未找到返回 null
+     */
+    public static String firstNonBlank(Map<String, String> blocks, String[] aliases) {
+        for (String alias : aliases) {
+            String block = blocks.get(alias);
+            if (block != null && !block.isBlank()) {
+                return block;
+            }
+        }
+        return null;
+    }
+
+    private static void putIfNotBlank(Map<String, String> files, String key, String fromBlocks, String fromJson) {
+        String value = StrUtil.isNotBlank(fromBlocks) ? fromBlocks : fromJson;
+        if (StrUtil.isNotBlank(value)) {
+            files.put(key, value);
+        }
     }
 
     /**
@@ -93,17 +188,31 @@ public final class GeneratedCodeRepair {
      * @return true 表示存在粘连
      */
     public static boolean hasGluedTags(String html) {
+        return countGluedTags(html) > 0;
+    }
+
+    /**
+     * 统计存在"标签名/属性粘连"的标签数量
+     * <p>
+     * 供 {@link CodeDamageDetector} 打分与门面层日志使用：数量比布尔值更能说明损坏范围。
+     *
+     * @param html HTML 文本
+     *
+     * @return 粘连标签数量（0 表示没有粘连）
+     */
+    public static int countGluedTags(String html) {
         if (StrUtil.isBlank(html)) {
-            return false;
+            return 0;
         }
+        int glued = 0;
         Matcher matcher = TAG_PATTERN.matcher(html);
         while (matcher.find()) {
             String tag = matcher.group();
             if (!repairTag(tag).equals(tag)) {
-                return true;
+                glued++;
             }
         }
-        return false;
+        return glued;
     }
 
     /**
@@ -216,8 +325,17 @@ public final class GeneratedCodeRepair {
                     index = valueEnd;
                 } else {
                     // 不带引号的值：搬运到空白 / > 之前
+                    // 反斜杠转义的引号（JSON 文本里的 \" ）属于取值内容，必须一起搬运：
+                    // 否则引号会被当成"新属性名的开头"，反而在反斜杠后面补一个空格
+                    // （实测把 &lt;html lang=\"zh-CN\"&gt; 改成了 lang=\ " zh-CN\ "）
                     while (index < tag.length()) {
                         char valueChar = tag.charAt(index);
+                        if (valueChar == '\\' && index + 1 < tag.length()
+                                && (tag.charAt(index + 1) == '"' || tag.charAt(index + 1) == '\'')) {
+                            builder.append(valueChar).append(tag.charAt(index + 1));
+                            index += 2;
+                            continue;
+                        }
                         if (Character.isWhitespace(valueChar) || valueChar == '>' || valueChar == '<'
                                 || valueChar == '"' || valueChar == '\'') {
                             break;

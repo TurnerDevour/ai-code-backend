@@ -12,7 +12,6 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
-import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.tool.ToolArgumentsErrorHandler;
@@ -114,6 +113,30 @@ public class AiCodeGeneratorServiceFactory {
         AIModelTypeEnum modelType = aiModelType == null ? AIModelTypeEnum.DEEPSEEK_FLASH : aiModelType;
         String cacheKey = buildCacheKey(appId, codeGenType, modelType);
         return serviceCache.get(cacheKey, key -> createAiCodeGeneratorService(appId, codeGenType, modelType));
+    }
+
+    /**
+     * 失效某个应用缓存的生成服务
+     * <p>
+     * 使用场景：一次生成因为"assistant 消息带 tool_calls 却没有工具结果"这类记忆损坏而失败时，
+     * 已经缓存的 {@link AiCodeGeneratorService} 内部持有损坏的记忆快照，不清掉它，
+     * 该应用之后每次请求都会命中同一个坏实例（实测会一直失败到进程重启）。
+     * 清掉缓存后，下一次请求会重新创建实例并从对话记忆重新加载（此时记忆已在读取时被清洗）。
+     *
+     * @param appId 应用 id
+     *
+     * @return 被失效的缓存项数量
+     */
+    public synchronized int invalidateAiCodeGeneratorService(long appId) {
+        String prefix = appId + "_";
+        java.util.List<String> keys = serviceCache.asMap().keySet().stream()
+                .filter(key -> key.startsWith(prefix))
+                .toList();
+        serviceCache.invalidateAll(keys);
+        if (!keys.isEmpty()) {
+            log.warn("已失效应用的生成服务缓存，appId: {}, 条目数: {}, keys: {}", appId, keys.size(), keys);
+        }
+        return keys.size();
     }
 
     /**

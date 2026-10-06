@@ -27,14 +27,23 @@ import java.util.regex.Pattern;
 @Slf4j
 public class MultiFileCodeParser implements CodeParser<MultiFileCodeResult> {
 
-    /** HTML 起始标记：兜底截取用 */
+    /**
+     * HTML 起始标记：兜底截取与"像不像一个页面"的校验用
+     * <p>
+     * {@code \s*} 而不是 {@code \s+}：模型丢空格时 doctype 会被粘成 {@code <!DOCTYPEhtml>}，
+     * 用 {@code \s+} 会直接判定"没有 HTML"，于是整次输出被丢掉。
+     */
     private static final Pattern HTML_START_PATTERN =
-            Pattern.compile("<!doctype\\s+html|<html[\\s>]", Pattern.CASE_INSENSITIVE);
+            Pattern.compile("<!doctype\\s*html|<html[\\s>]", Pattern.CASE_INSENSITIVE);
 
-    /** CSS 语言别名 */
-    private static final String[] CSS_ALIASES = {"css", "scss", "sass", "less"};
-    /** JavaScript 语言别名 */
-    private static final String[] JS_ALIASES = {"js", "javascript", "mjs", "cjs", "ts", "typescript"};
+    /**
+     * CSS 语言别名
+     */
+    private static final String[] CSS_ALIASES = GeneratedCodeRepair.CSS_BLOCK_ALIASES;
+    /**
+     * JavaScript 语言别名
+     */
+    private static final String[] JS_ALIASES = GeneratedCodeRepair.JS_BLOCK_ALIASES;
 
     @Override
     public MultiFileCodeResult parserCode(String codeContent) {
@@ -45,30 +54,56 @@ public class MultiFileCodeParser implements CodeParser<MultiFileCodeResult> {
             log.debug("多文件解析：识别到的代码块语言={}", blocks.keySet());
         }
 
-        String htmlCode = firstNonBlank(blocks, new String[]{"html", "htm", "xhtml"});
-        if (htmlCode == null) {
-            // HTML 兜底：从整段内容里定位起始标记（模型经常把 HTML 直接铺在正文里）
+        String htmlCode = GeneratedCodeRepair.firstNonBlank(blocks, GeneratedCodeRepair.HTML_BLOCK_ALIASES);
+        String cssCode = GeneratedCodeRepair.firstNonBlank(blocks, CSS_ALIASES);
+        String jsCode = GeneratedCodeRepair.firstNonBlank(blocks, JS_ALIASES);
+
+        // 结构化输出（LangChain4j 给 POJO 返回类型追加的 JSON 格式要求）：
+        // 模型经常直接回 {"htmlCode":"…","cssCode":"…","jsCode":"…"}，而不是提示词要求的 Markdown 代码块。
+        // 不认这种形态的话，下面会走"整段内容当 HTML"的兜底，把 JSON 原文写进 index.html。
+        StructuredCodeAnswer answer = StructuredCodeAnswer.parse(content);
+        if (!answer.isEmpty()) {
+            if (log.isDebugEnabled()) {
+                log.debug("多文件解析：识别到结构化输出字段 html={}, css={}, js={}",
+                        answer.htmlCode() != null, answer.cssCode() != null, answer.jsCode() != null);
+            }
+            if (htmlCode == null) {
+                htmlCode = answer.htmlCode();
+            }
+            if (cssCode == null) {
+                cssCode = answer.cssCode();
+            }
+            if (jsCode == null) {
+                jsCode = answer.jsCode();
+            }
+        }
+
+        // HTML 兜底：既没有代码块也没有结构化字段时，从整段内容里定位起始标记
+        // （结构化字段缺失说明模型这次确实没给 HTML，此时再截取只会把 JSON / 散文写进 index.html）
+        if (htmlCode == null && answer.isEmpty()) {
             htmlCode = fallbackHtml(content);
         }
-        String cssCode = firstNonBlank(blocks, CSS_ALIASES);
-        String jsCode = firstNonBlank(blocks, JS_ALIASES);
 
         // 嵌套情形：模型把 ```css / ```javascript 写在 HTML 代码块内部（示例代码、嵌套围栏），
         // 顶层扫描会把后续内容整段吞进 HTML 块。这里在 HTML 块内部再扫一次，捞回 CSS / JS。
         if (htmlCode != null && (cssCode == null || jsCode == null)) {
             Map<String, String> nested = GeneratedCodeRepair.extractCodeBlocks(htmlCode);
             if (cssCode == null) {
-                cssCode = firstNonBlank(nested, CSS_ALIASES);
+                cssCode = GeneratedCodeRepair.firstNonBlank(nested, CSS_ALIASES);
             }
             if (jsCode == null) {
-                jsCode = firstNonBlank(nested, JS_ALIASES);
+                jsCode = GeneratedCodeRepair.firstNonBlank(nested, JS_ALIASES);
             }
         }
 
         if (htmlCode == null && cssCode == null && jsCode == null) {
-            log.warn("多文件解析：没有识别到任何代码块，将整段内容作为 HTML 兜底");
-            if (!content.isBlank()) {
+            // 整段内容本身就长得像 HTML 时才兜底（例如模型把 HTML 直接铺在正文里），
+            // 否则宁可让上层报"HTML 代码不能为空"，也不要把 JSON / 解释文字当成网页落盘
+            if (GeneratedCodeRepair.looksLikeHtmlDocument(content)) {
+                log.warn("多文件解析：没有识别到任何代码块，将整段内容作为 HTML 兜底");
                 htmlCode = content.trim();
+            } else {
+                log.warn("多文件解析：没有识别到任何代码块，也没有 HTML 特征，本次不产出 index.html");
             }
         }
 
@@ -79,7 +114,7 @@ public class MultiFileCodeParser implements CodeParser<MultiFileCodeResult> {
                 log.warn("多文件解析：检测到 HTML 标签与属性粘连（模型输出空格丢失），已自动修复");
                 trimmed = GeneratedCodeRepair.repairHtml(trimmed);
             }
-            if (trimmed.contains("<html") || trimmed.contains("<!DOCTYPE") || trimmed.contains("<!doctype")) {
+            if (GeneratedCodeRepair.looksLikeHtmlDocument(trimmed)) {
                 result.setHtmlCode(trimmed);
             } else {
                 // 只有零散片段时不当作 index.html，避免把一个不完整的页面写进产物目录
@@ -97,24 +132,6 @@ public class MultiFileCodeParser implements CodeParser<MultiFileCodeResult> {
                     result.getCssCode() != null, result.getJsCode() != null);
         }
         return result;
-    }
-
-    /**
-     * 按别名顺序取第一个非空代码块
-     *
-     * @param blocks  代码块映射
-     * @param aliases 语言别名
-     *
-     * @return 代码内容，未找到返回 null
-     */
-    private static String firstNonBlank(Map<String, String> blocks, String[] aliases) {
-        for (String alias : aliases) {
-            String block = blocks.get(alias);
-            if (block != null && !block.isBlank()) {
-                return block;
-            }
-        }
-        return null;
     }
 
     /**
