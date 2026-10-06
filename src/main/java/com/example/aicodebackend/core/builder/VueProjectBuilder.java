@@ -41,6 +41,20 @@ public class VueProjectBuilder {
     }
 
     /**
+     * 同步执行构建并返回结果
+     * <p>
+     * 调用方（生成任务注册表）需要把"构建成功/失败"写回任务状态供前端轮询，
+     * 因此它自己负责把这次调用放到独立线程上，这里只做同步构建。
+     *
+     * @param projectPath 项目目录
+     *
+     * @return 构建是否成功
+     */
+    public boolean buildProjectAsyncAndWait(String projectPath) {
+        return buildProject(projectPath);
+    }
+
+    /**
      * 构建 Vue 项目（就地构建，产物落在项目目录下的 dist）
      */
     public boolean buildProject(String projectPath) {

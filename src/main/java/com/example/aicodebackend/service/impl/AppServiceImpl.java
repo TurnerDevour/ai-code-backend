@@ -499,6 +499,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     vo.setContentLength(task.contentLength());
                     vo.setLastSeq(task.getFrameSeq());
                     vo.setErrorMessage(task.getErrorMessage());
+                    // Vue 工程的 dist 是生成结束后异步构建的：把构建状态一并下发，
+                    // 前端据此在构建完成后再刷新预览（否则会看到空白页）
+                    vo.setBuildStatus(task.getBuildStatus().getValue());
+                    vo.setBuildError(StrUtil.nullToEmpty(task.getBuildError()));
                     vo.setMessage(switch (task.getStatus()) {
                         case RUNNING -> "正在生成中（服务端独立运行，可随时断开或续订）";
                         case FINISHED -> "生成已完成，完整内容已写入对话历史";

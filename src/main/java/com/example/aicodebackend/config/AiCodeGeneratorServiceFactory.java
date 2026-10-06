@@ -117,15 +117,18 @@ public class AiCodeGeneratorServiceFactory {
     }
 
     /**
-     * 根据 appId 创建服务
+     * 实际创建服务实例（缓存未命中时调用）
+     * <p>
+     * 单独抽成 protected 方法是为了让单测可以子类化替换成桩服务：验证"缺少 CSS/JS 时的补全"
+     * 不应该真的去调用模型。
      *
-     * @param appId           应用的唯一标识
-     * @param codeGenTypeEnum 代码生成类型枚举
-     * @param aiModelTypeEnum AI 模型类型枚举
+     * @param appId           应用 id
+     * @param codeGenTypeEnum 代码生成类型
+     * @param aiModelTypeEnum AI 模型类型
      *
-     * @return AiCodeGeneratorService 实例
+     * @return AI 代码生成服务
      */
-    private AiCodeGeneratorService createAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenTypeEnum, AIModelTypeEnum aiModelTypeEnum) {
+    protected AiCodeGeneratorService createAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenTypeEnum, AIModelTypeEnum aiModelTypeEnum) {
         log.info("Creating new AiCodeGeneratorService instance for appId: {}, codeGenType: {}, aiModelType: {}",
                 appId, codeGenTypeEnum.getValue(), aiModelTypeEnum.getValue());
         // 根据 appId 创建一个新的 MessageWindowChatMemory 实例

@@ -53,6 +53,11 @@ public class StaticResourceController {
             Resource resource = new FileSystemResource(file);
             return ResponseEntity.ok()
                     .header("Content-Type", getContentTypeWithCharset(filePath))
+                    // 生成产物的文件名是固定的（index.html / style.css / script.js），
+                    // 如果浏览器沿用强缓存，用户重新生成后预览里还是旧内容、必须手动强刷。
+                    // 这里要求每次校验（no-cache 允许缓存但必须回源验证），
+                    // 配合 ETag/Last-Modified 既能拿到新产物，又不会丢掉 304 复用。
+                    .header("Cache-Control", "no-cache")
                     .body(resource);
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();

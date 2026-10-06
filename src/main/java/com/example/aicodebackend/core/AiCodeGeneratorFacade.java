@@ -97,11 +97,11 @@ public class AiCodeGeneratorFacade {
         return switch (codeGenTypeEnum) {
             case HTML -> {
                 Flux<String> codeStream = aiCodeGeneratorService.generateHTMLCodeStream(prompt);
-                yield processCodeStream(codeStream, CodeGenTypeEnum.HTML, appId);
+                yield processCodeStream(codeStream, CodeGenTypeEnum.HTML, appId, aiCodeGeneratorService, prompt);
             }
             case MULTI_FILE -> {
                 Flux<String> codeStream = aiCodeGeneratorService.generateMultipleFileCodeStream(prompt);
-                yield processCodeStream(codeStream, CodeGenTypeEnum.MULTI_FILE, appId);
+                yield processCodeStream(codeStream, CodeGenTypeEnum.MULTI_FILE, appId, aiCodeGeneratorService, prompt);
             }
             case VUE_PROJECT -> {
                 TokenStream tokenStream = aiCodeGeneratorService.generateVueProjectCodeStream(appId, prompt);
@@ -159,13 +159,28 @@ public class AiCodeGeneratorFacade {
 
     /**
      * 处理代码流，将生成的代码保存到文件中。
+     * <p>
+     * 实测背景：HTML / 多文件模式下，模型并不总是遵守系统提示词——多文件模式经常只输出
+     * {@code index.html} 一个代码块（有时连 CSS 一起漏掉），此时产物目录里没有 style.css / script.js，
+     * 预览自然"没有样式、没有交互"。这里在流结束、落盘之前做一次补全：
+     * 先把流内容累积下来，解析后发现缺少文件就用一次非流式生成把缺失部分补齐并一起落盘。
+     * <p>
+     * 累积仍然内联在这条链上（写的是 StringBuilder，不需要客户端在线）；
+     * 客户端断开时 Reactor 会取消这条链，{@code doOnComplete} 不再触发，与原有语义一致。
      *
-     * @param codeStream      生成的代码流。
-     * @param codeGenTypeEnum 代码生成类型枚举，指定生成 HTML 代码或多文件代码。
+     * @param codeStream          生成的代码流
+     * @param codeGenTypeEnum     代码生成类型枚举，指定生成 HTML 代码或多文件代码
+     * @param appId               应用 id
+     * @param aiCodeGeneratorService 生成服务（补全时复用同一个实例，保持对话记忆）
+     * @param prompt              用户本轮提示词（补全时需要知道原始需求）
      *
      * @return 处理后的代码流。
      */
-    private Flux<String> processCodeStream(Flux<String> codeStream, CodeGenTypeEnum codeGenTypeEnum, Long appId) {
+    private Flux<String> processCodeStream(Flux<String> codeStream,
+                                          CodeGenTypeEnum codeGenTypeEnum,
+                                          Long appId,
+                                          AiCodeGeneratorService aiCodeGeneratorService,
+                                          String prompt) {
         StringBuilder codeBuilder = new StringBuilder();
         return codeStream
                 .doOnNext(codeBuilder::append)
@@ -173,6 +188,7 @@ public class AiCodeGeneratorFacade {
                     try {
                         String completeCode = codeBuilder.toString();
                         Object parserResult = CodeParserExecutor.executorParser(completeCode, codeGenTypeEnum);
+                        parserResult = completeMissingFiles(parserResult, codeGenTypeEnum, aiCodeGeneratorService, prompt);
                         File saveDir = CodeFileSaverExecutor.executeSaver(parserResult, codeGenTypeEnum, appId);
                         log.info("{}代码已保存到文件: {}", codeGenTypeEnum, saveDir.getAbsolutePath());
                     } catch (Exception e) {
@@ -180,5 +196,67 @@ public class AiCodeGeneratorFacade {
                         throw new BusinessException(ErrorCode.SYSTEM_ERROR, "保存代码到文件失败");
                     }
                 });
+    }
+
+    /**
+     * 多文件模式的补全重试：模型漏输出 CSS / JavaScript 代码块时，用一次非流式调用补齐
+     * <p>
+     * 为什么必须补：{@code index.html} 里已经有 {@code <link href="style.css">} 与
+     * {@code <script src="script.js">}，文件缺失时页面就是"裸 HTML"，用户看到的就是
+     * "没有生成 CSS 和 JS"。让前端再让用户手动追问一轮，不如在服务端补一次。
+     * <p>
+     * 补全失败只记日志：宁可用已有内容落盘（用户可再追问），也不要让整轮生成失败。
+     *
+     * @param parserResult           已解析的生成结果
+     * @param codeGenTypeEnum        代码生成类型
+     * @param aiCodeGeneratorService 生成服务
+     * @param prompt                 用户本轮提示词
+     *
+     * @return 补齐后的结果（无需补全时原样返回）
+     */
+    private Object completeMissingFiles(Object parserResult,
+                                        CodeGenTypeEnum codeGenTypeEnum,
+                                        AiCodeGeneratorService aiCodeGeneratorService,
+                                        String prompt) {
+        if (codeGenTypeEnum != CodeGenTypeEnum.MULTI_FILE || !(parserResult instanceof MultiFileCodeResult multiFile)) {
+            return parserResult;
+        }
+        boolean missingCss = StrUtil.isBlank(multiFile.getCssCode());
+        boolean missingJs = StrUtil.isBlank(multiFile.getJsCode());
+        if (!missingCss && !missingJs) {
+            return parserResult;
+        }
+        log.warn("多文件模式本次输出缺少代码块（css={}, js={}），尝试补全", !missingCss, !missingJs);
+        StringBuilder instruction = new StringBuilder();
+        instruction.append("你上一次的回复不符合要求：");
+        if (missingCss) {
+            instruction.append("缺少 ```css 代码块（style.css）");
+        }
+        if (missingCss && missingJs) {
+            instruction.append("、");
+        }
+        if (missingJs) {
+            instruction.append("缺少 ```javascript 代码块（script.js）");
+        }
+        instruction.append("。\n原始需求：").append(StrUtil.nullToEmpty(prompt));
+        instruction.append("\n请严格按要求补齐：只输出缺失的代码块本身（```css ... ``` 与 ```javascript ... ```），")
+                .append("针对上面这个页面的完整实现，不要输出 index.html，不要有任何解释文字。");
+        try {
+            MultiFileCodeResult completion = aiCodeGeneratorService.generateMultipleFileCode(instruction.toString());
+            if (completion == null) {
+                return parserResult;
+            }
+            if (missingCss && StrUtil.isNotBlank(completion.getCssCode())) {
+                multiFile.setCssCode(completion.getCssCode().trim());
+            }
+            if (missingJs && StrUtil.isNotBlank(completion.getJsCode())) {
+                multiFile.setJsCode(completion.getJsCode().trim());
+            }
+            log.info("多文件补全完成：css={}, js={}",
+                    StrUtil.isNotBlank(multiFile.getCssCode()), StrUtil.isNotBlank(multiFile.getJsCode()));
+        } catch (Exception e) {
+            log.warn("多文件补全失败（按已有内容落盘，用户可再追问）：{}", e.getMessage());
+        }
+        return parserResult;
     }
 }

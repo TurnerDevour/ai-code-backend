@@ -48,6 +48,19 @@ public class GenerationStatusVO implements Serializable {
      */
     private Boolean running;
 
+    /**
+     * 生成结束后的构建状态（Vue 工程）：idle / running / finished / failed
+     * <p>
+     * 前端在收到生成结束（done）后轮询该字段：构建完成（finished / failed）后才会去刷新预览，
+     * 避免在 dist 还没产出时打开预览看到空白页。
+     */
+    private String buildStatus;
+
+    /**
+     * 构建失败原因（buildStatus=failed）
+     */
+    private String buildError;
+
     @Serial
     private static final long serialVersionUID = 1L;
 
@@ -66,6 +79,8 @@ public class GenerationStatusVO implements Serializable {
         vo.setMessage("当前没有进行中的生成任务");
         vo.setContentLength(0);
         vo.setLastSeq(0L);
+        vo.setBuildStatus("idle");
+        vo.setBuildError("");
         return vo;
     }
 }

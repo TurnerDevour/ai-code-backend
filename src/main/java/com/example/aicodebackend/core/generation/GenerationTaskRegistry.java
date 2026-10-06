@@ -87,6 +87,19 @@ public class GenerationTaskRegistry {
         private volatile String errorMessage = "";
         private volatile long startedAt = System.currentTimeMillis();
         private volatile long finishedAt = 0;
+        /**
+         * 生成结束后的构建状态（Vue 工程用）
+         * <p>
+         * 前端在收到 done 之后需要知道 dist 是否已经产出：生成结束到 dist 落地之间有
+         * 一次 npm install + vite build（十几秒到一分钟），这段时间里刷新预览只会看到 404 或旧产物，
+         * 所以这里把构建状态暴露给前端轮询，构建完成后再刷新预览。
+         */
+        private volatile BuildStatus buildStatus = BuildStatus.IDLE;
+        /** 构建失败原因（buildStatus=FAILED 时） */
+        private volatile String buildError = "";
+        /** 构建开始/结束时间（便于排查构建耗时） */
+        private volatile long buildStartedAt = 0;
+        private volatile long buildFinishedAt = 0;
         /** 上游订阅句柄：任务结束时统一释放 */
         private volatile Disposable upstream;
 
@@ -121,6 +134,30 @@ public class GenerationTaskRegistry {
         private final String value;
 
         GenerationStatus(String value) {
+            this.value = value;
+        }
+
+        public String getValue() {
+            return value;
+        }
+    }
+
+    /**
+     * 生成结束后的构建状态（仅 Vue 工程会进入 RUNNING/FINISHED/FAILED，其它类型恒为 IDLE）
+     */
+    public enum BuildStatus {
+        /** 尚未触发构建（非 Vue 工程，或还没走到收尾） */
+        IDLE("idle"),
+        /** 正在构建（npm install + vite build） */
+        RUNNING("running"),
+        /** 构建完成，dist 已就绪 */
+        FINISHED("finished"),
+        /** 构建失败（dist 可能是旧的或不存在） */
+        FAILED("failed");
+
+        private final String value;
+
+        BuildStatus(String value) {
             this.value = value;
         }
 
@@ -383,15 +420,40 @@ public class GenerationTaskRegistry {
 
     /**
      * 触发 Vue 工程异步构建（在独立线程上，避免阻塞收尾）
+     * <p>
+     * 构建状态写回任务对象：前端在生成结束后轮询 {@code /app/chat/gen/status}，
+     * 等 buildStatus 变成 finished/failed 再刷新预览，避免刷新到"还没有 dist"的空白页。
      */
     private void triggerBuild(Long appId) {
         String projectPath = AppConstant.CODE_OUTPUT_ROOT_DIR + "/vue_project_" + appId;
+        // 找不到任务（理论上不会发生）时也要构图，避免空指针
+        GenerationTask task = tasks.get(appId);
+        if (task != null) {
+            task.setBuildStatus(BuildStatus.RUNNING);
+            task.setBuildError("");
+            task.setBuildStartedAt(System.currentTimeMillis());
+            task.setBuildFinishedAt(0);
+        }
         Schedulers.boundedElastic().schedule(() -> {
+            boolean success = false;
+            String error = "";
             try {
-                vueProjectBuilder.buildProjectAsync(projectPath);
+                success = vueProjectBuilder.buildProjectAsyncAndWait(projectPath);
+                if (!success) {
+                    error = "Vue 项目构建失败，请查看后端日志";
+                }
             } catch (Exception e) {
+                error = e.getMessage() == null ? "Vue 项目构建异常" : e.getMessage();
                 log.error("触发 Vue 项目构建失败：appId={}", appId, e);
             }
+            if (task == null) {
+                return;
+            }
+            task.setBuildStatus(success ? BuildStatus.FINISHED : BuildStatus.FAILED);
+            task.setBuildError(success ? "" : error);
+            task.setBuildFinishedAt(System.currentTimeMillis());
+            log.info("Vue 项目构建结束：appId={}, 成功={}, 耗时(ms)={}",
+                    appId, success, task.getBuildFinishedAt() - task.getBuildStartedAt());
         });
     }
 
