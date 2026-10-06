@@ -2,6 +2,7 @@ package com.example.aicodebackend.controller;
 
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
+import com.example.aicodebackend.core.generation.GenerationTaskRegistry;
 import com.example.aicodebackend.model.entity.User;
 import com.example.aicodebackend.service.AppService;
 import com.example.aicodebackend.service.UserService;
@@ -141,7 +142,12 @@ class AppControllerSseStreamErrorTest {
                         if (exception != null) {
                             throw exception;
                         }
-                        return codeStream;
+                        if (codeStream == null) {
+                            return null;
+                        }
+                        // 接口返回的是"带序号的帧"，桩对象里按到达顺序补上序号
+                        java.util.concurrent.atomic.AtomicLong seq = new java.util.concurrent.atomic.AtomicLong();
+                        return codeStream.map(chunk -> new GenerationTaskRegistry.SequencedFrame(seq.incrementAndGet(), chunk));
                     }
                     return switch (method.getName()) {
                         case "toString" -> "StubAppService";

@@ -6,12 +6,15 @@ import cn.hutool.core.exceptions.ExceptionUtil;
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.example.aicodebackend.ai.model.message.ErrorMessage;
+import com.example.aicodebackend.ai.model.message.StreamMessageTypeEnum;
 import com.example.aicodebackend.constant.AppConstant;
 import com.example.aicodebackend.core.AiCodeGeneratorFacade;
 import com.example.aicodebackend.core.builder.DeployQueueManager;
 import com.example.aicodebackend.core.builder.VueProjectBuilder;
+import com.example.aicodebackend.core.generation.GenerationTaskRegistry;
 import com.example.aicodebackend.core.handler.StreamHandlerExecutor;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
@@ -26,6 +29,7 @@ import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import com.example.aicodebackend.model.enums.DeployStatusEnum;
 import com.example.aicodebackend.model.vo.AppVO;
 import com.example.aicodebackend.model.vo.DeployStatusVO;
+import com.example.aicodebackend.model.vo.GenerationStatusVO;
 import com.example.aicodebackend.model.vo.UserVO;
 import com.example.aicodebackend.service.AppService;
 import com.example.aicodebackend.service.ChatHistoryService;
@@ -81,6 +85,9 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
     @Resource
     private DeployQueueManager deployQueueManager;
+
+    @Resource
+    private GenerationTaskRegistry generationTaskRegistry;
 
     /**
      * 应用 id -> 对话生成信号量（容量 1）
@@ -261,7 +268,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
      * @return 生成的代码流
      */
     @Override
-    public Flux<String> chatToGenCode(Long appId, String prompt, User loginUser) {
+    public Flux<GenerationTaskRegistry.SequencedFrame> chatToGenCode(Long appId, String prompt, User loginUser) {
         // 1. 校验参数
         ThrowUtils.throwIf(appId == null, ErrorCode.PARAMS_ERROR, "应用ID为空");
         ThrowUtils.throwIf(StrUtil.isBlank(prompt), ErrorCode.PARAMS_ERROR, "提示为空");
@@ -305,6 +312,16 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             // 6. 保存用户消息（用户发送消息时立即持久化）
             chatHistoryService.addChatMessage(appId, loginUser.getId(), prompt, ChatMessageTypeEnum.USER);
 
+            // 6.1 链条分流：
+            //     VUE_PROJECT（多轮工具调用、耗时最长）走"生成任务注册表"——生成在服务端独立运行，
+            //     客户端断开只解绑自己的订阅，历史里拿到的是完整内容（方案 C）；
+            //     其它类型沿用原来的流处理（本次未改）。
+            if (codeGenTypeEnum == CodeGenTypeEnum.VUE_PROJECT) {
+                Flux<GenerationTaskRegistry.SequencedFrame> registryStream =
+                        chatToGenCodeWithRegistry(app, appId, prompt, loginUser, codeGenTypeEnum, aiModelTypeEnum);
+                return registryStream.doFinally(signalType -> chatSemaphore.release());
+            }
+
             // 7. 调用 AiCodeGeneratorFacade 生成代码并返回流式输出，同时持久化 AI 消息和错误信息
             Flux<String> codeStream = aiCodeGeneratorFacade.generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId, aiModelTypeEnum);
 
@@ -313,6 +330,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
             // 9. 无论正常结束、出错还是被取消，都要释放信号量，并保证客户端感知到流已结束。
             //    这里只做"释放 + 兜底下发一个结束空帧"，不改变正常消息类型（HTML/MULTI_FILE 仍是纯文本增量）。
+            //    HTML / MULTI_FILE 没有"续订"概念，序号按到达顺序递增（客户端不使用它）。
+            java.util.concurrent.atomic.AtomicLong htmlSeq = new java.util.concurrent.atomic.AtomicLong();
             return handledStream
                     .doFinally(signalType -> chatSemaphore.release())
                     .concatWith(Flux.just(""))
@@ -323,11 +342,171 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                         }
                         log.error("生成代码流式响应失败，appId: {}", appId, error);
                         return Flux.just(JSONUtil.toJsonStr(new ErrorMessage("代码生成失败，请稍后重试")));
-                    });
+                    })
+                    .map(chunk -> new GenerationTaskRegistry.SequencedFrame(htmlSeq.incrementAndGet(), chunk));
         } catch (RuntimeException e) {
             chatSemaphore.release();
             throw e;
         }
+    }
+
+    /**
+     * VUE_PROJECT：走"生成任务注册表"的新链路（方案 C）
+     * <p>
+     * 生成在服务端独立运行（累积 + 结束后落库完整内容），返回给客户端的只是"订阅这份输出"；
+     * 客户端断开只解绑自己的订阅，不会取消生成，也不会让历史里只有半截内容。
+     *
+     * @param app              应用实体
+     * @param appId            应用ID
+     * @param prompt           提示词
+     * @param loginUser        登录用户
+     * @param codeGenTypeEnum  代码生成类型（调用方已保证是 VUE_PROJECT）
+     * @param aiModelTypeEnum  AI 模型类型
+     *
+     * @return 下发给客户端的流（每帧一个 JSON 消息）
+     */
+    private Flux<GenerationTaskRegistry.SequencedFrame> chatToGenCodeWithRegistry(App app,
+                                                   Long appId,
+                                                   String prompt,
+                                                   User loginUser,
+                                                   CodeGenTypeEnum codeGenTypeEnum,
+                                                   AIModelTypeEnum aiModelTypeEnum) {
+        String subId = "sub-" + appId + "-" + System.nanoTime();
+        GenerationTaskRegistry.GenerationTask task = generationTaskRegistry.submitOrGet(appId, loginUser,
+                () -> buildRegistryUpstream(app, appId, prompt, codeGenTypeEnum, aiModelTypeEnum));
+        return generationTaskRegistry.subscribe(task, subId, 0L);
+    }
+
+    /**
+     * 构建注册表用的上游流：把生成结果拆成"下发帧"与"累积文本"
+     * <p>
+     * 下发帧与原来的 SSE 格式保持一致（复用 StreamMessageTypeEnum 的 JSON 结构），
+     * 累积文本用于落库：文本增量取原文，工具执行结果带上完整入参，保证「查看对话」能看到完整历史。
+     *
+     * @param app             应用实体
+     * @param appId           应用ID
+     * @param prompt          提示词
+     * @param codeGenTypeEnum 代码生成类型
+     * @param aiModelTypeEnum AI 模型类型
+     *
+     * @return 上游输出流
+     */
+    private Flux<GenerationTaskRegistry.GenerationEmit> buildRegistryUpstream(App app,
+                                                                             Long appId,
+                                                                             String prompt,
+                                                                             CodeGenTypeEnum codeGenTypeEnum,
+                                                                             AIModelTypeEnum aiModelTypeEnum) {
+        // 复用既有的流式生成链路（内部已按 VUE_PROJECT 处理思考内容、工具请求与工具执行结果），
+        // 这里只负责把它拆成"下发帧 + 累积文本"
+        return aiCodeGeneratorFacade.generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId, aiModelTypeEnum)
+                .map(this::toRegistryEmit)
+                .filter(emit -> StrUtil.isNotEmpty(emit.sseChunk()) || StrUtil.isNotEmpty(emit.historyChunk()));
+    }
+
+    /**
+     * 把一条流式消息转换成"下发帧 + 累积文本"
+     *
+     * @param messageJson 流式消息的 JSON
+     *
+     * @return 产出
+     */
+    private GenerationTaskRegistry.GenerationEmit toRegistryEmit(String messageJson) {
+        if (StrUtil.isBlank(messageJson)) {
+            return new GenerationTaskRegistry.GenerationEmit("", "");
+        }
+        return new GenerationTaskRegistry.GenerationEmit(messageJson, extractHistoryContent(messageJson));
+    }
+
+    /**
+     * 从流式消息里取出需要累积进对话历史的内容
+     *
+     * @param messageJson 流式消息的 JSON
+     *
+     * @return 需要累积的文本，不需要累积时返回空串
+     */
+    private String extractHistoryContent(String messageJson) {
+        try {
+            JSONObject json = JSONUtil.parseObj(messageJson);
+            String type = json.getStr("type");
+            if (StreamMessageTypeEnum.AI_RESPONSE.getValue().equals(type)) {
+                return StrUtil.nullToEmpty(json.getStr("data"));
+            }
+            if (StreamMessageTypeEnum.TOOL_EXECUTED.getValue().equals(type)) {
+                // 工具执行结果：记录"工具名 + 完整入参"，保证历史里能看到写了哪些文件与内容
+                String name = StrUtil.nullToEmpty(json.getStr("name"));
+                String arguments = StrUtil.nullToEmpty(json.getStr("arguments"));
+                return "\n[工具调用] " + name + " " + arguments + "\n";
+            }
+        } catch (Exception e) {
+            log.warn("解析流式消息失败（不影响下发）：{}", e.getMessage());
+        }
+        return "";
+    }
+
+    /**
+     * 续订当前应用的生成流（方案 C）
+     *
+     * @param appId     应用ID
+     * @param fromSeq   已收到的最后一帧序号
+     * @param loginUser 登录用户
+     *
+     * @return 续订的流
+     */
+    @Override
+    public Flux<GenerationTaskRegistry.SequencedFrame> resumeGenCode(Long appId, long fromSeq, String subId, User loginUser) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+        ThrowUtils.throwIf(loginUser == null, ErrorCode.PARAMS_ERROR, "用户未登录");
+        App app = this.getById(appId);
+        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
+        ThrowUtils.throwIf(!app.getUserId().equals(loginUser.getId()), ErrorCode.NO_AUTH_ERROR, "无权限访问该应用");
+        if (CodeGenTypeEnum.VUE_PROJECT != CodeGenTypeEnum.getEnumByValue(app.getCodeGenType())) {
+            throw new BusinessException(ErrorCode.PARAMS_ERROR, "该应用类型不支持续订生成流");
+        }
+        GenerationTaskRegistry.GenerationTask task = generationTaskRegistry.find(appId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND_ERROR, "当前没有可续订的生成任务"));
+        // 起点定位：优先用客户端回传的帧序号（精确）；没有序号时退回"服务端记录的该订阅已下发进度"
+        long effectiveFromSeq = fromSeq;
+        if (effectiveFromSeq < 0) {
+            effectiveFromSeq = StrUtil.isBlank(subId) ? 0L : generationTaskRegistry.lastSentSeq(task, subId);
+        }
+        String newSubId = "resume-" + appId + "-" + System.nanoTime();
+        log.info("续订生成流：appId={}, fromSeq={}, subId={}, 有效起点={}, 任务状态={}",
+                appId, fromSeq, subId, effectiveFromSeq, task.getStatus());
+        return generationTaskRegistry.subscribe(task, newSubId, effectiveFromSeq);
+    }
+
+    /**
+     * 查询当前生成任务状态（方案 C）
+     *
+     * @param appId     应用ID
+     * @param loginUser 登录用户
+     *
+     * @return 生成状态
+     */
+    @Override
+    public GenerationStatusVO getGenStatus(Long appId, User loginUser) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+        ThrowUtils.throwIf(loginUser == null, ErrorCode.PARAMS_ERROR, "用户未登录");
+        App app = this.getById(appId);
+        ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
+        ThrowUtils.throwIf(!app.getUserId().equals(loginUser.getId()), ErrorCode.NO_AUTH_ERROR, "无权限访问该应用");
+        return generationTaskRegistry.find(appId)
+                .map(task -> {
+                    GenerationStatusVO vo = new GenerationStatusVO();
+                    vo.setAppId(appId);
+                    vo.setStatus(task.getStatus().getValue());
+                    vo.setRunning(task.isRunning());
+                    vo.setContentLength(task.contentLength());
+                    vo.setLastSeq(task.getFrameSeq());
+                    vo.setErrorMessage(task.getErrorMessage());
+                    vo.setMessage(switch (task.getStatus()) {
+                        case RUNNING -> "正在生成中（服务端独立运行，可随时断开或续订）";
+                        case FINISHED -> "生成已完成，完整内容已写入对话历史";
+                        case FAILED -> "生成失败，可重新发起";
+                    });
+                    return vo;
+                })
+                .orElseGet(() -> GenerationStatusVO.none(appId));
     }
 
     /**

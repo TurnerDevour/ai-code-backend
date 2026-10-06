@@ -68,6 +68,17 @@ public interface ChatHistoryService extends IService<ChatHistory> {
     Page<ChatHistory> listAppChatHistoryByPage(Long appId, long pageSize, LocalDateTime lastCreateTime, ChatHistoryQueryRequest chatHistoryQueryRequest);
 
     /**
+     * 统计某个应用已有的 AI 消息条数
+     * <p>
+     * 生成任务注册表用它判断"这一轮生成是否已经落库"，避免重连时把同一条消息再落一次。
+     *
+     * @param appId 应用id
+     *
+     * @return AI 消息条数
+     */
+    int countAiMessages(Long appId);
+
+    /**
      * 将某个应用的对话历史加载到内存中（用于 AI 记忆上下文）
      *
      * @param appId      应用id

@@ -18,8 +18,10 @@ import com.example.aicodebackend.model.entity.App;
 import com.example.aicodebackend.model.entity.User;
 import com.example.aicodebackend.model.enums.AIModelTypeEnum;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
+import com.example.aicodebackend.core.generation.GenerationTaskRegistry;
 import com.example.aicodebackend.model.vo.AppVO;
 import com.example.aicodebackend.model.vo.DeployStatusVO;
+import com.example.aicodebackend.model.vo.GenerationStatusVO;
 import com.example.aicodebackend.service.AppService;
 import com.example.aicodebackend.service.ProjectDownloadService;
 import com.example.aicodebackend.service.UserService;
@@ -303,7 +305,7 @@ public class AppController {
      */
     @GetMapping(value = "/chat/gen/code", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId, @RequestParam String prompt, HttpServletRequest request) {
-        Flux<String> chatToGenCodeFlux;
+        Flux<GenerationTaskRegistry.SequencedFrame> chatToGenCodeFlux;
         try {
             // 1. 校验参数
             ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
@@ -322,18 +324,84 @@ public class AppController {
             return Flux.just(buildErrorEvent("代码生成失败，请稍后重试"), buildDoneEvent());
         }
 
-        return chatToGenCodeFlux
-                .map(chunk -> ServerSentEvent.<String>builder()
-                        // 注意：这里必须直接下发 chunk 字符串本身，交给前端统一解析。
-                        // 不要把 chunk 再包一层 JSON 字符串：ServerSentEvent 的 data 是 String 时，
-                        // Spring 会按 JSON 序列化该字符串，导致内容被二次转义（{"d":"{\"type\":...}"}），
-                        // 前端的 JSON.parse 只能拿到被转义的字符串，无法按 type 分发消息。
-                        .data(chunk)
+        return toSseFlux(chatToGenCodeFlux, appId);
+    }
+
+    /**
+     * 续订当前应用的生成流（用于浏览器刷新/返回后重新接上正在进行的生成）
+     * <p>
+     * 方案 C 的配套接口：生成任务在服务端独立运行，客户端断开不影响它。续订有两种定位方式：
+     * <ul>
+     *     <li>{@code fromSeq}：客户端已经收到的最后一帧序号（SSE 的 {@code id:} 字段）。<b>推荐</b>，
+     *     精确补发且不会重复；</li>
+     *     <li>{@code subId} + 不传 {@code fromSeq}：用首次连接的订阅标识，由服务端记住"发到哪了"。
+     *     适合客户端没记录序号的场景。</li>
+     * </ul>
+     *
+     * @param appId   应用ID
+     * @param fromSeq 已收到的最后一帧序号（不传时按 0 处理）
+     * @param subId   首次连接的订阅标识（可选，用于服务端侧记录进度）
+     * @param request HTTP 请求对象
+     *
+     * @return SSE 流
+     */
+    @GetMapping(value = "/chat/gen/resume", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> resumeGenCode(@RequestParam Long appId, @RequestParam(required = false) Long fromSeq, @RequestParam(required = false) String subId, HttpServletRequest request) {
+        Flux<GenerationTaskRegistry.SequencedFrame> flux;
+        try {
+            ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+            User loginUser = userService.getLoginUser(request);
+            flux = appService.resumeGenCode(appId, fromSeq == null ? -1L : fromSeq, StrUtil.nullToEmpty(subId), loginUser);
+        } catch (BusinessException e) {
+            log.error("续订生成流失败，appId: {}", appId, e);
+            return Flux.just(buildErrorEvent(e.getMessage()), buildDoneEvent());
+        } catch (RuntimeException e) {
+            log.error("续订生成流异常，appId: {}", appId, e);
+            return Flux.just(buildErrorEvent("续订生成流失败，请稍后重试"), buildDoneEvent());
+        }
+        return toSseFlux(flux, appId);
+    }
+
+    /**
+     * 查询当前生成任务状态（前端轮询/判断是否还能续订）
+     *
+     * @param appId   应用ID
+     * @param request HTTP 请求对象
+     *
+     * @return 生成状态
+     */
+    @GetMapping("/chat/gen/status")
+    public BaseResponse<GenerationStatusVO> getGenStatus(@RequestParam Long appId, HttpServletRequest request) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+        User loginUser = userService.getLoginUser(request);
+        return ResultUtils.success(appService.getGenStatus(appId, loginUser));
+    }
+
+    /**
+     * 把"带序号的文本数据流"包装成 SSE 响应：每条数据一个 data 帧（带 id 序号），最后补一个 done 事件
+     * <p>
+     * 注意：这里必须直接下发 chunk 字符串本身，交给前端统一解析。
+     * 不要把 chunk 再包一层 JSON 字符串：ServerSentEvent 的 data 是 String 时，
+     * Spring 会按 JSON 序列化该字符串，导致内容被二次转义（{"d":"{\"type\":...}"}），
+     * 前端的 JSON.parse 只能拿到被转义的字符串，无法按 type 分发消息。
+     * <p>
+     * {@code id} 是帧序号：客户端续订时回传它（{@code fromSeq}），服务端据此精确补发缺失的帧。
+     *
+     * @param flux  数据流
+     * @param appId 应用ID（仅用于日志）
+     *
+     * @return SSE 流
+     */
+    private Flux<ServerSentEvent<String>> toSseFlux(Flux<GenerationTaskRegistry.SequencedFrame> flux, Long appId) {
+        return flux
+                .map(frame -> ServerSentEvent.<String>builder()
+                        .id(String.valueOf(frame.seq()))
+                        .data(frame.data())
                         .build())
                 .concatWith(Mono.just(buildDoneEvent()))
-                // 4. 流内异常同样不再向上抛出：此时 SSE 响应已经提交，异常逃逸到 Servlet 层后
-                //    @RestControllerAdvice 会尝试以 JSON 回写错误（与 text/event-stream 冲突）并引发连锁异常。
-                //    这里统一转成一个 type=error 的数据帧下发，前端可据此展示错误信息。
+                // 流内异常同样不再向上抛出：此时 SSE 响应已经提交，异常逃逸到 Servlet 层后
+                // @RestControllerAdvice 会尝试以 JSON 回写错误（与 text/event-stream 冲突）并引发连锁异常。
+                // 这里统一转成一个 type=error 的数据帧下发，前端可据此展示错误信息。
                 .onErrorResume(error -> {
                     log.error("生成代码流式响应失败，appId: {}", appId, error);
                     return Flux.just(buildErrorEvent("代码生成失败，请稍后重试"), buildDoneEvent());

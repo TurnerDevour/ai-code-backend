@@ -93,6 +93,24 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
     }
 
     /**
+     * 统计某个应用已有的 AI 消息条数
+     *
+     * @param appId 应用id
+     *
+     * @return AI 消息条数
+     */
+    @Override
+    public int countAiMessages(Long appId) {
+        if (appId == null || appId <= 0) {
+            return 0;
+        }
+        QueryWrapper queryWrapper = QueryWrapper.create()
+                .eq("app_id", appId)
+                .eq("message_type", ChatMessageTypeEnum.AI.getValue());
+        return Math.toIntExact(this.count(queryWrapper));
+    }
+
+    /**
      * 获取查询条件包装器
      *
      * @param chatHistoryQueryRequest 对话历史查询请求对象
