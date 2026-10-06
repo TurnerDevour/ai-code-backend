@@ -36,7 +36,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     public BaseResponse<?> businessExceptionHandler(BusinessException e, HttpServletRequest request, HttpServletResponse response) {
         log.error("BusinessException", e);
-        if (writeSseErrorIfNecessary(request, response, e.getCode(), e.getMessage())) {
+        if (markSseErrorAsHandled(request, response, e.getCode(), e.getMessage())) {
             // 已按 SSE 数据帧下发错误，返回 null 让 Spring 跳过 JSON 回写
             return null;
         }
@@ -46,35 +46,40 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(RuntimeException.class)
     public BaseResponse<?> runtimeExceptionHandler(RuntimeException e, HttpServletRequest request, HttpServletResponse response) {
         log.error("RuntimeException", e);
-        if (writeSseErrorIfNecessary(request, response, ErrorCode.SYSTEM_ERROR.getCode(), "系统错误")) {
+        if (markSseErrorAsHandled(request, response, ErrorCode.SYSTEM_ERROR.getCode(), ErrorCode.SYSTEM_ERROR.getMessage())) {
             return null;
         }
-        return ResultUtils.error(ErrorCode.SYSTEM_ERROR, "系统错误");
+        return ResultUtils.error(ErrorCode.SYSTEM_ERROR, ErrorCode.SYSTEM_ERROR.getMessage());
     }
 
     /**
      * SSE（text/event-stream）接口的错误收口
      * <p>
-     * 流式接口的响应已经按 text/event-stream 协商（或被 SseEmitter 预设），此时没有任何 JSON 转换器可用：
+     * 流式接口的响应可能已经按 text/event-stream 协商（甚至已经开始下发数据），此时没有任何 JSON 转换器可用：
      * 继续返回 BaseResponse 会抛出 HttpMessageNotWritableException，而该异常又会被本类的 RuntimeException
      * 处理器再次捕获、再次失败，最终由 Tomcat 渲染错误页，形成连锁异常且前端拿不到任何错误信息。
      * <p>
-     * 因此这里改为直接向响应写入一个 type=error 的 SSE 数据帧，前端按消息类型统一展示错误。
+     * 因此这里统一返回 null（让 Spring 跳过 JSON 回写），并按响应状态分两种情况处理：
+     * <ul>
+     *     <li>响应未提交：直接写入一个 type=error 的 SSE 数据帧，前端按消息类型统一展示错误；</li>
+     *     <li>响应已提交（流已开始下发）：客户端连接即将结束，只记录日志，不再尝试写入任何内容。</li>
+     * </ul>
      *
      * @param request  当前请求
      * @param response 当前响应
      * @param code     错误码，仅用于日志
      * @param message  错误提示，为空时回落到「系统错误」
      *
-     * @return true 表示错误已按 SSE 数据帧处理完毕，调用方应返回 null 以跳过 JSON 回写
+     * @return true 表示当前请求是 SSE 请求、已按 SSE 语义处理完毕（调用方应返回 null）
      */
-    private boolean writeSseErrorIfNecessary(HttpServletRequest request, HttpServletResponse response, int code, String message) {
+    private boolean markSseErrorAsHandled(HttpServletRequest request, HttpServletResponse response, int code, String message) {
         if (!isSseRequest(request, response)) {
             return false;
         }
         String errorMessage = message == null ? "系统错误" : message;
-        // 响应已提交（流已经开始下发）时无法再补发任何内容，只能记录日志
         if (response.isCommitted()) {
+            // 响应已提交：内容已经部分下发，无法再补发错误帧。
+            // 这里只记录日志并结束当前请求，不再让异常继续向外传播（继续传播会触发二次异常处理与 Tomcat 错误页）。
             log.error("SSE 响应已提交，无法回写错误数据帧, code: {}, message: {}", code, errorMessage);
             return true;
         }

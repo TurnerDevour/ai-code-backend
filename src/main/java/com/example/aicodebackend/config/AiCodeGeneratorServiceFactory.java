@@ -10,7 +10,6 @@ import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import com.example.aicodebackend.service.ChatHistoryService;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import dev.langchain4j.community.store.memory.chat.redis.RedisChatMemoryStore;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
@@ -18,6 +17,7 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.tool.ToolArgumentsErrorHandler;
 import dev.langchain4j.service.tool.ToolExecutionErrorHandler;
+import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -44,7 +44,7 @@ public class AiCodeGeneratorServiceFactory {
 
     private final StreamingChatModel deepSeekV4ProStreamingChatModel;
 
-    private final RedisChatMemoryStore redisChatMemoryStore;
+    private final ChatMemoryStore chatMemoryStore;
 
     private final ChatHistoryService chatHistoryService;
 
@@ -59,12 +59,12 @@ public class AiCodeGeneratorServiceFactory {
             @Qualifier("deepSeekFlashStreamingChatModel") StreamingChatModel deepSeekFlashStreamingChatModel,
             @Qualifier("deepSeekV4ProStreamingChatModel") StreamingChatModel deepSeekV4ProStreamingChatModel,
             ToolManager toolManager,
-            RedisChatMemoryStore redisChatMemoryStore,
+            ChatMemoryStore chatMemoryStore,
             ChatHistoryService chatHistoryService
     ) {
         this.deepSeekFlashStreamingChatModel = deepSeekFlashStreamingChatModel;
         this.deepSeekV4ProStreamingChatModel = deepSeekV4ProStreamingChatModel;
-        this.redisChatMemoryStore = redisChatMemoryStore;
+        this.chatMemoryStore = chatMemoryStore;
         this.chatHistoryService = chatHistoryService;
         this.toolManager = toolManager;
         Map<AIModelTypeEnum, StreamingChatModel> map = new EnumMap<>(AIModelTypeEnum.class);
@@ -132,7 +132,7 @@ public class AiCodeGeneratorServiceFactory {
         MessageWindowChatMemory chatMemory = MessageWindowChatMemory
                 .builder()
                 .id(appId)
-                .chatMemoryStore(redisChatMemoryStore)
+                .chatMemoryStore(chatMemoryStore)
                 .maxMessages(ChatHistoryConstant.MEMORY_MAX_MESSAGES)
                 .build();
 
@@ -157,9 +157,6 @@ public class AiCodeGeneratorServiceFactory {
                     .hallucinatedToolNameStrategy(
                             toolExecutionRequest -> ToolExecutionResultMessage.from(toolExecutionRequest, "错误：不存在这个工具， " + toolExecutionRequest.name())
                     )
-                    // langchain4j 1.21.0 起必须显式指定工具错误处理策略，否则会打印警告并沿用即将变更的默认行为。
-                    // 工具入参解析失败（例如流式返回的 arguments 不完整）应把原因回给模型，让它自行纠正后重试；
-                    // 工具执行期的异常则只在明确面向 LLM 时透出，其余情况直接让本次调用失败，避免泄露内部细节。
                     .toolArgumentsErrorHandler(ToolArgumentsErrorHandler.sendExceptionMessageToLlm())
                     .toolExecutionErrorHandler(ToolExecutionErrorHandler.failInvocationUnlessVisibleToLlm())
                     .build();

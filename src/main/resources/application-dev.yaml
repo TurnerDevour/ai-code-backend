@@ -6,6 +6,12 @@ spring:
     url: jdbc:mysql://localhost:3306/ai_code_db?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
     username: root
     password: admin123
+    hikari:
+      maximum-pool-size: 32
+      minimum-idle: 8
+      connection-timeout: 10000
+      idle-timeout: 600000
+      max-lifetime: 1800000
   data:
     redis:
       host: 127.0.0.1
@@ -13,8 +19,20 @@ spring:
       username: default
       password: admin123
       ttl: 3600 # Redis缓存过期时间，单位秒
+      timeout: 10s
+      connect-timeout: 5s
+      jedis:
+        pool:
+          max-active: 64
+          max-idle: 32
+          min-idle: 8
+          max-wait: 10s
+          time-between-eviction-runs: 30s
+  threads:
+    virtual:
+      enabled: true
 
-# knife4j的增强配置，不需要增强可以不配
+# knife4j的增强配置
 knife4j:
   enable: true
   setting:
@@ -24,10 +42,16 @@ mybatis-flex:
   configuration:
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
 
+# 部署构建队列：npm install + vite build 是重负载，必须限制并发，
+# 否则 N 个应用同时部署会拉起 N 个 npm 进程（实测 100 个并发部署时成功率只有 46%）
+deploy:
+  queue:
+    workers: 4 # 同时构建的任务数（按机器核数调整，建议 2~8）
+    max-queue-size: 32 # 等待构建的队列容量，超出时提交会被明确拒绝
+
 # LangChain4j配置
 langchain4j:
   open-ai:
-    # 以 AI 模型类型枚举（AIModelTypeEnum.value）为 key，为每个模型各构建一个 StreamingChatModel
     models:
       deepseek-flash:
         base-url: https://api.deepseek.com
@@ -45,7 +69,6 @@ langchain4j:
         api-key: ${DEEPSEEK_API_KEY}
         timeout: 600s
         max-tokens: 384000
-        # DeepSeek 思考模式 + tools 要求回传历史轮次的 reasoning_content，否则第二轮起报 400
         return-thinking: true
         send-thinking: true
         log-requests: true

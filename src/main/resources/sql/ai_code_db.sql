@@ -66,3 +66,17 @@ alter table chat_history
 -- 应用表添加 AI 模型类型字段，用于记录该应用使用的模型
 alter table app
     add column ai_model_type varchar(64) default 'deepseek-flash' null comment 'AI 模型类型（枚举）' after code_gen_type;
+
+-- 异步部署：应用表添加部署状态、失败原因与部署发起人
+-- 说明：字段与索引会由 AppSchemaInitializer 在启动时幂等补齐，这里同步维护脚本，便于新建库直接使用
+alter table app
+    add column deploy_status varchar(32) null comment '部署状态：idle/deploying/ready/failed' after deployed_time;
+alter table app
+    add column deploy_error varchar(1024) null comment '最近一次部署失败原因' after deploy_status;
+alter table app
+    add column deploy_operator_id bigint null comment '最近一次部署发起人 id' after deploy_error;
+alter table app
+    add index idx_deploy_status (deploy_status);
+-- 历史数据归一化：已有部署标识的视为部署完成，其余为空闲
+update app set deploy_status = 'ready' where (deploy_status is null or deploy_status = '') and deploy_key is not null;
+update app set deploy_status = 'idle' where (deploy_status is null or deploy_status = '') and deploy_key is null;

@@ -62,6 +62,26 @@ public class App implements Serializable {
     private LocalDateTime deployedTime;
 
     /**
+     * 部署状态（异步部署状态机）：idle/deploying/ready/failed
+     * <p>
+     * 同步部署接口不写该字段；为空时按 idle 处理，兼容改造前的历史数据。
+     */
+    private String deployStatus;
+
+    /**
+     * 最近一次异步部署的失败原因（面向用户，不含内部堆栈）
+     */
+    private String deployError;
+
+    /**
+     * 最近一次部署的发起人 id
+     * <p>
+     * 异步部署需要它：任务在后台线程执行，请求上下文已经结束，无法再从 Session 取登录用户；
+     * 同时它也让"部署中"的任务在管理端可追溯。
+     */
+    private Long deployOperatorId;
+
+    /**
      * 优先级
      */
     private Integer priority;

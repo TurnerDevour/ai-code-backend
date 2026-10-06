@@ -13,6 +13,10 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * 执行命令类
+ * <p>
+ * 说明：这是一个<b>无状态</b>组件，可以在容器外直接 new 出来使用
+ * （例如流处理器需要在单测里独立构造，或需要自建实例做收尾构建）。
+ * 它内部没有任何可变字段，因此多实例、被 new 出来都等价于共享同一个实例。
  */
 @Slf4j
 @Component
@@ -37,9 +41,23 @@ public class VueProjectBuilder {
     }
 
     /**
-     * 构建 Vue 项目
+     * 构建 Vue 项目（就地构建，产物落在项目目录下的 dist）
      */
     public boolean buildProject(String projectPath) {
+        return buildProjectTo(projectPath);
+    }
+
+    /**
+     * 在指定目录构建 Vue 项目，并把产物放到该目录下的 dist
+     * <p>
+     * 单独抽出来的原因：部署流程会先把源码复制到"构建暂存目录"，在暂存目录里完成构建后再原子切换进源码目录，
+     * 这样并发部署时不会出现两个构建同时写同一个 dist、把"构建到一半的产物"发布出去的问题。
+     *
+     * @param projectPath 项目目录（暂存目录或源码目录均可）
+     *
+     * @return 构建是否成功
+     */
+    public boolean buildProjectTo(String projectPath) {
         File projectDir = new File(projectPath);
         if (!projectDir.exists() || !projectDir.isDirectory()) {
             log.error("项目目录不存在: {}", projectPath);
@@ -52,6 +70,9 @@ public class VueProjectBuilder {
             return false;
         }
         log.info("开始构建 Vue 项目: {}", projectPath);
+        // 部署目录是 /{deployKey}/ 这样的子路径，必须让 vite 用相对路径引用产物，
+        // 否则 index.html 会去根路径 /assets/... 找 JS，部署后页面白屏。
+        ensureRelativeBase(projectDir);
         // 执行 npm install
         if (!executeNpmInstall(projectDir)) {
             log.error("npm install 执行失败");
@@ -70,6 +91,47 @@ public class VueProjectBuilder {
         }
         log.info("Vue 项目构建成功，dist 目录: {}", distDir.getAbsolutePath());
         return true;
+    }
+
+    /**
+     * 保证 vite.config.js 使用相对 base
+     * <p>
+     * 部署地址形如 {@code http://host/{deployKey}/}，属于子路径部署；vite 默认 base 为 "/"，
+     * 产物里的资源引用会变成 {@code /assets/xxx.js}，部署后必然 404。
+     * 这里只在配置里没有显式 base 时补一个相对 base，并对"生成结果不是相对路径"的情况直接失败，
+     * 避免部署出一个白屏页面却返回成功。
+     *
+     * @param projectDir 项目目录
+     *
+     * @return 校验通过返回 true
+     */
+    private boolean ensureRelativeBase(File projectDir) {
+        File viteConfig = new File(projectDir, "vite.config.js");
+        if (!viteConfig.isFile()) {
+            viteConfig = new File(projectDir, "vite.config.ts");
+        }
+        if (!viteConfig.isFile()) {
+            log.warn("未找到 vite 配置文件，跳过 base 校验: {}", projectDir.getAbsolutePath());
+            return true;
+        }
+        try {
+            String content = new String(java.nio.file.Files.readAllBytes(viteConfig.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+            if (content.contains("base:")) {
+                log.info("vite 配置已显式声明 base，保持原样: {}", viteConfig.getName());
+                return true;
+            }
+            String patched = content.replaceFirst("defineConfig\\(\\s*\\{", "defineConfig({\n  base: './',");
+            if (patched.equals(content)) {
+                log.warn("无法自动注入相对 base（配置形态不匹配），跳过: {}", viteConfig.getName());
+                return true;
+            }
+            java.nio.file.Files.write(viteConfig.toPath(), patched.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            log.info("已为子路径部署注入相对 base: {}", viteConfig.getName());
+            return true;
+        } catch (Exception e) {
+            log.error("注入相对 base 失败: {}", viteConfig.getAbsolutePath(), e);
+            return false;
+        }
     }
 
     /**

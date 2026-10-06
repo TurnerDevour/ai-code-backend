@@ -7,6 +7,7 @@ import com.example.aicodebackend.ai.model.message.*;
 import com.example.aicodebackend.ai.tools.BaseTool;
 import com.example.aicodebackend.ai.tools.ToolManager;
 import com.example.aicodebackend.constant.AppConstant;
+import com.example.aicodebackend.constant.ChatHistoryConstant;
 import com.example.aicodebackend.core.builder.VueProjectBuilder;
 import com.example.aicodebackend.model.entity.User;
 import com.example.aicodebackend.model.enums.ChatMessageTypeEnum;
@@ -18,6 +19,7 @@ import reactor.core.publisher.Flux;
 
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * JSON 消息流处理器
@@ -42,6 +44,29 @@ public class JsonMessageStreamHandler {
     private ToolManager toolManager;
 
     /**
+     * 生成收尾处理器：负责把"生成过程"与"客户端连接"解耦（客户端断开后仍等生成跑完再落库）
+     * <p>
+     * 在容器里由 {@link #initCompletionHandler()} 装配；在单测中直接 new 出该组件时，
+     * 用同类内部新建的默认实例兜底（VueProjectBuilder 无状态，见其类注释）。
+     */
+    private GenerationCompletionHandler completionHandler;
+
+    @jakarta.annotation.PostConstruct
+    public void initCompletionHandler() {
+        this.completionHandler = new GenerationCompletionHandler(vueProjectBuilder);
+    }
+
+    /**
+     * 获取收尾处理器（容器外的单测场景下懒加载一个默认实现）
+     */
+    private GenerationCompletionHandler completionHandler() {
+        if (completionHandler == null) {
+            completionHandler = new GenerationCompletionHandler(new VueProjectBuilder());
+        }
+        return completionHandler;
+    }
+
+    /**
      * 处理 TokenStream（VUE_PROJECT）
      * 解析 JSON 消息并重组为完整的响应格式
      *
@@ -53,63 +78,72 @@ public class JsonMessageStreamHandler {
      * @return 处理后的流
      */
     public Flux<String> handle(Flux<String> originFlux, ChatHistoryService chatHistoryService, long appId, User loginUser) {
-        // 收集数据用于生成后端记忆格式
-        StringBuilder chatHistoryStringBuilder = new StringBuilder();
-        // 用于跟踪已经见过的工具ID，判断是否是第一次调用
+        // 同一个工具 ID 只展示一次：累积与下发共用同一份去重集合，
+        // 保证"下发内容"与"落库内容"完全一致，也不会重复推送
         Set<String> seenToolIds = new HashSet<>();
-        return originFlux
-                .map(chunk -> {
-                    // 解析每个 JSON 消息块
-                    return handleJsonMessageChunk(chunk, chatHistoryStringBuilder, seenToolIds);
-                })
-                .filter(StrUtil::isNotEmpty) // 过滤空字串
-                .doOnComplete(() -> {
-                    // 流式响应完成后，添加 AI 消息到对话历史
-                    String aiResponse = chatHistoryStringBuilder.toString();
-                    try {
-                        chatHistoryService.addChatMessage(appId, loginUser.getId(), aiResponse, ChatMessageTypeEnum.AI);
-                    } catch (Exception e) {
-                        // 此时 SSE 响应已进入完成阶段，异常逃逸会让整个请求以 500 收尾，
-                        // 且响应已按 text/event-stream 提交，Spring 无法再回写业务错误。因此这里只记录日志。
-                        log.error("保存 AI 回复到对话历史失败，appId: {}", appId, e);
-                    }
-                    // 异步构建 Vue 项目
-                    String projectPath = AppConstant.CODE_OUTPUT_ROOT_DIR + "/vue_project_" + appId;
-                    try {
-                        vueProjectBuilder.buildProjectAsync(projectPath);
-                    } catch (Exception e) {
-                        log.error("触发 Vue 项目构建失败，appId: {}", appId, e);
-                    }
-                })
-                .doOnError(error -> {
-                    // 如果AI回复失败，也要记录错误消息
-                    String errorMessage = "AI回复失败: " + error.getMessage();
-                    try {
-                        chatHistoryService.addChatMessage(appId, loginUser.getId(), errorMessage, ChatMessageTypeEnum.AI);
-                    } catch (Exception e) {
-                        log.error("保存 AI 失败消息到对话历史失败，appId: {}", appId, e);
-                    }
-                });
+        return completionHandler().handle(
+                originFlux,
+                // 下发给客户端：ai_response 的文本增量、工具请求/结果的展示内容
+                chunk -> displayChunk(chunk, seenToolIds),
+                // 内部累积（用于落库）：ai_response 文本 + 工具执行结果的完整内容
+                (chunk, accumulated) -> accumulateChunk(chunk, seenToolIds),
+                chatHistoryService,
+                appId,
+                loginUser,
+                true
+        );
     }
 
     /**
-     * 解析并收集 TokenStream 数据
+     * 把上游 JSON 消息块转换成"下发给客户端"的内容
+     * <p>
+     * 生成被中断后已经没有客户端在接收，但这里仍按同样格式产出，
+     * 让"客户端展示"与"历史落库"两条路径共用同一套解析逻辑。
+     *
+     * @param chunk       上游消息块
+     * @param seenToolIds 已展示过的工具 ID（避免流式过程中重复推送）
+     *
+     * @return 需要下发给客户端的内容，无需下发时返回空字符串
      */
-    private String handleJsonMessageChunk(String chunk, StringBuilder chatHistoryStringBuilder, Set<String> seenToolIds) {
-        // 解析 JSON
+    private String displayChunk(String chunk, Set<String> seenToolIds) {
         StreamMessage streamMessage = JSONUtil.toBean(chunk, StreamMessage.class);
         StreamMessageTypeEnum typeEnum = StreamMessageTypeEnum.getEnumByValue(streamMessage.getType());
         if (typeEnum == null) {
             return "";
         }
         return switch (typeEnum) {
-            case AI_RESPONSE -> handleAiResponseMessage(chunk, chatHistoryStringBuilder);
+            case AI_RESPONSE -> StrUtil.nullToEmpty(JSONUtil.toBean(chunk, AiResponseMessage.class).getData());
             case TOOL_REQUEST -> handleToolRequestMessage(chunk, seenToolIds);
-            case TOOL_EXECUTED -> handleToolExecutedMessage(chunk, chatHistoryStringBuilder);
+            case TOOL_EXECUTED -> handleToolExecutedMessage(chunk);
             default -> {
                 log.error("不支持的消息类型: {}", typeEnum);
                 yield "";
             }
+        };
+    }
+
+    /**
+     * 把上游 JSON 消息块累积成"要落库的历史内容"
+     * <p>
+     * 与下发给客户端的内容保持一致的语义：AI 文本 + 工具执行结果的完整内容（含文件路径与代码），
+     * 保证用户「查看对话」时能看到完整历史。
+     *
+     * @param chunk       上游消息块
+     * @param seenToolIds 已处理过的工具 ID（工具请求只记一次）
+     *
+     * @return 需要累积的内容
+     */
+    private String accumulateChunk(String chunk, Set<String> seenToolIds) {
+        StreamMessage streamMessage = JSONUtil.toBean(chunk, StreamMessage.class);
+        StreamMessageTypeEnum typeEnum = StreamMessageTypeEnum.getEnumByValue(streamMessage.getType());
+        if (typeEnum == null) {
+            return "";
+        }
+        return switch (typeEnum) {
+            case AI_RESPONSE -> StrUtil.nullToEmpty(JSONUtil.toBean(chunk, AiResponseMessage.class).getData());
+            case TOOL_REQUEST -> handleToolRequestMessage(chunk, seenToolIds);
+            case TOOL_EXECUTED -> handleToolExecutedMessage(chunk);
+            default -> "";
         };
     }
 
@@ -141,15 +175,14 @@ public class JsonMessageStreamHandler {
     /**
      * 处理工具执行结果消息：取到对应的工具实例，由工具自己把入参格式化为展示内容。
      * <p>
-     * 推送给前端和累积到 chatHistoryStringBuilder（用于落库）的都是完整内容，
-     * 保证用户「查看对话」时能看到完整历史；压缩只发生在加载进对话记忆时。
+     * 推送给前端与落库的都是完整内容，保证用户「查看对话」时能看到完整历史；
+     * 压缩只发生在加载进对话记忆时。
      *
-     * @param chunk                    工具执行结果的 JSON 消息
-     * @param chatHistoryStringBuilder 累积用于持久化的对话内容
+     * @param chunk 工具执行结果的 JSON 消息
      *
-     * @return 需要推送给前端的内容，无需推送时返回空字符串
+     * @return 展示内容（同时用于下发与落库），无需展示时返回空字符串
      */
-    private String handleToolExecutedMessage(String chunk, StringBuilder chatHistoryStringBuilder) {
+    private String handleToolExecutedMessage(String chunk) {
         ToolExecutedMessage toolExecutedMessage = JSONUtil.toBean(chunk, ToolExecutedMessage.class);
         BaseTool tool = findTool(toolExecutedMessage.getName());
         if (tool == null) {
@@ -159,12 +192,7 @@ public class JsonMessageStreamHandler {
         if (arguments == null) {
             return "";
         }
-        String output = wrapToolOutput(tool.generateToolExecutedResult(arguments));
-        if (StrUtil.isEmpty(output)) {
-            return "";
-        }
-        chatHistoryStringBuilder.append(output);
-        return output;
+        return wrapToolOutput(tool.generateToolExecutedResult(arguments));
     }
 
     /**

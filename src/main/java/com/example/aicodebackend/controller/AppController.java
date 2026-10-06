@@ -19,6 +19,7 @@ import com.example.aicodebackend.model.entity.User;
 import com.example.aicodebackend.model.enums.AIModelTypeEnum;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import com.example.aicodebackend.model.vo.AppVO;
+import com.example.aicodebackend.model.vo.DeployStatusVO;
 import com.example.aicodebackend.service.AppService;
 import com.example.aicodebackend.service.ProjectDownloadService;
 import com.example.aicodebackend.service.UserService;
@@ -365,7 +366,10 @@ public class AppController {
     }
 
     /**
-     * 部署应用（将应用部署到服务器上，返回部署结果）
+     * 部署应用（同步：一次请求内完成构建与发布，返回部署地址）
+     * <p>
+     * 保留该接口是为了兼容现有前端；构建耗时较长时（Vue 工程要跑 npm install + build）
+     * 建议改用 {@link #submitDeployApp} + {@link #getDeployStatus} 的异步方式。
      */
     @PostMapping("/deploy")
     public BaseResponse<String> deployApp(@RequestBody AppDeployRequest deployRequest, HttpServletRequest request) {
@@ -378,6 +382,34 @@ public class AppController {
         // 3. 调用服务部署应用
         String deployUrl = appService.deployApp(appId, loginUser);
         return ResultUtils.success(deployUrl);
+    }
+
+    /**
+     * 提交异步部署任务（立即返回，后台构建与发布）
+     * <p>
+     * 与同步接口的差异：HTTP 请求不再阻塞在 npm 构建上，提交后通过
+     * {@link #getDeployStatus} 轮询进度；同一个应用同时只有一个部署任务（CAS 抢占），
+     * 重复提交只会返回当前状态，不会重复构建。
+     */
+    @PostMapping("/deploy/async")
+    public BaseResponse<DeployStatusVO> submitDeployApp(@RequestBody AppDeployRequest deployRequest, HttpServletRequest request) {
+        ThrowUtils.throwIf(deployRequest == null, ErrorCode.PARAMS_ERROR, "请求参数为空");
+        Long appId = deployRequest.getAppId();
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+        User loginUser = userService.getLoginUser(request);
+        return ResultUtils.success(appService.submitDeploy(appId, loginUser));
+    }
+
+    /**
+     * 查询部署状态（异步部署轮询接口）
+     * <p>
+     * status 取值：idle（未部署）/ deploying（部署中）/ ready（已完成，deployUrl 可用）/ failed（失败，errorMessage 为原因）。
+     */
+    @GetMapping("/deploy/status")
+    public BaseResponse<DeployStatusVO> getDeployStatus(@RequestParam Long appId, HttpServletRequest request) {
+        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+        User loginUser = userService.getLoginUser(request);
+        return ResultUtils.success(appService.getDeployStatus(appId, loginUser));
     }
 
     /**
