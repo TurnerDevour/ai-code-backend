@@ -66,6 +66,14 @@ public class DeployStatusVO implements Serializable {
      */
     private Integer workerCount;
 
+    /**
+     * 已部署的产物是否已经落后于当前代码（即"代码改过、需要重新部署"）
+     * <p>
+     * 判定依据：应用的编辑时间晚于最近一次部署完成时间。
+     * 前端据此把"已部署"显示成"代码已更新，可重新部署"，而不是让用户一直看到旧站点。
+     */
+    private Boolean deployStale;
+
     @Serial
     private static final long serialVersionUID = 1L;
 

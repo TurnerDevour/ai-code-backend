@@ -112,7 +112,7 @@ class AppServiceImplDeployStatusTest {
     }
 
     @Test
-    @DisplayName("可提交部署的判定：idle/failed/历史空状态可提交，ready 与新鲜 deploying 不可提交，僵死 deploying 可提交")
+    @DisplayName("可提交部署的判定：idle/failed/历史空状态可提交；已部署但代码改过可重新部署；部署中不可提交")
     void submittableJudgementShouldCoverAllStates() {
         // 从未部署（历史数据）且没有 deployKey -> 可提交
         App legacyNoKey = new App();
@@ -131,9 +131,19 @@ class AppServiceImplDeployStatusTest {
         failed.setDeployStatus(DeployStatusEnum.FAILED.getValue());
         assertTrue(invokeIsDeploySubmittable(failed), "失败后应允许重新提交");
 
+        // 已部署且代码没有改过 -> 不重复提交（避免无意义的重新构建）
         App ready = new App();
         ready.setDeployStatus(DeployStatusEnum.READY.getValue());
-        assertFalse(invokeIsDeploySubmittable(ready), "部署完成状态不应被重复提交");
+        ready.setDeployedTime(LocalDateTime.now().minusMinutes(10));
+        ready.setEditTime(LocalDateTime.now().minusMinutes(30));
+        assertFalse(invokeIsDeploySubmittable(ready), "已部署且代码未改动时不应重复提交");
+
+        // 已部署但改过代码 -> 允许重新部署（否则用户改完应用只能一直看旧站点）
+        App readyWithNewCode = new App();
+        readyWithNewCode.setDeployStatus(DeployStatusEnum.READY.getValue());
+        readyWithNewCode.setDeployedTime(LocalDateTime.now().minusMinutes(30));
+        readyWithNewCode.setEditTime(LocalDateTime.now().minusMinutes(1));
+        assertTrue(invokeIsDeploySubmittable(readyWithNewCode), "代码改过之后应允许重新部署");
 
         App freshDeploying = new App();
         freshDeploying.setDeployStatus(DeployStatusEnum.DEPLOYING.getValue());
@@ -146,6 +156,26 @@ class AppServiceImplDeployStatusTest {
         assertTrue(invokeIsDeploySubmittable(staleDeploying), "僵死的部署中状态应允许重新提交");
 
         assertFalse(invokeIsDeploySubmittable(null), "应用为空时应判为不可提交");
+    }
+
+    @Test
+    @DisplayName("部署状态视图：代码改过之后 deployStale=true 并提示可重新部署")
+    void deployStatusShouldExposeStaleFlag() {
+        App ready = new App();
+        ready.setId(1L);
+        ready.setDeployStatus(DeployStatusEnum.READY.getValue());
+        ready.setDeployKey("abc123");
+        ready.setDeployedTime(LocalDateTime.now().minusMinutes(30));
+        ready.setEditTime(LocalDateTime.now().minusMinutes(1));
+
+        DeployStatusVO staleVo = invokeBuildDeployStatus(ready);
+        assertEquals(DeployStatusEnum.READY.getValue(), staleVo.getStatus());
+        assertEquals(Boolean.TRUE, staleVo.getDeployStale(), "代码晚于部署时间时应标记为需要重新部署");
+        assertTrue(staleVo.getMessage().contains("重新部署"), "应提示用户可重新部署，实际: " + staleVo.getMessage());
+
+        ready.setEditTime(LocalDateTime.now().minusMinutes(60));
+        DeployStatusVO freshVo = invokeBuildDeployStatus(ready);
+        assertEquals(Boolean.FALSE, freshVo.getDeployStale(), "代码早于部署时间时不应标记为需要重新部署");
     }
 
     private User user(Long id) {

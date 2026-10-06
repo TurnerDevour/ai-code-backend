@@ -6,6 +6,7 @@ import com.example.aicodebackend.constant.ChatHistoryConstant;
 import com.example.aicodebackend.core.builder.VueProjectBuilder;
 import com.example.aicodebackend.model.entity.User;
 import com.example.aicodebackend.model.enums.ChatMessageTypeEnum;
+import com.example.aicodebackend.service.AppCodeStateService;
 import com.example.aicodebackend.service.ChatHistoryService;
 import jakarta.annotation.PreDestroy;
 import lombok.Data;
@@ -140,9 +141,17 @@ public class GenerationTaskRegistry {
 
     private final VueProjectBuilder vueProjectBuilder;
 
-    public GenerationTaskRegistry(ChatHistoryService chatHistoryService, VueProjectBuilder vueProjectBuilder) {
+    /**
+     * 代码状态服务：生成结束后刷新 edit_time，让"改完代码可重新部署"能被识别
+     */
+    private final AppCodeStateService appCodeStateService;
+
+    public GenerationTaskRegistry(ChatHistoryService chatHistoryService,
+                                  VueProjectBuilder vueProjectBuilder,
+                                  AppCodeStateService appCodeStateService) {
         this.chatHistoryService = chatHistoryService;
         this.vueProjectBuilder = vueProjectBuilder;
+        this.appCodeStateService = appCodeStateService;
     }
 
     /**
@@ -361,7 +370,11 @@ public class GenerationTaskRegistry {
         });
         // 3) Vue 工程：生成结束后触发一次异步构建
         triggerBuild(task.getAppId());
-        // 4) 释放上游
+        // 4) 代码变了：刷新 edit_time，让"已部署但代码有更新"能被识别（用户可重新部署）
+        if (status == GenerationStatus.FINISHED) {
+            appCodeStateService.markCodeChanged(task.getAppId());
+        }
+        // 5) 释放上游
         Disposable disposable = task.getUpstream();
         if (disposable != null) {
             disposable.dispose();

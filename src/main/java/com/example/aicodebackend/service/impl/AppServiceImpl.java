@@ -783,10 +783,33 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
         return switch (status) {
             case IDLE, FAILED -> true;
-            case READY -> false;
+            // 已部署：只有在"代码被改过"之后才允许再次提交，这样用户改完代码能重新部署出新站点
+            case READY -> isDeployedContentStale(app);
             case QUEUED, DEPLOYING -> app.getUpdateTime() != null
                     && app.getUpdateTime().isBefore(LocalDateTime.now().minusMinutes(DEPLOY_STALE_MINUTES));
         };
+    }
+
+    /**
+     * 已部署的产物是否落后于当前代码（即"代码改过、需要重新部署"）
+     * <p>
+     * 判定依据是应用的编辑时间晚于最近一次部署完成时间：
+     * <ul>
+     *     <li>用户在对话页改了自己的应用 → {@code editTime} 被刷新 → 需要重新部署；</li>
+     *     <li>部署本身不写 {@code editTime}，因此刚部署完不会被判定为"脏"；</li>
+     *     <li>历史数据没有 {@code editTime}/{@code deployedTime} 时保守判为"不需要"，
+     *     避免打开页面就显示"可重新部署"。</li>
+     * </ul>
+     *
+     * @param app 应用实体
+     *
+     * @return true 表示需要重新部署
+     */
+    private boolean isDeployedContentStale(App app) {
+        if (app == null || app.getEditTime() == null || app.getDeployedTime() == null) {
+            return false;
+        }
+        return app.getEditTime().isAfter(app.getDeployedTime());
     }
 
     /**
@@ -801,18 +824,41 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         // 历史数据没有状态字段：只要有 deployKey 就视为部署完成
         if (status == null) {
             if (StrUtil.isNotBlank(app.getDeployKey())) {
-                return DeployStatusVO.ready(app.getId(), buildDeployUrl(app.getDeployKey()), app.getDeployedTime());
+                DeployStatusVO vo = DeployStatusVO.ready(app.getId(), buildDeployUrl(app.getDeployKey()), app.getDeployedTime());
+                fillDeployStale(vo, app);
+                return vo;
             }
             return DeployStatusVO.of(app.getId(), DeployStatusEnum.IDLE, "尚未部署，可提交部署任务", null);
         }
         return switch (status) {
-            case READY -> DeployStatusVO.ready(app.getId(), buildDeployUrl(app.getDeployKey()), app.getDeployedTime());
+            case READY -> {
+                DeployStatusVO vo = DeployStatusVO.ready(app.getId(), buildDeployUrl(app.getDeployKey()), app.getDeployedTime());
+                if (fillDeployStale(vo, app)) {
+                    // 代码改过：明确告诉用户"可以重新部署"，避免他一直看旧站点还以为部署坏了
+                    vo.setMessage("代码已更新，可重新部署（当前线上仍是上一次部署的内容）");
+                }
+                yield vo;
+            }
             case QUEUED -> DeployStatusVO.queued(app.getId(), deployQueueManager.queuePosition(app.getId()),
                     deployQueueManager.queueSize(), deployQueueManager.getWorkerCount());
             case DEPLOYING -> DeployStatusVO.of(app.getId(), DeployStatusEnum.DEPLOYING, "部署中，请稍后轮询部署状态", null);
             case FAILED -> DeployStatusVO.of(app.getId(), DeployStatusEnum.FAILED, "部署失败，可修改代码后重新提交部署", app.getDeployError());
             case IDLE -> DeployStatusVO.of(app.getId(), DeployStatusEnum.IDLE, "尚未部署，可提交部署任务", null);
         };
+    }
+
+    /**
+     * 把"是否需要重新部署"写进状态视图
+     *
+     * @param vo  状态视图
+     * @param app 应用实体
+     *
+     * @return 是否需要重新部署
+     */
+    private boolean fillDeployStale(DeployStatusVO vo, App app) {
+        boolean stale = isDeployedContentStale(app);
+        vo.setDeployStale(stale);
+        return stale;
     }
 
     /**

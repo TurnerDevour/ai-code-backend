@@ -1,7 +1,9 @@
 package com.example.aicodebackend.core.generation;
 
 import com.example.aicodebackend.core.builder.VueProjectBuilder;
+import com.example.aicodebackend.mapper.AppMapper;
 import com.example.aicodebackend.model.entity.User;
+import com.example.aicodebackend.service.AppCodeStateService;
 import com.example.aicodebackend.service.ChatHistoryService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -188,8 +190,25 @@ class GenerationTaskRegistryTest {
                         default -> null;
                     };
                 });
-        // VueProjectBuilder 是无状态组件：测试里直接 new，构建会被放到 boundedElastic 上异步执行
-        return new GenerationTaskRegistry(chatHistoryService, new VueProjectBuilder());
+        // VueProjectBuilder 是无状态组件：测试里直接 new，构建会被放到 boundedElastic 上异步执行。
+        // AppCodeStateService 只负责刷新 edit_time，这里用桩 mapper，避免测试依赖数据库。
+        return new GenerationTaskRegistry(chatHistoryService, new VueProjectBuilder(), new AppCodeStateService(stubAppMapper()));
+    }
+
+    /**
+     * 桩 AppMapper：只让 update 返回 1（表示刷新 edit_time 成功）
+     */
+    private AppMapper stubAppMapper() {
+        return (AppMapper) Proxy.newProxyInstance(
+                AppMapper.class.getClassLoader(),
+                new Class<?>[]{AppMapper.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "update" -> 1;
+                    case "toString" -> "StubAppMapper";
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == args[0];
+                    default -> null;
+                });
     }
 
     private User user() {
