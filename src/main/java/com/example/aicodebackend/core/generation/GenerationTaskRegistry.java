@@ -501,9 +501,12 @@ public class GenerationTaskRegistry {
             boolean success = false;
             String error = "";
             try {
-                success = vueProjectBuilder.buildProjectAsyncAndWait(projectPath);
+                // 用"带原因"的构建入口：失败原因要直接告诉用户，
+                // 否则前端只有一个空白预览，用户完全不知道是构建挂了（实测问题）
+                VueProjectBuilder.BuildResult result = vueProjectBuilder.buildProjectDetailed(projectPath);
+                success = result.success();
                 if (!success) {
-                    error = "Vue 项目构建失败，请查看后端日志";
+                    error = StrUtil.blankToDefault(result.error(), "Vue 项目构建失败，请查看后端日志");
                 }
             } catch (Exception e) {
                 error = e.getMessage() == null ? "Vue 项目构建异常" : e.getMessage();

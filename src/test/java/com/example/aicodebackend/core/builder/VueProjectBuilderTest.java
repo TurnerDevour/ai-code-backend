@@ -110,6 +110,87 @@ class VueProjectBuilderTest {
     }
 
     /**
+     * 端到端真实构建：产物 chunk 超过 1 MiB 的工程
+     * <p>
+     * 回归背景（实测）：esbuild 对<b>超过 1 MiB 的输入</b>不走管道，而是把内容写进 {@code os.tmpdir()}
+     * 下的临时文件、交给子进程读取后删除（vite 打包时的 {@code vite:esbuild-transpile} 会整块处理 chunk）。
+     * 带 three.js 这类大依赖的工程 chunk 轻松超过 1 MiB，一旦该删除动作被本机环境拒绝
+     * （{@code remove ...: Access is denied}），vite build 会以退出码 1 结束、dist 根本不产出，
+     * 前端预览区（{@code /static/vue_project_{appId}/dist/index.html}）就是一片空白。
+     * <p>
+     * 这里用一个超大字符串制造 >1 MiB 的 chunk，并断言产物真的超过 1 MiB，
+     * 保证用例确实走到了 esbuild 的临时文件路径（否则用例会变成"永远通过"的假用例）。
+     * <p>
+     * 需要显式开启：$env:RUN_VUE_BUILD_E2E="true"; mvn test -Dtest=VueProjectBuilderTest
+     */
+    @Test
+    void shouldBuildProjectWithLargeChunkEndToEnd() throws Exception {
+        assumeTrue("true".equalsIgnoreCase(System.getenv(E2E_SWITCH)),
+                "未开启端到端构建测试，跳过（设置 " + E2E_SWITCH + "=true 可开启）");
+        assumeTrue(isNpmRunnable(), "本机没有可执行的 npm，跳过端到端构建测试");
+
+        Path projectDir = Path.of(System.getProperty("java.io.tmpdir"), "vue-builder-e2e-large");
+        deleteRecursively(projectDir);
+        try {
+            writeVueProjectFixture(projectDir);
+            writeLargeModuleFixture(projectDir);
+
+            boolean success = new VueProjectBuilder().buildProject(projectDir.toString());
+
+            assertTrue(success, "包含 >1MiB chunk 的工程构建失败（预览区会因此一片空白）");
+            Path indexHtml = projectDir.resolve(DIST_DIR).resolve("index.html");
+            assertTrue(Files.isRegularFile(indexHtml), "构建完成但没有产出 dist/index.html");
+            long largestAsset = largestAssetSize(projectDir.resolve(DIST_DIR));
+            assertTrue(largestAsset > 1024 * 1024,
+                    "最大产物只有 " + largestAsset + " 字节，未覆盖 esbuild 的 >1MiB 临时文件路径");
+        } finally {
+            deleteRecursively(projectDir);
+        }
+    }
+
+    /**
+     * 写入一个超大模块并让入口引用它，使打包后的 chunk 超过 1 MiB
+     */
+    private void writeLargeModuleFixture(Path projectDir) throws IOException {
+        int payloadLength = 1400 * 1024;
+        StringBuilder payload = new StringBuilder(payloadLength);
+        java.util.Random random = new java.util.Random(20240507L);
+        String hexDigits = "0123456789abcdef";
+        for (int i = 0; i < payloadLength; i++) {
+            payload.append(hexDigits.charAt(random.nextInt(hexDigits.length())));
+        }
+        writeFile(projectDir.resolve("src/large-module.js"),
+                "export const LARGE_PAYLOAD = \"" + payload + "\"\n");
+
+        // 追加导入：rollup 会摇掉未被使用的导出，必须让入口真正引用它
+        Path mainJs = projectDir.resolve("src/main.js");
+        String origin = Files.readString(mainJs, StandardCharsets.UTF_8);
+        Files.writeString(mainJs, origin + """
+                import { LARGE_PAYLOAD } from './large-module.js'
+
+                console.log('large payload length', LARGE_PAYLOAD.length)
+                """, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 取产物目录里最大的文件字节数
+     */
+    private long largestAssetSize(Path distDir) throws IOException {
+        try (Stream<Path> paths = Files.walk(distDir)) {
+            return paths.filter(Files::isRegularFile)
+                    .mapToLong(path -> {
+                        try {
+                            return Files.size(path);
+                        } catch (IOException e) {
+                            return 0L;
+                        }
+                    })
+                    .max()
+                    .orElse(0L);
+        }
+    }
+
+    /**
      * 写入一个最小可构建的 Vue3 工程，与 codegen-vue-project-system-prompt 中的约定保持一致
      * <p>
      * 注意：vite.config.js 必须包含 fileURLToPath 的导入，缺失会直接导致构建失败。

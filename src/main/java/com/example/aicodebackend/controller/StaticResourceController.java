@@ -66,13 +66,61 @@ public class StaticResourceController {
 
     /**
      * 根据文件扩展名返回带字符编码的 Content-Type
+     * <p>
+     * 生成站点里除了 html/css/js，还会出现 svg 图标、webp 图片、woff2 字体等资源。
+     * 这些如果统一回 {@code application/octet-stream}，浏览器不会按图片/字体解析：
+     * 字体加载失败会导致文字回退甚至整页排版错乱，svg 图标也可能不显示（实测问题）。
+     * 因此这里按扩展名给出准确的类型，未知扩展名再兜底为二进制流。
+     *
+     * @param filePath 文件路径
+     *
+     * @return 带字符集的 Content-Type
      */
     private String getContentTypeWithCharset(String filePath) {
-        if (filePath.endsWith(".html")) return "text/html; charset=UTF-8";
-        if (filePath.endsWith(".css")) return "text/css; charset=UTF-8";
-        if (filePath.endsWith(".js")) return "application/javascript; charset=UTF-8";
-        if (filePath.endsWith(".png")) return "image/png";
-        if (filePath.endsWith(".jpg")) return "image/jpeg";
-        return "application/octet-stream";
+        String extension = resolveExtension(filePath);
+        return switch (extension) {
+            case "html", "htm" -> "text/html; charset=UTF-8";
+            case "css" -> "text/css; charset=UTF-8";
+            case "js", "mjs" -> "application/javascript; charset=UTF-8";
+            case "json", "map", "webmanifest" -> "application/json; charset=UTF-8";
+            case "txt", "text" -> "text/plain; charset=UTF-8";
+            case "xml" -> "application/xml; charset=UTF-8";
+            case "svg" -> "image/svg+xml";
+            case "png" -> "image/png";
+            case "jpg", "jpeg" -> "image/jpeg";
+            case "gif" -> "image/gif";
+            case "webp" -> "image/webp";
+            case "avif" -> "image/avif";
+            case "bmp" -> "image/bmp";
+            case "ico" -> "image/x-icon";
+            case "woff" -> "font/woff";
+            case "woff2" -> "font/woff2";
+            case "ttf" -> "font/ttf";
+            case "otf" -> "font/otf";
+            case "eot" -> "application/vnd.ms-fontobject";
+            case "wasm" -> "application/wasm";
+            case "mp4" -> "video/mp4";
+            case "webm" -> "video/webm";
+            case "mp3" -> "audio/mpeg";
+            case "wav" -> "audio/wav";
+            case "pdf" -> "application/pdf";
+            default -> "application/octet-stream";
+        };
+    }
+
+    /**
+     * 取小写扩展名（不含点），没有扩展名时返回空串
+     *
+     * @param filePath 文件路径
+     *
+     * @return 小写扩展名
+     */
+    private String resolveExtension(String filePath) {
+        int dotIndex = filePath.lastIndexOf('.');
+        int separatorIndex = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+        if (dotIndex <= separatorIndex || dotIndex == filePath.length() - 1) {
+            return "";
+        }
+        return filePath.substring(dotIndex + 1).toLowerCase();
     }
 }
