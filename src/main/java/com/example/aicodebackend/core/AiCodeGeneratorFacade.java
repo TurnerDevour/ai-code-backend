@@ -6,6 +6,7 @@ import com.example.aicodebackend.ai.AiCodeGeneratorService;
 import com.example.aicodebackend.ai.model.HTMLCodeResult;
 import com.example.aicodebackend.ai.model.MultiFileCodeResult;
 import com.example.aicodebackend.ai.model.message.AiResponseMessage;
+import com.example.aicodebackend.ai.model.message.AiThinkingMessage;
 import com.example.aicodebackend.ai.model.message.ToolExecutedMessage;
 import com.example.aicodebackend.ai.model.message.ToolRequestMessage;
 import com.example.aicodebackend.config.AiCodeGeneratorServiceFactory;
@@ -100,6 +101,10 @@ public class AiCodeGeneratorFacade {
      * <p>
      * VUE_PROJECT 使用推理模型，模型在调用文件写入工具之前只会输出思考内容（reasoning_content），
      * 不会产生正常的文本增量。因此必须监听 onPartialThinking，否则前端在整个代码生成阶段收不到任何内容。
+     * <p>
+     * 思考过程用<b>单独的</b> {@link AiThinkingMessage}（{@code type=ai_thinking}）下发，不再混进
+     * {@link AiResponseMessage}：前者要单独累积进 {@code chat_history.thinking} 并在对话页顶部单独展示，
+     * 混进正文会让对话历史、模型上下文与代码预览里全是推理过程。
      *
      * @param tokenStream 生成的代码流。
      *
@@ -134,9 +139,10 @@ public class AiCodeGeneratorFacade {
                 if (StrUtil.isBlank(thinking)) {
                     return;
                 }
-                // 思考过程也作为 AI 响应推送，保证代码生成期间前端持续有流式输出
-                AiResponseMessage aiResponseMessage = new AiResponseMessage(thinking);
-                sink.next(JSONUtil.toJsonStr(aiResponseMessage));
+                // 思考过程单独一种消息类型：前端放进对话页顶部的「AI 思考过程」面板，
+                // 后端单独累积进 chat_history.thinking（不进正文，否则历史与上下文会被推理内容淹没）
+                AiThinkingMessage aiThinkingMessage = new AiThinkingMessage(thinking);
+                sink.next(JSONUtil.toJsonStr(aiThinkingMessage));
             }).onToolExecuted(toolExecution -> {
                 ToolExecutionRequest request = toolExecution.request();
                 ToolRequestMessage toolRequestMessage = new ToolRequestMessage(request);

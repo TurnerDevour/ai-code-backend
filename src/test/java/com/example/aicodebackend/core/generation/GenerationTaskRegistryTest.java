@@ -178,7 +178,11 @@ class GenerationTaskRegistryTest {
     }
 
     private GenerationTaskRegistry newRegistry(List<String> persisted) {
-        return newRegistry(persisted, null);
+        return newRegistry(persisted, null, null);
+    }
+
+    private GenerationTaskRegistry newRegistry(List<String> persisted, List<String> events) {
+        return newRegistry(persisted, null, events);
     }
 
     /**
@@ -270,15 +274,24 @@ class GenerationTaskRegistryTest {
     }
 
     /**
-     * @param persisted 落库内容收集（addChatMessage 的第 3 个参数）
+     * @param persisted 落库正文收集（addChatMessage / addAiChatMessage 的第 3 个参数）
+     * @param thinking  落库思考过程收集（addAiChatMessage 的第 4 个参数），为 null 时不收集
      * @param events    关键动作的发生顺序，为 null 时不记录
      */
-    private GenerationTaskRegistry newRegistry(List<String> persisted, List<String> events) {        ChatHistoryService chatHistoryService = (ChatHistoryService) Proxy.newProxyInstance(
+    private GenerationTaskRegistry newRegistry(List<String> persisted, List<String> thinking, List<String> events) {        ChatHistoryService chatHistoryService = (ChatHistoryService) Proxy.newProxyInstance(
                 ChatHistoryService.class.getClassLoader(),
                 new Class<?>[]{ChatHistoryService.class},
                 (proxy, method, args) -> {
                     if ("addChatMessage".equals(method.getName()) && args != null && args.length >= 3) {
                         persisted.add(String.valueOf(args[2]));
+                        return 1L;
+                    }
+                    // AI 消息带思考过程的新落库入口：正文与思考过程分成两个通道，便于断言"没有混在一起"
+                    if ("addAiChatMessage".equals(method.getName()) && args != null && args.length >= 4) {
+                        persisted.add(String.valueOf(args[2]));
+                        if (thinking != null) {
+                            thinking.add(String.valueOf(args[3]));
+                        }
                         return 1L;
                     }
                     if ("countAiMessages".equals(method.getName())) {
@@ -323,5 +336,36 @@ class GenerationTaskRegistryTest {
         User user = new User();
         user.setId(100L);
         return user;
+    }
+
+    /**
+     * 思考过程必须单独累积、单独落库
+     * <p>
+     * VUE_PROJECT 用推理模型，生成过程中模型先输出大段 reasoning_content 才动工具。
+     * 如果思考过程并进正文，对话历史里"模型怎么想的"会和"给用户看的结果"混成一团，
+     * 用户读起来是一团噪音，模型上下文也会被推理内容挤爆。
+     */
+    @Test
+    @DisplayName("思考过程单独累积落库，不与正文混在一起")
+    void thinkingShouldBePersistedSeparately() throws Exception {
+        long appId = nextAppId();
+        List<String> persisted = new CopyOnWriteArrayList<>();
+        List<String> persistedThinking = new CopyOnWriteArrayList<>();
+        GenerationTaskRegistry registry = newRegistry(persisted, persistedThinking, null);
+
+        Flux<GenerationTaskRegistry.GenerationEmit> upstream = Flux.just(
+                new GenerationTaskRegistry.GenerationEmit("{\"type\":\"ai_thinking\",\"data\":\"先想\"}", "", "先想"),
+                new GenerationTaskRegistry.GenerationEmit("{\"type\":\"ai_response\",\"data\":\"正文\"}", "正文"),
+                new GenerationTaskRegistry.GenerationEmit("{\"type\":\"ai_thinking\",\"data\":\"再想\"}", "", "再想"));
+
+        GenerationTaskRegistry.GenerationTask task = registry.submitOrGet(appId, user(), () -> upstream);
+        registry.subscribe(task, "sub-1", 0L).blockLast(Duration.ofSeconds(5));
+        assertTrue(registry.awaitFinished(appId, 5_000), "任务应已结束");
+        awaitPersisted(persisted, 5_000);
+
+        assertEquals(1, persisted.size(), "应落库一次");
+        assertEquals("正文", persisted.get(0), "正文里不能混进思考过程");
+        assertEquals(1, persistedThinking.size());
+        assertEquals("先想再想", persistedThinking.get(0), "思考过程应按到达顺序单独累积");
     }
 }

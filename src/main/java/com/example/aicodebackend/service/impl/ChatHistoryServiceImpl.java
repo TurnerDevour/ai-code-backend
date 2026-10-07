@@ -55,6 +55,43 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
      */
     @Override
     public Long addChatMessage(Long appId, Long userId, String message, ChatMessageTypeEnum messageType, Long parentId) {
+        return saveChatMessage(appId, userId, message, messageType, parentId, null);
+    }
+
+    /**
+     * 添加一条 AI 消息，同时记录模型的思考过程
+     * <p>
+     * 思考过程单独一列落库（{@code chat_history.thinking}），不进 {@code message}：
+     * 前端在对话页顶部单独展示它，模型上下文也只读 {@code message}（见 {@link #loadChatHistoryToMemory}），
+     * 因此历史正文与多轮上下文都不会被推理内容污染。
+     *
+     * @param appId    应用id
+     * @param userId   创建用户id
+     * @param message  消息内容（给用户看的正文）
+     * @param thinking 思考过程（可为空）
+     *
+     * @return 新消息的id
+     */
+    @Override
+    public Long addAiChatMessage(Long appId, Long userId, String message, String thinking) {
+        return saveChatMessage(appId, userId, message, ChatMessageTypeEnum.AI, null,
+                TextUtils.truncate(thinking, ChatHistoryConstant.MESSAGE_MAX_LENGTH));
+    }
+
+    /**
+     * 落库对话消息的公共实现
+     *
+     * @param appId       应用id
+     * @param userId      创建用户id
+     * @param message     消息内容
+     * @param messageType 消息类型
+     * @param parentId    父消息id
+     * @param thinking    思考过程（仅 AI 消息使用，可为空）
+     *
+     * @return 新消息的id
+     */
+    private Long saveChatMessage(Long appId, Long userId, String message, ChatMessageTypeEnum messageType,
+                                 Long parentId, String thinking) {
         // 1. 校验参数
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
         ThrowUtils.throwIf(userId == null || userId <= 0, ErrorCode.PARAMS_ERROR, "用户ID不合法");
@@ -68,6 +105,7 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
         chatHistory.setAppId(appId);
         chatHistory.setUserId(userId);
         chatHistory.setMessage(messageToSave);
+        chatHistory.setThinking(thinking);
         chatHistory.setMessageType(messageType.getValue());
         chatHistory.setParentId(parentId);
         // 3. 保存消息

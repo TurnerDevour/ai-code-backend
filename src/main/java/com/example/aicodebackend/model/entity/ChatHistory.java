@@ -32,6 +32,14 @@ public class ChatHistory implements Serializable {
     private String message;
 
     /**
+     * AI 思考过程（推理模型的 reasoning_content）
+     * <p>
+     * 只有 AI 消息会有值；与 {@link #message} 分开存：思考过程是"模型怎么想的"，
+     * 用于在对话页顶部单独展示，不进正文、也不参与模型上下文。
+     */
+    private String thinking;
+
+    /**
      * user/ai
      */
     private String messageType;

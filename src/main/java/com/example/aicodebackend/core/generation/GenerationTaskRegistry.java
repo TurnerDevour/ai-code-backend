@@ -77,6 +77,13 @@ public class GenerationTaskRegistry {
         private final int historyAiCountBefore;
         /** 累积的展示内容（与落库内容一致） */
         private volatile StringBuilder content = new StringBuilder();
+        /**
+         * 累积的思考过程（推理模型的 reasoning_content）
+         * <p>
+         * 与 {@link #content} 分开累积、分开放：思考过程单独落库到 {@code chat_history.thinking}，
+         * 不参与正文（否则历史里正文与推理混在一起，用户读起来也是一团）。
+         */
+        private volatile StringBuilder thinking = new StringBuilder();
         /** 已下发的 SSE 帧（重连补发用） */
         private final List<SseFrame> frames = new ArrayList<>();
         /** 帧序号 */
@@ -176,9 +183,23 @@ public class GenerationTaskRegistry {
     }
 
     /**
-     * 上游生成流的产出：一条 SSE 数据帧 + 需要累积进历史的文本
+     * 一条上游产出：下发帧 + 正文累积 + 思考过程累积
+     * <p>
+     * 三个通道刻意分开：{@code sseChunk} 原样下发给客户端（前端按 type 分发），
+     * {@code historyChunk} 与 {@code thinkingChunk} 分别累积落库——思考过程不能混进正文，
+     * 否则对话历史与模型上下文里会夹着大段推理内容。
      */
-    public record GenerationEmit(String sseChunk, String historyChunk) {
+    public record GenerationEmit(String sseChunk, String historyChunk, String thinkingChunk) {
+
+        /**
+         * 只产出"下发帧 + 正文"时的便捷构造（思考过程为空）
+         *
+         * @param sseChunk     下发帧
+         * @param historyChunk 正文累积内容
+         */
+        public GenerationEmit(String sseChunk, String historyChunk) {
+            this(sseChunk, historyChunk, "");
+        }
     }
 
     private final Map<Long, GenerationTask> tasks = new ConcurrentHashMap<>();
@@ -341,6 +362,9 @@ public class GenerationTaskRegistry {
                         }
                         task.getContent().append(emit.historyChunk());
                     }
+                    if (StrUtil.isNotEmpty(emit.thinkingChunk())) {
+                        task.getThinking().append(emit.thinkingChunk());
+                    }
                     if (StrUtil.isNotEmpty(emit.sseChunk())) {
                         emit(task, emit.sseChunk());
                     }
@@ -439,15 +463,19 @@ public class GenerationTaskRegistry {
             }
         }
         // 1) 落库：此时是生成真正结束后的<b>完整</b>内容（客户端是否还在都不影响）
+        //    思考过程与正文分两列存：思考单独展示（对话页顶部的「AI 思考过程」面板），
+        //    不进正文、也不进模型上下文，避免历史与上下文被推理内容淹没
+        String thinking = task.getThinking().toString();
         try {
             if (status == GenerationStatus.FAILED) {
-                chatHistoryService.addChatMessage(task.getAppId(), task.getUserId(), task.getErrorMessage(), ChatMessageTypeEnum.AI);
+                chatHistoryService.addAiChatMessage(task.getAppId(), task.getUserId(), task.getErrorMessage(), thinking);
             } else if (StrUtil.isBlank(content)) {
                 log.info("生成结束但没有任何内容，不写入对话历史：appId={}", task.getAppId());
             } else {
-                chatHistoryService.addChatMessage(task.getAppId(), task.getUserId(), content, ChatMessageTypeEnum.AI);
+                chatHistoryService.addAiChatMessage(task.getAppId(), task.getUserId(), content, thinking);
             }
-            log.info("生成任务结束：appId={}, status={}, 落库字符数={}", task.getAppId(), status, content.length());
+            log.info("生成任务结束：appId={}, status={}, 落库字符数={}, 思考字符数={}",
+                    task.getAppId(), status, content.length(), thinking.length());
         } catch (Exception e) {
             log.error("保存生成结果到对话历史失败：appId={}", task.getAppId(), e);
         }

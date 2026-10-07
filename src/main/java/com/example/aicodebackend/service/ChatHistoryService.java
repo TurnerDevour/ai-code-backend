@@ -38,6 +38,22 @@ public interface ChatHistoryService extends IService<ChatHistory> {
     Long addChatMessage(Long appId, Long userId, String message, ChatMessageTypeEnum messageType, Long parentId);
 
     /**
+     * 添加一条 AI 消息，同时记录模型的思考过程
+     * <p>
+     * 思考过程单独一列（{@code chat_history.thinking}）：它属于"模型怎么想的"，
+     * 与给用户看的正文分开存放，前端在对话页顶部的「AI 思考过程」面板里单独展示。
+     * 思考过程为空时与 {@link #addChatMessage} 等价。
+     *
+     * @param appId    应用id
+     * @param userId   创建用户id
+     * @param message  消息内容（给用户看的正文）
+     * @param thinking 思考过程（可为空）
+     *
+     * @return 新消息的id
+     */
+    Long addAiChatMessage(Long appId, Long userId, String message, String thinking);
+
+    /**
      * 删除某个应用的所有对话历史（删除应用时关联删除）
      *
      * @param appId 应用id

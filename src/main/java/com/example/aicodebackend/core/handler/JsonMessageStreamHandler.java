@@ -113,6 +113,9 @@ public class JsonMessageStreamHandler {
         }
         return switch (typeEnum) {
             case AI_RESPONSE -> StrUtil.nullToEmpty(JSONUtil.toBean(chunk, AiResponseMessage.class).getData());
+            // 思考过程原样透传（它本身就是一个 type=ai_thinking 的 JSON 消息），
+            // 前端按 type 分发到对话页顶部的「AI 思考过程」面板
+            case AI_THINKING -> chunk;
             case TOOL_REQUEST -> handleToolRequestMessage(chunk, seenToolIds);
             case TOOL_EXECUTED -> handleToolExecutedMessage(chunk);
             default -> {
@@ -141,6 +144,9 @@ public class JsonMessageStreamHandler {
         }
         return switch (typeEnum) {
             case AI_RESPONSE -> StrUtil.nullToEmpty(JSONUtil.toBean(chunk, AiResponseMessage.class).getData());
+            // 思考过程不属于正文：这里不累积（否则对话历史里正文与推理内容会混在一起）。
+            // VUE_PROJECT 的落库走 GenerationTaskRegistry 的独立思考通道（chat_history.thinking）
+            case AI_THINKING -> "";
             case TOOL_REQUEST -> handleToolRequestMessage(chunk, seenToolIds);
             case TOOL_EXECUTED -> handleToolExecutedMessage(chunk);
             default -> "";

@@ -404,7 +404,11 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     }
 
     /**
-     * 把一条流式消息转换成"下发帧 + 累积文本"
+     * 把一条流式消息转换成"下发帧 + 正文累积 + 思考过程累积"
+     * <p>
+     * 思考过程（{@code type=ai_thinking}）走单独的累积通道：它要单独落库到
+     * {@code chat_history.thinking} 并单独展示，绝不能并进正文，
+     * 否则对话历史、代码预览与多轮上下文里会夹着大段推理内容。
      *
      * @param messageJson 流式消息的 JSON
      *
@@ -414,38 +418,44 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         if (StrUtil.isBlank(messageJson)) {
             return new GenerationTaskRegistry.GenerationEmit("", "");
         }
-        return new GenerationTaskRegistry.GenerationEmit(messageJson, extractHistoryContent(messageJson));
+        JSONObject json;
+        try {
+            json = JSONUtil.parseObj(messageJson);
+        } catch (Exception e) {
+            log.warn("解析流式消息失败（不影响下发）：{}", e.getMessage());
+            return new GenerationTaskRegistry.GenerationEmit(messageJson, "");
+        }
+        if (StreamMessageTypeEnum.AI_THINKING.getValue().equals(json.getStr("type"))) {
+            return new GenerationTaskRegistry.GenerationEmit(messageJson, "",
+                    StrUtil.nullToEmpty(json.getStr("data")));
+        }
+        return new GenerationTaskRegistry.GenerationEmit(messageJson, extractHistoryContent(json));
     }
 
     /**
-     * 从流式消息里取出需要累积进对话历史的内容
+     * 从流式消息里取出需要累积进对话历史正文的内容
      *
-     * @param messageJson 流式消息的 JSON
+     * @param json 流式消息
      *
      * @return 需要累积的文本，不需要累积时返回空串
      */
-    private String extractHistoryContent(String messageJson) {
-        try {
-            JSONObject json = JSONUtil.parseObj(messageJson);
-            String type = json.getStr("type");
-            if (StreamMessageTypeEnum.AI_RESPONSE.getValue().equals(type)) {
-                return StrUtil.nullToEmpty(json.getStr("data"));
+    private String extractHistoryContent(JSONObject json) {
+        String type = json.getStr("type");
+        if (StreamMessageTypeEnum.AI_RESPONSE.getValue().equals(type)) {
+            return StrUtil.nullToEmpty(json.getStr("data"));
+        }
+        if (StreamMessageTypeEnum.TOOL_EXECUTED.getValue().equals(type)) {
+            // 工具执行结果：记录"工具名 + 完整入参"，保证历史里能看到写了哪些文件与内容
+            String name = StrUtil.nullToEmpty(json.getStr("name"));
+            String arguments = StrUtil.nullToEmpty(json.getStr("arguments"));
+            // 失败必须留下明确痕迹：LangChain4j 对"参数不合法 / 工具名不存在 / 工具内部异常"
+            // 同样会回调 onToolExecuted，若不区分，历史里"写了文件"和"根本没写"完全一样，
+            // 用户只会看到"AI 说改好了、页面没变"（实测问题）。
+            if (json.getBool("failed", false)) {
+                String reason = StrUtil.maxLength(StrUtil.nullToEmpty(json.getStr("result")), 500);
+                return "\n⚠️ [工具调用失败] " + name + " " + arguments + "\n失败原因：" + reason + "\n";
             }
-            if (StreamMessageTypeEnum.TOOL_EXECUTED.getValue().equals(type)) {
-                // 工具执行结果：记录"工具名 + 完整入参"，保证历史里能看到写了哪些文件与内容
-                String name = StrUtil.nullToEmpty(json.getStr("name"));
-                String arguments = StrUtil.nullToEmpty(json.getStr("arguments"));
-                // 失败必须留下明确痕迹：LangChain4j 对"参数不合法 / 工具名不存在 / 工具内部异常"
-                // 同样会回调 onToolExecuted，若不区分，历史里"写了文件"和"根本没写"完全一样，
-                // 用户只会看到"AI 说改好了、页面没变"（实测问题）。
-                if (json.getBool("failed", false)) {
-                    String reason = StrUtil.maxLength(StrUtil.nullToEmpty(json.getStr("result")), 500);
-                    return "\n⚠️ [工具调用失败] " + name + " " + arguments + "\n失败原因：" + reason + "\n";
-                }
-                return "\n[工具调用] " + name + " " + arguments + "\n";
-            }
-        } catch (Exception e) {
-            log.warn("解析流式消息失败（不影响下发）：{}", e.getMessage());
+            return "\n[工具调用] " + name + " " + arguments + "\n";
         }
         return "";
     }
