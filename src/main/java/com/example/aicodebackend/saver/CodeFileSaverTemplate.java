@@ -15,7 +15,7 @@ import java.nio.charset.StandardCharsets;
  * 抽象类，定义了保存代码文件的模板方法
  */
 public abstract class CodeFileSaverTemplate<T> {
-    // 文件保存目录路径: D:/JAVA/ai-code-backend/temp/code_output
+
     protected static final String FILE_SAVE_ROOT_DIR = AppConstant.CODE_OUTPUT_ROOT_DIR;
 
     /**

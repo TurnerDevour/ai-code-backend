@@ -36,10 +36,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>
  * 现在改为<b>有界浏览器池</b>：
  * <ul>
- *     <li>最多 {@value #MAX_DRIVERS} 个实例，按需创建、用完归还，每个实例同一时刻只服务一个请求；</li>
- *     <li>取不到实例时最多等待 {@value #BORROW_TIMEOUT_SECONDS} 秒，超时给出明确失败，而不是无限堆积；</li>
+ *     <li>最多 {@value MAX_DRIVERS} 个实例，按需创建、用完归还，每个实例同一时刻只服务一个请求；</li>
+ *     <li>取不到实例时最多等待 {@value BORROW_TIMEOUT_SECONDS} 秒，超时给出明确失败，而不是无限堆积；</li>
  *     <li>截图过程中出错的实例直接销毁，下次按需重建，单个浏览器崩溃不会拖垮整个服务；</li>
- *     <li>空闲实例在超过 {@value #IDLE_EVICT_MILLIS} ms 未使用后被回收，避免长期占用内存。</li>
+ *     <li>空闲实例在超过 {@value IDLE_EVICT_MILLIS} ms 未使用后被回收，避免长期占用内存。</li>
  * </ul>
  */
 @Slf4j
