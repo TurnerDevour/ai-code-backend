@@ -50,11 +50,8 @@ deploy:
 # 截图临时目录
 screenshot:
   temp:
-    ttl-minutes: 60 # 超过该时长仍未删除的截图目录视为垃圾
-    sweep-minutes: 10 # 清理间隔
-
-# 日志同时落盘（控制台之外）：模型调用、工具调用成功/失败都要能事后排查。
-# 之前只看 IDEA 控制台，进程一重启证据就没了，"AI 说写了文件但磁盘上没有"这类问题无从定位。
+    ttl-minutes: 60
+    sweep-minutes: 10
 logging:
   file:
     name: temp/logs/ai-code-backend.log
@@ -63,21 +60,10 @@ logging:
       max-file-size: 50MB
       max-history: 7
 
-# ============================== AI 模型配置 ==============================
-# key 必须与 AIModelTypeEnum 的 value 完全一致：它同时是接口参数 aiModelType、
-# 数据库 app.ai_model_type 字段的取值，以及这里取模型的唯一标识。
-#
-# 【写法注意】key 里带 "." 的模型（qwen3.8-max / qwen3.7-plus）必须写成 "[qwen3.8-max]"。
-# Spring 的宽松绑定会把未转义的 "." 当成层级分隔符：直接写 qwen3.8-max: 会被解析成
-# ai.models.qwen3 → 8-max，模型拿不到配置（启动日志会提示"没有配置"）。用方括号包住即为一个字面 key。
-#
-# 【容错说明】某个模型配置缺失/写错只让该模型不可用（选中时才报错），不影响其它模型，也不会导致应用起不来。
-# 启动日志里会打印"AI 模型注册表就绪：可用 x，不可用 y，可用模型=[...]"。
 ai:
   models:
-    # ------------------------------ DeepSeek 开放平台 ------------------------------
+    # DeepSeek 开放平台
     deepseek-flash:
-      # provider 取值：deepseek / bailian，决定用哪个平台的接口约定构建模型
       provider: deepseek
       base-url: https://api.deepseek.com
       model-name: deepseek-flash
@@ -85,8 +71,6 @@ ai:
       timeout: 600s
       max-tokens: 384000
       temperature: 0.3
-      # 思考模式：入站把响应的 reasoning_content 解析进 thinking，出站回放历史时回传。
-      # 带 tools 时 deepseek 要求回传 reasoning_content，不传第二轮起会报 400。
       return-thinking: true
       send-thinking: true
       log-requests: true
@@ -103,17 +87,7 @@ ai:
       send-thinking: true
       log-requests: true
       log-responses: true
-
-    # ------------------------------ 阿里云百炼 ------------------------------
-    # 三个参数均来自 Windows 环境变量（已配置到系统变量，改完需重启 IDE/终端才生效）：
-    #   ALI_AI_API_KEY    -> api-key
-    #   ALI_AI_BASE_URL   -> base-url（业务空间专属域名，不含 /compatible-mode/v1 也可以）
-    #   ALI_WORKSPACE_ID  -> workspace-id（形如 ws-xxxxxxxx，用于拼接/校验业务空间专属域名）
-    # 接口地址规则（见 BailianEndpointResolver）：
-    #   OpenAI 兼容 base_url = https://{workspaceId}.{region}.maas.aliyuncs.com/compatible-mode/v1
-    #   缺少 /compatible-mode/v1 会自动补齐；配了 /chat/completions 整条 endpoint 也会先剥掉；
-    #   base-url 留空时用 workspace-id + region 拼；域名里的空间与 workspace-id 不一致会打告警。
-    # 注意：百炼 API Key 按地域绑定，跨地域调用只会返回 401 Incorrect API key provided。
+    # 阿里云百炼
     "[qwen3.8-max]":
       provider: bailian
       base-url: ${ALI_AI_BASE_URL}
@@ -122,17 +96,10 @@ ai:
       model-name: qwen3.8-max
       api-key: ${ALI_AI_API_KEY}
       timeout: 600s
-      # 官方上限：上下文 100 万 token、单次输出 131072 token（超限请求会被直接拒绝）
       max-tokens: 131072
       temperature: 0.3
-      # 入站照样解析 reasoning_content（Vue 工程模式靠 onPartialThinking 才有流式输出），
-      # 但出站不回传：百炼不需要把历史思考回传（可正常调用，已实测），
-      # 而 Vue 工程一轮生成最多 60 次工具往返，把累积的思考再发回去会让输入 token 成倍膨胀。
-      # 注意与 DeepSeek 相反：DeepSeek 思考模式 + tools 时【必须】回传，否则第二轮起报 400。
       return-thinking: true
       send-thinking: false
-      # 百炼专有请求参数 enable_thinking（通过 customParameters 透传）。
-      # 不写则沿用平台默认：这两个模型默认开启思考，会返回 reasoning_content。
       enable-thinking: true
       log-requests: true
       log-responses: true
@@ -152,8 +119,6 @@ ai:
       log-requests: true
       log-responses: true
 
-  # 启动后异步拉一次各平台的模型列表，核对配置里的模型名是否仍然存在，并给出同类可选项。
-  # 只提示不阻断（没外网/超时/401 都只记日志），也不需要它来跑生成业务。
   model-check:
     enabled: true
     timeout: 5s
