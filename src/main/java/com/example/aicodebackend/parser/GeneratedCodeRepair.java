@@ -2,7 +2,9 @@ package com.example.aicodebackend.parser;
 
 import cn.hutool.core.util.StrUtil;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -24,6 +26,10 @@ import java.util.regex.Pattern;
  * <p>
  * 这里做的是<b>纯语法层</b>的修复：只在明确能判定为"标签名/属性粘连"的位置补空格，
  * 不猜测、不重写内容，避免把正确的代码改坏。
+ * <p>
+ * 修复范围严格限定在"真正的标记"上：注释、{@code <script>}、{@code <style>} 的内容整段跳过
+ * （见 {@link #PROTECTED_REGION_PATTERN}）——脚本与样式里的 {@code <} / {@code >} 是代码的一部分，
+ * 按标签去"修空格"会把 JavaScript 改坏。
  */
 public final class GeneratedCodeRepair {
 
@@ -33,8 +39,42 @@ public final class GeneratedCodeRepair {
      * 所有修补都只在单个标签内部进行，这样既不会碰到正文文本，也不会把
      * {@code charset="UTF-8"><meta name="viewport"} 这种"跨标签"的内容误判成粘连
      * （实测这是最大的误报来源）。
+     * <p>
+     * <b>它只在"非保护区"（见 {@link #PROTECTED_REGION_PATTERN}）内使用</b>：
+     * 该正则在正文里没问题，但脚本里的 {@code i < 60} 与 {@code (num, index) =>} 恰好构成
+     * 一对 {@code <} … {@code >}，会被当成一个"标签"。
      */
     private static final Pattern TAG_PATTERN = Pattern.compile("<[^<>]{0,2000}?>", Pattern.DOTALL);
+
+    /**
+     * 不参与标签修复的区域：注释、{@code <script>}、{@code <style>}
+     * <p>
+     * 背景（实测事故）：这个修复只应该改"HTML 标记"，但脚本里天然存在 {@code <} 与 {@code >}。
+     * qwen3.7-plus 生成的一个时钟页里：
+     * <pre>
+     * for (let i = 0; i &lt; 60; i++) {          // &lt; 是"小于号"
+     *     const mark = document.createElement('div');
+     *     numbers.forEach((num, index) =&gt; {    // &gt; 是箭头函数
+     * </pre>
+     * 从 {@code i < 60} 的 {@code <} 到 {@code =>} 的 {@code >} 被 {@link #TAG_PATTERN} 匹配成了
+     * 一个"标签"，{@link #repairTag} 于是按"属性名=属性值"重排这段 JavaScript 的空格：
+     * <pre>
+     * 原始：const mark = document.createElement('div');
+     * 落盘：const mark= document.createElement( ' div ' );
+     * </pre>
+     * {@code createElement(' div ')} 会抛 {@code InvalidCharacterError}，整段脚本中断——
+     * 页面"能看但不能用"。更糟的是 {@link #countGluedTags} 也会把这个伪标签算成"粘连"，
+     * 于是"HTML 明明没有粘连"的文档也会被触发一次无用的修复。
+     * <p>
+     * 因此凡是浏览器<b>也不会当成标记解析</b>的区域（注释、脚本、样式）都必须整段跳过：
+     * 只在该区域之外做标签修复。未闭合的 {@code <script>} / {@code <style>} 不构成保护区
+     * （模型截断时输出本身已不可用），此时行为与修复前一致。
+     */
+    private static final Pattern PROTECTED_REGION_PATTERN = Pattern.compile(
+            "<!--.*?-->"
+                    + "|<script\\b[^>]*>.*?</script\\s*>"
+                    + "|<style\\b[^>]*>.*?</style\\s*>",
+            Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
 
     /**
      * 已知 HTML 标签名：用于消解"标签名与属性名粘连"的歧义（见 {@link #splitKnownTagName}）。
@@ -158,6 +198,8 @@ public final class GeneratedCodeRepair {
      * <p>
      * 只在确有粘连特征时改动；文本内容（如 &lt;title&gt;简·博客&lt;/title&gt;）不会被影响。
      * 标签之间的空白也保持原样（那属于代码风格，改动风险大于收益）。
+     * <p>
+     * 注释与 {@code <script>} / {@code <style>} 的内容整段跳过，见 {@link #PROTECTED_REGION_PATTERN}。
      *
      * @param html 原始 HTML 文本
      *
@@ -168,16 +210,59 @@ public final class GeneratedCodeRepair {
             return html;
         }
         String repaired = repairDoctype(html);
+        List<int[]> protectedRegions = findProtectedRegions(repaired);
         Matcher matcher = TAG_PATTERN.matcher(repaired);
         StringBuilder builder = new StringBuilder(repaired.length() + 32);
         int last = 0;
         while (matcher.find()) {
+            // 落在注释 / script / style 里的"标签"不是标记（脚本里的 i < 60 … => 就是典型），
+            // 原样保留：既不改写，也不算作粘连
+            if (overlapsProtectedRegion(protectedRegions, matcher.start(), matcher.end())) {
+                continue;
+            }
             builder.append(repaired, last, matcher.start());
             builder.append(repairTag(matcher.group()));
             last = matcher.end();
         }
         builder.append(repaired, last, repaired.length());
         return builder.toString();
+    }
+
+    /**
+     * 找出所有"不参与标签修复"的区域（注释 / {@code <script>} / {@code <style>}）
+     *
+     * @param html HTML 文本
+     *
+     * @return 每个区域的 {@code [start, end)} 下标，按出现顺序排列
+     */
+    private static List<int[]> findProtectedRegions(String html) {
+        List<int[]> regions = new ArrayList<>();
+        Matcher matcher = PROTECTED_REGION_PATTERN.matcher(html);
+        while (matcher.find()) {
+            regions.add(new int[]{matcher.start(), matcher.end()});
+        }
+        return regions;
+    }
+
+    /**
+     * 判断某个区间是否与任一保护区重叠
+     * <p>
+     * 用"重叠"而不是"包含"：跨过边界的片段（正文里的 {@code <} 一路匹配到脚本内部）同样不能修，
+     * 因为改动它就会动到保护区里的字符。
+     *
+     * @param regions 保护区列表
+     * @param start   区间起点（含）
+     * @param end     区间终点（不含）
+     *
+     * @return true 表示落在保护区内
+     */
+    private static boolean overlapsProtectedRegion(List<int[]> regions, int start, int end) {
+        for (int[] region : regions) {
+            if (start < region[1] && region[0] < end) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -195,6 +280,9 @@ public final class GeneratedCodeRepair {
      * 统计存在"标签名/属性粘连"的标签数量
      * <p>
      * 供 {@link CodeDamageDetector} 打分与门面层日志使用：数量比布尔值更能说明损坏范围。
+     * <p>
+     * 注释与 script / style 区域内的内容不参与统计：那里出现的 {@code <} / {@code >} 是代码本身，
+     * 把它们算成"粘连"会凭空触发一次修复调用（实测多花 80 秒以上，还会把脚本改坏）。
      *
      * @param html HTML 文本
      *
@@ -204,9 +292,13 @@ public final class GeneratedCodeRepair {
         if (StrUtil.isBlank(html)) {
             return 0;
         }
+        List<int[]> protectedRegions = findProtectedRegions(html);
         int glued = 0;
         Matcher matcher = TAG_PATTERN.matcher(html);
         while (matcher.find()) {
+            if (overlapsProtectedRegion(protectedRegions, matcher.start(), matcher.end())) {
+                continue;
+            }
             String tag = matcher.group();
             if (!repairTag(tag).equals(tag)) {
                 glued++;

@@ -182,7 +182,7 @@ class AiCodeGeneratorFacadeCompletionTest {
         private final AiCodeGeneratorService stub;
 
         StubFactory(AiCodeGeneratorService stub) {
-            super(null, null, null, null, null);
+            super(null, null, null, null);
             this.stub = stub;
         }
 

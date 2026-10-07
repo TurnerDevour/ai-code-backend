@@ -1,6 +1,7 @@
 package com.example.aicodebackend.config;
 
 import com.example.aicodebackend.ai.AiCodeGeneratorService;
+import com.example.aicodebackend.ai.provider.StreamingChatModelRegistry;
 import com.example.aicodebackend.ai.tools.*;
 import com.example.aicodebackend.constant.ChatHistoryConstant;
 import com.example.aicodebackend.exception.BusinessException;
@@ -19,13 +20,10 @@ import dev.langchain4j.service.tool.ToolExecutionErrorHandler;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Lazy;
 
-import java.util.Collections;
-import java.util.EnumMap;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 @Data
@@ -44,14 +42,12 @@ public class AiCodeGeneratorServiceFactory {
     private static final int VUE_MAX_TOOL_CALL_ROUND_TRIPS = 60;
 
     /**
-     * 按 AI 模型类型构建的流式模型，见 {@link AiModelConfig}。
+     * 按 AI 模型类型取流式模型的注册表，见 {@link StreamingChatModelRegistry}。
      * <p>
-     * 容器里共有多个 StreamingChatModel（含 starter 自动装配的那个），
-     * 因此这里用 @Qualifier 按 bean 名精确注入，避免按类型注入产生歧义。
+     * 这里只依赖注册表、不再逐个注入模型 Bean：容器里可能存在多个 {@link StreamingChatModel}
+     * （含 starter 自动装配的那个），逐个 @Qualifier 注入既容易歧义，也让"新增一个模型"必须改本类构造函数。
      */
-    private final StreamingChatModel deepSeekFlashStreamingChatModel;
-
-    private final StreamingChatModel deepSeekV4ProStreamingChatModel;
+    private final StreamingChatModelRegistry streamingChatModelRegistry;
 
     private final ChatMemoryStore chatMemoryStore;
 
@@ -59,27 +55,16 @@ public class AiCodeGeneratorServiceFactory {
 
     private final ToolManager toolManager;
 
-    /**
-     * 模型类型 -> 流式模型
-     */
-    private final Map<AIModelTypeEnum, StreamingChatModel> streamingChatModelMap;
-
     public AiCodeGeneratorServiceFactory(
-            @Qualifier("deepSeekFlashStreamingChatModel") StreamingChatModel deepSeekFlashStreamingChatModel,
-            @Qualifier("deepSeekV4ProStreamingChatModel") StreamingChatModel deepSeekV4ProStreamingChatModel,
+            StreamingChatModelRegistry streamingChatModelRegistry,
             ToolManager toolManager,
             ChatMemoryStore chatMemoryStore,
             ChatHistoryService chatHistoryService
     ) {
-        this.deepSeekFlashStreamingChatModel = deepSeekFlashStreamingChatModel;
-        this.deepSeekV4ProStreamingChatModel = deepSeekV4ProStreamingChatModel;
+        this.streamingChatModelRegistry = streamingChatModelRegistry;
         this.chatMemoryStore = chatMemoryStore;
         this.chatHistoryService = chatHistoryService;
         this.toolManager = toolManager;
-        Map<AIModelTypeEnum, StreamingChatModel> map = new EnumMap<>(AIModelTypeEnum.class);
-        map.put(AIModelTypeEnum.DEEPSEEK_FLASH, deepSeekFlashStreamingChatModel);
-        map.put(AIModelTypeEnum.DEEPSEEK_V4_PRO, deepSeekV4ProStreamingChatModel);
-        this.streamingChatModelMap = Collections.unmodifiableMap(map);
     }
 
     /**
@@ -202,11 +187,8 @@ public class AiCodeGeneratorServiceFactory {
             chatHistoryService.loadChatHistoryToMemory(appId, chatMemory, ChatHistoryConstant.MEMORY_MAX_MESSAGES);
         }
 
-        // 按应用所选的 AI 模型类型取流式模型
-        StreamingChatModel selectedStreamingChatModel = streamingChatModelMap.get(aiModelTypeEnum);
-        if (selectedStreamingChatModel == null) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "不支持的 AI 模型类型: " + aiModelTypeEnum.getValue());
-        }
+        // 按应用所选的 AI 模型类型取流式模型（未配置或初始化失败时抛出带排查指引的业务异常）
+        StreamingChatModel selectedStreamingChatModel = streamingChatModelRegistry.get(aiModelTypeEnum);
 
         // 使用CodeGenTypeEnum来决定生成模式
         return switch (codeGenTypeEnum) {
@@ -245,8 +227,14 @@ public class AiCodeGeneratorServiceFactory {
     }
 
     /**
-     * 默认提供一个 Bean
+     * 默认生成服务（兼容历史注入点，当前业务代码走 {@link #getAiCodeGeneratorService}）
+     * <p>
+     * 必须 {@code @Lazy}：它默认用 deepseek-flash，而模型注册表对"配置缺失的模型"是"标记不可用、
+     * 选中时才报错"（目的是让某个平台的环境变量没配好时应用仍能启动、其它模型仍可用）。
+     * 一旦这个 Bean 在启动期被急切创建，缺少 DEEPSEEK_API_KEY 的机器就会整个起不来，
+     * 容错设计当场失效。改成懒加载后，只有真的有人注入它才会去取默认模型。
      */
+    @Lazy
     @Bean
     public AiCodeGeneratorService aiCodeGeneratorService() {
         return getAiCodeGeneratorService(0L);

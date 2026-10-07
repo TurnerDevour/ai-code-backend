@@ -66,7 +66,7 @@ class AiCodeGeneratorServiceCacheTest {
 
     @Test
     void shouldInvalidateOnlyTargetAppEntries() throws Exception {
-        AiCodeGeneratorServiceFactory factory = new AiCodeGeneratorServiceFactory(null, null, null, null, null);
+        AiCodeGeneratorServiceFactory factory = new AiCodeGeneratorServiceFactory(null, null, null, null);
         put(factory, 1001L, CodeGenTypeEnum.VUE_PROJECT);
         put(factory, 1001L, CodeGenTypeEnum.HTML);
         put(factory, 1002L, CodeGenTypeEnum.VUE_PROJECT);
@@ -80,7 +80,7 @@ class AiCodeGeneratorServiceCacheTest {
 
     @Test
     void shouldBeIdempotentWhenNothingCached() {
-        AiCodeGeneratorServiceFactory factory = new AiCodeGeneratorServiceFactory(null, null, null, null, null);
+        AiCodeGeneratorServiceFactory factory = new AiCodeGeneratorServiceFactory(null, null, null, null);
         assertEquals(0, factory.invalidateAiCodeGeneratorService(9999L));
     }
 
@@ -89,7 +89,7 @@ class AiCodeGeneratorServiceCacheTest {
      */
     @Test
     void shouldDetectToolMessagesInvalidError() throws Exception {
-        AiCodeGeneratorServiceFactory factory = new AiCodeGeneratorServiceFactory(null, null, null, null, null);
+        AiCodeGeneratorServiceFactory factory = new AiCodeGeneratorServiceFactory(null, null, null, null);
         put(factory, 2001L, CodeGenTypeEnum.VUE_PROJECT);
 
         com.example.aicodebackend.core.AiCodeGeneratorFacade facade =

@@ -64,7 +64,7 @@ class AiCodeGeneratorFacadeRepairModelTest {
         private final AiCodeGeneratorService service;
 
         StubFactory(AiCodeGeneratorService service) {
-            super(null, null, null, null, null);
+            super(null, null, null, null);
             this.service = service;
         }
 

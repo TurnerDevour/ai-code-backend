@@ -63,7 +63,7 @@ class AiCodeGeneratorServiceMemoryRepairTest {
     private static class RepairingFactory extends AiCodeGeneratorServiceFactory {
 
         RepairingFactory(ChatMemoryStore store) {
-            super(null, null, null, store, null);
+            super(null, null, store, null);
         }
 
         @Override

@@ -32,7 +32,9 @@ class RealModelOutputRegressionTest {
 
     @Test
     void htmlModeProbesShouldComeOutAsUsableHtml() throws IOException {
-        for (String name : new String[]{"probe-html-flash.txt"}) {
+        // probe-html-qwen37plus.txt：qwen3.7-plus 实测样本，脚本里有 i < 60 与 (num, index) =>，
+        // 曾经被标签修复当成"粘连标签"重排空格（createElement(' div ')），导致页面能看不能用
+        for (String name : new String[]{"probe-html-flash.txt", "probe-html-qwen37plus.txt"}) {
             Path file = TEMP_DIR.resolve(name);
             if (!Files.isRegularFile(file)) {
                 continue;
