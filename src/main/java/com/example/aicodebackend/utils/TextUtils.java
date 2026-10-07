@@ -22,6 +22,66 @@ public final class TextUtils {
      */
     private static final Pattern CODE_BLOCK_PATTERN = Pattern.compile("(?m)^(```[^\\n]*\\n)([\\s\\S]*?)(^```[ \\t]*$)");
 
+    /**
+     * 历史里的工具调用记录：{@code [工具调用] writeToFile {json}}（失败时是 {@code ⚠️ [工具调用失败] ...}）
+     * <p>
+     * 参数 JSON 是单行（其中的换行都被转义成 {@code \n}），因此按行匹配即可。
+     */
+    private static final Pattern TOOL_CALL_RECORD_PATTERN =
+            Pattern.compile("\\[工具调用(?:失败)?]\\s*(\\w+)\\s*(\\{[^\\n]*)");
+
+    /** 从工具参数里取文件路径（不同工具的字段名不同） */
+    private static final Pattern TOOL_FILE_PATH_PATTERN =
+            Pattern.compile("\"(?:relativeFilePath|relativePath|relativeDirPath)\"\\s*:\\s*\"([^\"]*)\"");
+
+    /**
+     * 把历史里的"工具调用记录"改写成中性描述，再交给模型
+     * <p>
+     * <b>为什么必须改</b>：工具调用记录是为了「查看对话」可读而写在 AI 消息文本里的
+     * （形如 {@code [工具调用] writeToFile {...}}）。这段历史会被加载回模型记忆、
+     * 当成"模型自己说过的话"，于是模型学会了照抄这个格式：<b>它开始用文本"假装"调用工具</b>——
+     * 打印 {@code [工具调用] writeToFile {...}} 却没有任何 function call，
+     * 结果文件一个字都没写、聊天里却显示调用了工具（实测：整轮 0 次工具执行、0 个文件落盘，
+     * 但对话里全是"工具调用"）。
+     * <p>
+     * 这里把它们换成不可能被当成调用格式的中性记录（顺便丢掉巨型入参，省 token）。
+     *
+     * @param text 历史文本
+     *
+     * @return 改写后的文本；没有工具调用记录时原样返回
+     */
+    public static String neutralizeToolCallRecords(String text) {
+        if (StrUtil.isEmpty(text)) {
+            return text;
+        }
+        Matcher matcher = TOOL_CALL_RECORD_PATTERN.matcher(text);
+        StringBuilder rewritten = new StringBuilder();
+        boolean found = false;
+        while (matcher.find()) {
+            found = true;
+            String name = matcher.group(1);
+            String arguments = matcher.group(2);
+            String filePath = "";
+            Matcher pathMatcher = TOOL_FILE_PATH_PATTERN.matcher(arguments);
+            if (pathMatcher.find()) {
+                filePath = pathMatcher.group(1);
+            }
+            String action = matcher.group().startsWith("[工具调用失败]")
+                    ? "执行失败"
+                    // 成功与"模型自己编的文本"在历史里无法区分，因此措辞保守：以文件实际内容为准
+                    : "处理过";
+            String suffix = matcher.group().startsWith("[工具调用失败]") ? "" : "，以文件实际内容为准";
+            matcher.appendReplacement(rewritten, Matcher.quoteReplacement(
+                    "（系统记录：" + name + " " + action + " "
+                            + (filePath.isEmpty() ? "某个文件" : filePath) + suffix + "）"));
+        }
+        if (!found) {
+            return text;
+        }
+        matcher.appendTail(rewritten);
+        return rewritten.toString();
+    }
+
     private TextUtils() {
     }
 

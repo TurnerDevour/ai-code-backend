@@ -34,6 +34,16 @@ import java.util.concurrent.TimeUnit;
 public class AiCodeGeneratorServiceFactory {
 
     /**
+     * Vue 工程模式下允许的最大工具轮次（LLM ↔ 工具 往返次数）
+     * <p>
+     * LangChain4j 的默认值是 100，而一次往返包含一次完整的模型调用（推理模型通常几秒到几十秒），
+     * 一旦模型陷入"反复重写同一批文件"，100 轮在用户看来就是"死循环"。
+     * 正常 Vue 工程（系统提示词要求文件数 < 30，每个文件 1 轮）远达不到这个上限，
+     * 因此收敛在这个值上：超限立刻失败并给出可读提示，而不是继续空转烧 token。
+     */
+    private static final int VUE_MAX_TOOL_CALL_ROUND_TRIPS = 60;
+
+    /**
      * 按 AI 模型类型构建的流式模型，见 {@link AiModelConfig}。
      * <p>
      * 容器里共有多个 StreamingChatModel（含 starter 自动装配的那个），
@@ -111,8 +121,32 @@ public class AiCodeGeneratorServiceFactory {
      */
     public AiCodeGeneratorService getAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenType, AIModelTypeEnum aiModelType) {
         AIModelTypeEnum modelType = aiModelType == null ? AIModelTypeEnum.DEEPSEEK_FLASH : aiModelType;
+        // 新一轮生成开始前的记忆自愈：把"上一轮异常中断留下的不完整工具上下文"清掉。
+        // 必须在这里（而不是记忆读取路径）做，原因见 ChatMemorySanitizer#repairStoredMessages 的说明。
+        repairStoredMemory(appId);
         String cacheKey = buildCacheKey(appId, codeGenType, modelType);
         return serviceCache.get(cacheKey, key -> createAiCodeGeneratorService(appId, codeGenType, modelType));
+    }
+
+    /**
+     * 修复存储里的不完整工具上下文（新一轮开始时调用一次）
+     * <p>
+     * 修复失败不影响本轮生成：脏数据最多让这一轮被接口拒绝，用户重试时会再修一次。
+     *
+     * @param appId 应用 id（小于等于 0 表示不关联具体应用的默认实例，无需修复）
+     */
+    private void repairStoredMemory(long appId) {
+        if (appId <= 0) {
+            return;
+        }
+        try {
+            int removed = ChatMemorySanitizer.repairStoredMessages(chatMemoryStore, appId);
+            if (removed > 0) {
+                log.warn("对话记忆自愈：清理了上一轮残留的不完整工具上下文，appId={}, 消息数={}", appId, removed);
+            }
+        } catch (Exception e) {
+            log.warn("对话记忆自愈失败（不影响本轮生成）：appId={}, error={}", appId, e.getMessage());
+        }
     }
 
     /**
@@ -176,16 +210,32 @@ public class AiCodeGeneratorServiceFactory {
 
         // 使用CodeGenTypeEnum来决定生成模式
         return switch (codeGenTypeEnum) {
-            case VUE_PROJECT -> AiServices.builder(AiCodeGeneratorService.class)
-                    .streamingChatModel(selectedStreamingChatModel)
-                    .chatMemoryProvider((memoryId) -> chatMemory)
-                    .tools((Object[]) toolManager.getAllTools())
-                    .hallucinatedToolNameStrategy(
-                            toolExecutionRequest -> ToolExecutionResultMessage.from(toolExecutionRequest, "错误：不存在这个工具， " + toolExecutionRequest.name())
-                    )
-                    .toolArgumentsErrorHandler(ToolArgumentsErrorHandler.sendExceptionMessageToLlm())
-                    .toolExecutionErrorHandler(ToolExecutionErrorHandler.failInvocationUnlessVisibleToLlm())
-                    .build();
+            case VUE_PROJECT -> {
+                BaseTool[] tools = toolManager.getAllTools();
+                if (tools == null || tools.length == 0) {
+                    // 没有工具 = 模型的每一次工具调用都会走"工具名不存在"分支：文件一个都不会写，
+                    // 但对话里照样显示"[工具调用] writeToFile ..."（langchain4j 对失败同样回调），
+                    // 表现为"AI 说改了、页面没变"。这里必须大声报出来，便于第一时间定位装配问题。
+                    log.error("Vue 工程模式未注册任何文件工具，生成将无法写入文件！请检查 Bean 扫描与 ToolManager 注入");
+                } else {
+                    log.info("Vue 工程模式已注册 {} 个文件工具：{}", tools.length,
+                            java.util.Arrays.stream(tools).map(BaseTool::getToolName).toList());
+                }
+                yield AiServices.builder(AiCodeGeneratorService.class)
+                        .streamingChatModel(selectedStreamingChatModel)
+                        .chatMemoryProvider((memoryId) -> chatMemory)
+                        .tools(tools == null ? new Object[0] : (Object[]) tools)
+                        .hallucinatedToolNameStrategy(
+                                toolExecutionRequest -> ToolExecutionResultMessage.from(toolExecutionRequest, "错误：不存在这个工具， " + toolExecutionRequest.name())
+                        )
+                        .toolArgumentsErrorHandler(ToolArgumentsErrorHandler.sendExceptionMessageToLlm())
+                        .toolExecutionErrorHandler(ToolExecutionErrorHandler.failInvocationUnlessVisibleToLlm())
+                        // 工具轮次上限：LangChain4j 默认 100 轮，对推理模型来说一轮几十秒，
+                        // 真出现"模型反复写同一批文件"时 100 轮约等于"永不结束"（用户看到的就是死循环）。
+                        // 收敛在 60 轮：正常 Vue 工程（文件数 < 30）远用不到，超限时立刻失败而不是空转。
+                        .maxToolCallingRoundTrips(VUE_MAX_TOOL_CALL_ROUND_TRIPS)
+                        .build();
+            }
             case HTML, MULTI_FILE -> AiServices.builder(AiCodeGeneratorService.class)
                     .streamingChatModel(selectedStreamingChatModel)
                     .chatMemory(chatMemory)

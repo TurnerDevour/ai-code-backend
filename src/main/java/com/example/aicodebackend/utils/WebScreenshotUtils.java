@@ -104,11 +104,16 @@ public class WebScreenshotUtils {
         }
         PooledDriver pooledDriver = null;
         boolean healthy = false;
+        // 本次截图的临时目录：只有把产物交给调用方时才算"交付成功"，
+        // 失败路径必须自己删掉，否则失败一次就在 temp/screenshots 下留一个残骸
+        // （实测：截图失败/用例直接调用工具类都会留下 _compressed.jpg 或空目录）。
+        String rootPath = null;
+        boolean handedOff = false;
         try {
             pooledDriver = borrowDriver();
             WebDriver driver = pooledDriver.driver;
             // 创建临时目录
-            String rootPath = System.getProperty("user.dir") + File.separator + "temp" + File.separator + "screenshots"
+            rootPath = System.getProperty("user.dir") + File.separator + "temp" + File.separator + "screenshots"
                     + File.separator + UUID.randomUUID().toString().substring(0, 8);
             FileUtil.mkdir(rootPath);
             // 图片后缀
@@ -132,12 +137,37 @@ public class WebScreenshotUtils {
             // 删除原始图片，只保留压缩图片
             FileUtil.del(imageSavePath);
             healthy = true;
+            // 产物交给调用方（由 ScreenshotServiceImpl 上传 COS 后删除；万一进程被杀，
+            // 由 ScreenshotTempCleaner 按 TTL 兜底回收）
+            handedOff = true;
             return compressedImagePath;
         } catch (Exception e) {
             log.error("网页截图失败: {}", webUrl, e);
             return null;
         } finally {
+            if (!handedOff) {
+                deleteQuietly(rootPath);
+            }
             returnDriver(pooledDriver, healthy);
+        }
+    }
+
+    /**
+     * 删除截图临时目录（失败路径收尾用）：删不掉只记日志，绝不因为清理失败影响主流程
+     *
+     * @param rootPath 本次截图的临时目录（可为 null）
+     */
+    private static void deleteQuietly(String rootPath) {
+        if (StrUtil.isBlank(rootPath)) {
+            return;
+        }
+        try {
+            File tempDir = new File(rootPath);
+            if (tempDir.exists() && FileUtil.del(tempDir)) {
+                log.info("截图失败，已清理临时目录: {}", rootPath);
+            }
+        } catch (Exception e) {
+            log.warn("清理截图临时目录失败（不影响主流程）: {}, error={}", rootPath, e.getMessage());
         }
     }
 

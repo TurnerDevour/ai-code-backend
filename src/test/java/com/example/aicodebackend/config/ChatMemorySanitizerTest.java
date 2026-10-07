@@ -6,6 +6,7 @@ import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -115,6 +116,80 @@ class ChatMemorySanitizerTest {
     void shouldHandleEmptyInput() {
         assertTrue(ChatMemorySanitizer.sanitizeToolMessages(null).isEmpty());
         assertTrue(ChatMemorySanitizer.sanitizeToolMessages(List.of()).isEmpty());
+    }
+
+    /**
+     * 轮次边界修复：上一轮异常中断留下的"有 tool_calls、没有结果"必须被清掉并写回
+     * <p>
+     * 这是 {@link #shouldDropToolCallWithoutResult} 的"落库版本"——只有在新一轮开始前做才是安全的。
+     */
+    @Test
+    void shouldRepairAbandonedToolRoundAtRoundBoundary() {
+        InMemoryChatMemoryStore store = new InMemoryChatMemoryStore();
+        AiMessage abandoned = aiWithTools("call_lost");
+        store.updateMessages(7L, new ArrayList<>(List.of(
+                UserMessage.from("做一个企业站"),
+                abandoned,
+                AiMessage.from("（上一轮被打断）"))));
+
+        int removed = ChatMemorySanitizer.repairStoredMessages(store, 7L);
+
+        assertEquals(1, removed, "未完成的工具调用必须被清掉");
+        assertFalse(store.getMessages(7L).contains(abandoned));
+        assertEquals(0, ChatMemorySanitizer.repairStoredMessages(store, 7L), "修复必须是幂等的");
+    }
+
+    /** 完整的工具轮次不属于脏数据，轮次边界修复不能动它 */
+    @Test
+    void shouldNotRepairCompleteToolRound() {
+        InMemoryChatMemoryStore store = new InMemoryChatMemoryStore();
+        AiMessage ai = aiWithTools("call_1");
+        List<ChatMessage> complete = new ArrayList<>(List.of(
+                UserMessage.from("写一个文件"),
+                ai,
+                result("call_1"),
+                AiMessage.from("写好了")));
+        store.updateMessages(8L, complete);
+
+        int removed = ChatMemorySanitizer.repairStoredMessages(store, 8L);
+
+        assertEquals(0, removed);
+        assertEquals(complete.size(), store.getMessages(8L).size());
+    }
+
+    /** 空存储 / 非法参数不应抛异常 */
+    @Test
+    void shouldRepairSafelyOnEmptyOrInvalidInput() {
+        InMemoryChatMemoryStore store = new InMemoryChatMemoryStore();
+        assertEquals(0, ChatMemorySanitizer.repairStoredMessages(store, 9L));
+        assertEquals(0, ChatMemorySanitizer.repairStoredMessages(null, 9L));
+        assertEquals(0, ChatMemorySanitizer.repairStoredMessages(store, null));
+    }
+
+    /**
+     * 内存版记忆存储：只做读写、不做任何清洗
+     * <p>
+     * 与真实存储（{@code JedisChatMemoryStore}）的读取语义保持一致：
+     * 读取路径必须是"原样返回"，任何清洗都只能在轮次边界显式触发。
+     */
+    private static class InMemoryChatMemoryStore implements ChatMemoryStore {
+
+        private final java.util.Map<Object, List<ChatMessage>> data = new java.util.concurrent.ConcurrentHashMap<>();
+
+        @Override
+        public List<ChatMessage> getMessages(Object memoryId) {
+            return new ArrayList<>(data.getOrDefault(memoryId, List.of()));
+        }
+
+        @Override
+        public void updateMessages(Object memoryId, List<ChatMessage> messages) {
+            data.put(memoryId, new ArrayList<>(messages));
+        }
+
+        @Override
+        public void deleteMessages(Object memoryId) {
+            data.remove(memoryId);
+        }
     }
 
     /** 窗口裁剪：SystemMessage 固定首位，淘汰 assistant 时其工具结果一并淘汰 */

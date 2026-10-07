@@ -224,7 +224,11 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
                     //     完整源码留在数据库中供用户查看历史，不参与多轮上下文，避免撑爆模型上下文与费用。
                 } else if (ChatMessageTypeEnum.AI.getValue().equals(chatHistory.getMessageType())) {
                     String aiMessage = TextUtils.truncate(
-                            TextUtils.compressCodeBlocks(chatHistory.getMessage(), ChatHistoryConstant.MEMORY_CODE_BLOCK_MAX_LENGTH),
+                            // 先改写工具调用记录（否则模型会照抄这个文本格式"假装"调用工具，实测导致 0 次真实调用），
+                            // 再压缩代码块、最后兜底截断：改写放在最前面，能顺手丢掉巨型入参，省下大量 token。
+                            TextUtils.compressCodeBlocks(
+                                    TextUtils.neutralizeToolCallRecords(chatHistory.getMessage()),
+                                    ChatHistoryConstant.MEMORY_CODE_BLOCK_MAX_LENGTH),
                             ChatHistoryConstant.MEMORY_MESSAGE_MAX_LENGTH);
                     if (StrUtil.isBlank(aiMessage)) {
                         continue;

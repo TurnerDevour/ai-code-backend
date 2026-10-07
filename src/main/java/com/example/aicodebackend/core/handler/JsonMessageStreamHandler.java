@@ -184,6 +184,12 @@ public class JsonMessageStreamHandler {
      */
     private String handleToolExecutedMessage(String chunk) {
         ToolExecutedMessage toolExecutedMessage = JSONUtil.toBean(chunk, ToolExecutedMessage.class);
+        // 失败的工具调用不能渲染成"写入了文件"：LangChain4j 对参数不合法 / 工具名不存在 / 工具异常
+        // 同样会回调 onToolExecuted，此时文件并没有写入（实测问题：AI 说改了、页面没变）。
+        if (toolExecutedMessage.isFailed()) {
+            return wrapToolOutput(String.format("⚠️ [工具调用失败] %s：%s", toolExecutedMessage.getName(),
+                    StrUtil.maxLength(StrUtil.nullToEmpty(toolExecutedMessage.getResult()), 500)));
+        }
         BaseTool tool = findTool(toolExecutedMessage.getName());
         if (tool == null) {
             return "";

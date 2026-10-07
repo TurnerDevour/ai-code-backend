@@ -5,6 +5,7 @@ import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
+import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -31,6 +32,10 @@ import java.util.Set;
  * <p>
  * 同时按 {@code MessageWindowChatMemory} 的规则做窗口裁剪，保证写回的结果不会超过窗口上限
  * （否则下次加载还要再裁一次，且会与我们自己的 evict 语义不一致）。
+ * <p>
+ * <b>调用时机是这份工具的关键</b>：只能在"新一轮对话开始之前"调用（{@link #repairStoredMessages}），
+ * 绝不能在记忆读取路径上调用——否则会把正在进行的工具轮次误删，导致模型反复重写同样的文件、
+ * 生成永不收敛（Vue 工程模式的死循环就是这么来的）。
  */
 @Slf4j
 public final class ChatMemorySanitizer {
@@ -132,6 +137,40 @@ public final class ChatMemorySanitizer {
             }
         }
         return true;
+    }
+
+    /**
+     * 在"新一轮对话开始之前"修复存储里的不完整工具上下文
+     * <p>
+     * <b>为什么只能在轮次边界调用</b>：LangChain4j 的工具循环是"先把 assistant(tool_calls) 写进记忆，
+     * 执行完工具再把结果写进去"，中间那一瞬间读到的记忆天然就是"有请求、没有结果"。
+     * 如果把 {@link #sanitizeToolMessages} 放进读取路径，正在进行的工具轮次会被当成脏数据删掉，
+     * 模型永远看不到工具结果，于是反复重写同样的文件、生成永不收敛（实测：Vue 工程模式死循环）。
+     * 只有在"新的一轮开始"这个时刻，"不完整"才等价于"上一轮异常中断留下的残留"，清理才是安全的。
+     * <p>
+     * 调用方：{@code AiCodeGeneratorServiceFactory#getAiCodeGeneratorService}（每个生成请求开始处，
+     * 此时该应用正在进行的工具轮次一定已经结束——同应用的生成由信号量串行化）。
+     *
+     * @param store     记忆存储
+     * @param memoryId  记忆 id（本项目中为 appId）
+     *
+     * @return 被清理掉的消息条数（0 表示记忆本来就是干净的）
+     */
+    public static int repairStoredMessages(ChatMemoryStore store, Object memoryId) {
+        if (store == null || memoryId == null) {
+            return 0;
+        }
+        List<ChatMessage> stored = store.getMessages(memoryId);
+        if (stored == null || stored.isEmpty()) {
+            return 0;
+        }
+        List<ChatMessage> repaired = sanitizeToolMessages(stored);
+        int removed = stored.size() - repaired.size();
+        if (removed > 0) {
+            // 必须写回：否则脏数据一直躺在存储里，每次新建记忆都要重新清一遍
+            store.updateMessages(memoryId, repaired);
+        }
+        return removed;
     }
 
     /**

@@ -42,12 +42,26 @@ mybatis-flex:
   configuration:
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
 
-# 部署构建队列：npm install + vite build 是重负载，必须限制并发，
-# 否则 N 个应用同时部署会拉起 N 个 npm 进程（实测 100 个并发部署时成功率只有 46%）
 deploy:
   queue:
-    workers: 4 # 同时构建的任务数（按机器核数调整，建议 2~8）
-    max-queue-size: 32 # 等待构建的队列容量，超出时提交会被明确拒绝
+    workers: 4
+    max-queue-size: 32
+
+# 截图临时目录
+screenshot:
+  temp:
+    ttl-minutes: 60 # 超过该时长仍未删除的截图目录视为垃圾
+    sweep-minutes: 10 # 清理间隔
+
+# 日志同时落盘（控制台之外）：模型调用、工具调用成功/失败都要能事后排查。
+# 之前只看 IDEA 控制台，进程一重启证据就没了，"AI 说写了文件但磁盘上没有"这类问题无从定位。
+logging:
+  file:
+    name: temp/logs/ai-code-backend.log
+  logback:
+    rollingpolicy:
+      max-file-size: 50MB
+      max-history: 7
 
 # LangChain4j配置
 langchain4j:
@@ -59,6 +73,7 @@ langchain4j:
         api-key: ${DEEPSEEK_API_KEY}
         timeout: 600s
         max-tokens: 384000
+        temperature: 0.3
         return-thinking: true
         send-thinking: true
         log-requests: true
@@ -69,6 +84,7 @@ langchain4j:
         api-key: ${DEEPSEEK_API_KEY}
         timeout: 600s
         max-tokens: 384000
+        temperature: 0.3
         return-thinking: true
         send-thinking: true
         log-requests: true

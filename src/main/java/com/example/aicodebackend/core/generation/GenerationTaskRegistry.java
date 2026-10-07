@@ -1,6 +1,8 @@
 package com.example.aicodebackend.core.generation;
 
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONUtil;
+import com.example.aicodebackend.ai.model.message.AiResponseMessage;
 import com.example.aicodebackend.constant.AppConstant;
 import com.example.aicodebackend.constant.ChatHistoryConstant;
 import com.example.aicodebackend.core.builder.VueProjectBuilder;
@@ -102,6 +104,13 @@ public class GenerationTaskRegistry {
         private volatile long buildFinishedAt = 0;
         /** 上游订阅句柄：任务结束时统一释放 */
         private volatile Disposable upstream;
+        /**
+         * 真实工具执行次数（用于识别"模型把工具调用写成文本"的假调用）
+         * <p>
+         * 假调用不会执行任何工具：文件一个都不会变，但对话里看起来与真实调用一模一样。
+         */
+        private final java.util.concurrent.atomic.AtomicInteger realToolRecords =
+                new java.util.concurrent.atomic.AtomicInteger();
 
         GenerationTask(Long appId, Long userId, int historyAiCountBefore) {
             this.appId = appId;
@@ -327,6 +336,9 @@ public class GenerationTaskRegistry {
                         return;
                     }
                     if (StrUtil.isNotEmpty(emit.historyChunk())) {
+                        if (isRealToolRecord(emit.historyChunk())) {
+                            task.getRealToolRecords().incrementAndGet();
+                        }
                         task.getContent().append(emit.historyChunk());
                     }
                     if (StrUtil.isNotEmpty(emit.sseChunk())) {
@@ -337,6 +349,38 @@ public class GenerationTaskRegistry {
                 () -> finish(task, GenerationStatus.FINISHED, null)
         );
         task.setUpstream(disposable);
+    }
+
+    /**
+     * 该段累积内容是不是"工具真的执行了"的记录
+     * <p>
+     * 真实的工具执行由 {@code AppServiceImpl#extractHistoryContent} 生成，形如
+     * {@code "\n[工具调用] name {args}\n"} 或 {@code "\n⚠️ [工具调用失败] name {args}\n"}；
+     * 而模型自己"用文本假装调用工具"时，这些字样是混在它的正文里的，不会以换行开头。
+     *
+     * @param historyChunk 累积内容片段
+     *
+     * @return true 表示这是一次真实工具执行的记录
+     */
+    private static boolean isRealToolRecord(String historyChunk) {
+        String trimmed = StrUtil.nullToEmpty(historyChunk).stripLeading();
+        return trimmed.startsWith("[工具调用]") || trimmed.startsWith("⚠️ [工具调用失败]");
+    }
+
+    /**
+     * 检测"模型把工具调用写成了文本"的假调用数量
+     * <p>
+     * 假调用不会执行任何工具：文件一个都不会变，但对话里看起来跟真实调用一模一样，
+     * 用户会以为已经改好了（实测：整轮 0 次工具执行、0 个文件落盘，界面却全是"工具调用"）。
+     *
+     * @param content          本轮累积内容
+     * @param realToolRecords  真实工具执行次数
+     *
+     * @return 假调用处数（至少 0）
+     */
+    private static int countFakeToolCalls(String content, int realToolRecords) {
+        int mentions = StrUtil.count(content, "[工具调用]") + StrUtil.count(content, "[工具调用失败]");
+        return Math.max(0, mentions - realToolRecords);
     }
 
     /**
@@ -379,6 +423,21 @@ public class GenerationTaskRegistry {
             task.setFinishedAt(System.currentTimeMillis());
         }
         String content = task.getContent().toString();
+        // 0) 假工具调用检测：模型用文本"假装"调用工具时，文件不会发生任何变化，
+        //    但对话里看起来和真实调用一样，用户会以为已经改好了。必须显式告知（并写进历史）。
+        if (status == GenerationStatus.FINISHED) {
+            int fakeCalls = countFakeToolCalls(content, task.getRealToolRecords().get());
+            if (fakeCalls > 0) {
+                String warning = "\n\n⚠️ 本轮有 " + fakeCalls + " 处“工具调用”是模型以纯文本输出的，"
+                        + "实际没有执行——这些文件并没有被写入或修改。请重新发起一次修改需求。";
+                log.warn("检测到 {} 处文本形式的假工具调用（真实执行 {} 次）：appId={}",
+                        fakeCalls, task.getRealToolRecords().get(), task.getAppId());
+                content = content + warning;
+                task.getContent().append(warning);
+                // 让在线用户立刻看到，而不是刷新后才发现文件没改
+                emit(task, JSONUtil.toJsonStr(new AiResponseMessage(warning)));
+            }
+        }
         // 1) 落库：此时是生成真正结束后的<b>完整</b>内容（客户端是否还在都不影响）
         try {
             if (status == GenerationStatus.FAILED) {
@@ -392,7 +451,15 @@ public class GenerationTaskRegistry {
         } catch (Exception e) {
             log.error("保存生成结果到对话历史失败：appId={}", task.getAppId(), e);
         }
-        // 2) 结束所有订阅者（客户端断开与否都到这里收口）
+        // 2) 代码变了：刷新 edit_time，让"已部署但代码有更新"能被识别（用户可重新部署）
+        //    必须在"通知客户端结束"之前完成：前端收到 done 后会立刻重新查询部署状态
+        //    （/app/deploy/status）来把按钮从「已部署」切换成「重新部署」，
+        //    如果这时 edit_time 还没落库，前端会再缓存一次 deployStale=false，
+        //    用户就会遇到"改完代码却点不动部署按钮"（实测问题）。
+        if (status == GenerationStatus.FINISHED) {
+            appCodeStateService.markCodeChanged(task.getAppId());
+        }
+        // 3) 结束所有订阅者（客户端断开与否都到这里收口）
         List<Subscriber> targets;
         synchronized (task) {
             targets = new ArrayList<>(task.subscribers.values());
@@ -405,12 +472,8 @@ public class GenerationTaskRegistry {
                 // 订阅者已断开
             }
         });
-        // 3) Vue 工程：生成结束后触发一次异步构建
+        // 4) Vue 工程：生成结束后触发一次异步构建
         triggerBuild(task.getAppId());
-        // 4) 代码变了：刷新 edit_time，让"已部署但代码有更新"能被识别（用户可重新部署）
-        if (status == GenerationStatus.FINISHED) {
-            appCodeStateService.markCodeChanged(task.getAppId());
-        }
         // 5) 释放上游
         Disposable disposable = task.getUpstream();
         if (disposable != null) {

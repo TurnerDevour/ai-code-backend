@@ -1,6 +1,7 @@
 package com.example.aicodebackend.core.generation;
 
 import com.example.aicodebackend.core.builder.VueProjectBuilder;
+import cn.hutool.core.util.StrUtil;
 import com.example.aicodebackend.mapper.AppMapper;
 import com.example.aicodebackend.model.entity.User;
 import com.example.aicodebackend.service.AppCodeStateService;
@@ -32,6 +33,11 @@ class GenerationTaskRegistryTest {
     // 每个测试用独立的 appId：注册表对同一个 appId 会复用正在运行的任务，共享 appId 会让测试互相干扰
     private static final java.util.concurrent.atomic.AtomicLong APP_ID_SEQ =
             new java.util.concurrent.atomic.AtomicLong(9000L);
+
+    /** 事件名：代码变更时间（edit_time）已落库 */
+    private static final String MARK_CODE_CHANGED = "edit-time";
+    /** 事件名：订阅者收到结束信号（客户端看到 done） */
+    private static final String SUBSCRIBER_COMPLETED = "subscriber-complete";
 
     /**
      * 取一个测试专用的 appId
@@ -172,7 +178,102 @@ class GenerationTaskRegistryTest {
     }
 
     private GenerationTaskRegistry newRegistry(List<String> persisted) {
-        ChatHistoryService chatHistoryService = (ChatHistoryService) Proxy.newProxyInstance(
+        return newRegistry(persisted, null);
+    }
+
+    /**
+     * 生成成功时，必须"先把代码标记为已变更（edit_time 落库），再通知客户端结束"
+     * <p>
+     * 为什么：前端收到 done 之后会立刻重新查询部署状态来把按钮从「已部署」切成「重新部署」。
+     * 如果这时 edit_time 还没落库，前端会再缓存一次 {@code deployStale=false}，
+     * 用户就会遇到"用 AI 改完内容却点不动部署按钮"（实测问题：无法二次部署）。
+     */
+    @Test
+    @DisplayName("生成成功：先落 edit_time，再通知订阅者结束")
+    void codeChangeShouldBeMarkedBeforeSubscribersComplete() {
+        long appId = nextAppId();
+        List<String> events = new CopyOnWriteArrayList<>();
+        GenerationTaskRegistry registry = newRegistry(new CopyOnWriteArrayList<>(), events);
+
+        // 用可手动驱动的上游：确保订阅者已登记后再结束，从而能观察到两个动作的先后顺序
+        reactor.core.publisher.Sinks.Many<GenerationTaskRegistry.GenerationEmit> upstream =
+                reactor.core.publisher.Sinks.many().unicast().onBackpressureBuffer();
+        GenerationTaskRegistry.GenerationTask task = registry.submitOrGet(appId, user(), upstream::asFlux);
+
+        List<String> received = new CopyOnWriteArrayList<>();
+        registry.subscribe(task, "sub-1", 0L)
+                .doOnComplete(() -> events.add(SUBSCRIBER_COMPLETED))
+                .map(GenerationTaskRegistry.SequencedFrame::data)
+                .subscribe(received::add);
+
+        upstream.tryEmitNext(new GenerationTaskRegistry.GenerationEmit("frame-0", "c0"));
+        upstream.tryEmitComplete();
+
+        assertEquals(List.of(MARK_CODE_CHANGED, SUBSCRIBER_COMPLETED), events,
+                "必须先落 edit_time 再让客户端看到结束，否则前端会缓存过期的 deployStale=false，部署按钮点不动");
+        assertTrue(received.contains("frame-0"), "分片应正常下发，实际: " + received);
+        assertTrue(registry.awaitFinished(appId, 5_000), "任务应已结束");
+    }
+
+    /**
+     * 模型用文本"假装"调用工具时，必须显式告警
+     * <p>
+     * 实测事故：模型学会了照抄历史里的 {@code [工具调用] xxx} 文本格式，整轮只打印这种文本、
+     * 一次工具都没执行，文件一个都没写，而对话里看起来和真实调用一模一样。
+     */
+    @Test
+    @DisplayName("文本形式的假工具调用：落库内容里必须给出明确警告")
+    void fakeToolCallsWrittenAsTextShouldBeWarned() throws Exception {
+        long appId = nextAppId();
+        List<String> persisted = new CopyOnWriteArrayList<>();
+        GenerationTaskRegistry registry = newRegistry(persisted);
+
+        // 模型输出的正文里"手写"了两条工具调用，但没有任何真实的工具执行
+        String fakeText = "现在开始写入：\n[工具调用] writeToFile {\"relativeFilePath\":\"src/utils/i18n.js\"}\n"
+                + "[工具调用] writeToFile {\"relativeFilePath\":\"src/main.js\"}\n完成";
+        Flux<GenerationTaskRegistry.GenerationEmit> upstream = Flux.just(
+                new GenerationTaskRegistry.GenerationEmit(
+                        "{\"type\":\"ai_response\",\"data\":\"...\"}", fakeText));
+
+        GenerationTaskRegistry.GenerationTask task = registry.submitOrGet(appId, user(), () -> upstream);
+        registry.subscribe(task, "sub-1", 0L).blockLast(Duration.ofSeconds(5));
+        assertTrue(registry.awaitFinished(appId, 5_000), "任务应已结束");
+        awaitPersisted(persisted, 5_000);
+
+        assertEquals(1, persisted.size());
+        assertTrue(persisted.get(0).contains("是模型以纯文本输出的"),
+                "必须明确告知这些\"调用\"没有执行、文件没变，实际: " + StrUtil.maxLength(persisted.get(0), 300));
+        assertTrue(persisted.get(0).contains("2 处"), "应报告假调用处数");
+    }
+
+    /** 真实工具执行（带换行前缀的记录）不应被误判成假调用 */
+    @Test
+    @DisplayName("真实工具执行不会被误报为假调用")
+    void realToolExecutionsShouldNotBeWarned() throws Exception {
+        long appId = nextAppId();
+        List<String> persisted = new CopyOnWriteArrayList<>();
+        GenerationTaskRegistry registry = newRegistry(persisted);
+
+        Flux<GenerationTaskRegistry.GenerationEmit> upstream = Flux.just(
+                new GenerationTaskRegistry.GenerationEmit(
+                        "{\"type\":\"tool_executed\"}",
+                        "\n[工具调用] writeToFile {\"relativeFilePath\":\"src/App.vue\"}\n"));
+
+        GenerationTaskRegistry.GenerationTask task = registry.submitOrGet(appId, user(), () -> upstream);
+        registry.subscribe(task, "sub-1", 0L).blockLast(Duration.ofSeconds(5));
+        assertTrue(registry.awaitFinished(appId, 5_000));
+        awaitPersisted(persisted, 5_000);
+
+        assertEquals(1, persisted.size());
+        assertFalse(persisted.get(0).contains("纯文本输出"),
+                "真实执行不能报警告，实际: " + persisted.get(0));
+    }
+
+    /**
+     * @param persisted 落库内容收集（addChatMessage 的第 3 个参数）
+     * @param events    关键动作的发生顺序，为 null 时不记录
+     */
+    private GenerationTaskRegistry newRegistry(List<String> persisted, List<String> events) {        ChatHistoryService chatHistoryService = (ChatHistoryService) Proxy.newProxyInstance(
                 ChatHistoryService.class.getClassLoader(),
                 new Class<?>[]{ChatHistoryService.class},
                 (proxy, method, args) -> {
@@ -192,18 +293,25 @@ class GenerationTaskRegistryTest {
                 });
         // VueProjectBuilder 是无状态组件：测试里直接 new，构建会被放到 boundedElastic 上异步执行。
         // AppCodeStateService 只负责刷新 edit_time，这里用桩 mapper，避免测试依赖数据库。
-        return new GenerationTaskRegistry(chatHistoryService, new VueProjectBuilder(), new AppCodeStateService(stubAppMapper()));
+        return new GenerationTaskRegistry(chatHistoryService, new VueProjectBuilder(), new AppCodeStateService(stubAppMapper(events)));
     }
 
     /**
-     * 桩 AppMapper：只让 update 返回 1（表示刷新 edit_time 成功）
+     * 桩 AppMapper：只让 update 返回 1（表示刷新 edit_time 成功），并按需记录"代码已变更"这一动作
+     *
+     * @param events 记录动作顺序的列表，可为 null
      */
-    private AppMapper stubAppMapper() {
+    private AppMapper stubAppMapper(List<String> events) {
         return (AppMapper) Proxy.newProxyInstance(
                 AppMapper.class.getClassLoader(),
                 new Class<?>[]{AppMapper.class},
                 (proxy, method, args) -> switch (method.getName()) {
-                    case "update" -> 1;
+                    case "update" -> {
+                        if (events != null) {
+                            events.add(MARK_CODE_CHANGED);
+                        }
+                        yield 1;
+                    }
                     case "toString" -> "StubAppMapper";
                     case "hashCode" -> System.identityHashCode(proxy);
                     case "equals" -> proxy == args[0];

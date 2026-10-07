@@ -64,4 +64,41 @@ class TextUtilsTest {
         assertEquals("没有代码块", TextUtils.compressCodeBlocks("没有代码块", 100));
         assertNull(TextUtils.compressCodeBlocks(null, 100));
     }
+
+    /**
+     * 历史里的工具调用记录必须被改写成中性描述
+     * <p>
+     * 背景（实测事故）：这些记录会随历史回到模型记忆里，模型学会照抄这个文本格式——
+     * 它开始用文本"假装"调用工具：整轮 0 次真实工具执行、0 个文件落盘，对话里却全是"工具调用"。
+     */
+    @Test
+    @DisplayName("工具调用记录改写为中性描述，并丢掉巨型入参")
+    void shouldNeutralizeToolCallRecords() {
+        String text = "开始写入 i18n 文件：\n"
+                + "[工具调用] writeToFile {\"relativeFilePath\": \"src/utils/i18n.js\", \"content\": \""
+                + "x".repeat(500) + "\"}\n"
+                + "接着改导航栏：\n"
+                + "⚠️ [工具调用失败] modifyFile {\"relativeFilePath\": \"src/components/NavBar.vue\", "
+                + "\"oldContent\": \"a\", \"newContent\": \"b\"}\n"
+                + "完成";
+
+        String neutralized = TextUtils.neutralizeToolCallRecords(text);
+
+        assertTrue(neutralized.contains("（系统记录：writeToFile 处理过 src/utils/i18n.js，以文件实际内容为准）"),
+                "成功的工具记录要改写成中性（且不谎报成功）的描述，实际: " + neutralized);
+        assertTrue(neutralized.contains("（系统记录：modifyFile 执行失败 src/components/NavBar.vue）"),
+                "失败的记录同样要改写并标注失败，实际: " + neutralized);
+        assertTrue(!neutralized.contains("relativeFilePath"), "入参（可能非常大）必须被丢掉");
+        assertTrue(neutralized.contains("开始写入 i18n 文件") && neutralized.contains("完成"),
+                "正文必须保留");
+        assertTrue(neutralized.length() < text.length(), "改写后应明显变短");
+    }
+
+    @Test
+    @DisplayName("没有工具记录时原样返回")
+    void shouldKeepTextWithoutToolRecords() {
+        String text = "已经完成首页改造。\n[🔧 工具调用] 写入文件 src/App.vue";  // 旧的展示格式不是机器记录
+        assertEquals(text, TextUtils.neutralizeToolCallRecords(text));
+        assertNull(TextUtils.neutralizeToolCallRecords(null));
+    }
 }

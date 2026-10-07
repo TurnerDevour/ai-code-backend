@@ -55,7 +55,7 @@ public class AiModelConfig {
          * 必须显式绑定：OpenAiStreamingChatModel 对 connectTimeout / readTimeout 的默认值都是 60 秒
          * （getOrDefault(builder.timeout, ofSeconds(60))）。不配置就会按 60 秒生效，思考模式下
          * 单个请求一旦超过 60 秒就会被中断，表现为：
-         * java.io.IOException: closed -> dev.langchain4j.exception.LangChain4jException: closed
+         * IOException: closed -> LangChain4jException: closed
          */
         private Duration timeout;
 
@@ -72,6 +72,8 @@ public class AiModelConfig {
         private boolean logRequests = true;
 
         private boolean logResponses = true;
+
+        private double temperature;
     }
 
     /**
@@ -108,6 +110,7 @@ public class AiModelConfig {
                 .apiKey(properties.getApiKey())
                 .modelName(properties.getModelName())
                 .maxTokens(properties.getMaxTokens())
+                .temperature(properties.getTemperature())
                 // 入站：把响应中的 reasoning_content 解析并保存到 AiMessage.thinking()
                 .returnThinking(properties.isReturnThinking())
                 // 出站：回放历史时回传 reasoning_content，否则 DeepSeek 思考模式 + tools 第二轮起报 400

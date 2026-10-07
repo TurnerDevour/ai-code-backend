@@ -59,6 +59,7 @@ public class App implements Serializable {
     /**
      * 部署时间
      */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime deployedTime;
 
     /**

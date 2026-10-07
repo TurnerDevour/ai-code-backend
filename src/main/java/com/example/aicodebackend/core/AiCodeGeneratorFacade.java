@@ -149,15 +149,42 @@ public class AiCodeGeneratorFacade {
             }).onError(throwable -> {
                 log.error("处理代码流时发生错误", throwable);
                 invalidateServiceCacheIfToolMessagesInvalid(throwable, appId);
-                sink.error(throwable);
+                sink.error(toUserFacingError(throwable));
             }).start();
         });
     }
 
     /**
+     * 把框架层的兜底异常翻译成用户看得懂的失败原因
+     * <p>
+     * 目前只处理"工具轮次超限"：LangChain4j 超过 {@code maxToolCallingRoundTrips} 时抛出的
+     * {@code Something is wrong, exceeded N tool calling round trips} 对用户没有意义，
+     * 而它背后通常就是"模型在原地重复写同一批文件"（Vue 工程模式实测到的死循环形态）。
+     *
+     * @param throwable 原始异常
+     *
+     * @return 原始异常，或翻译后的业务异常
+     */
+    private static Throwable toUserFacingError(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null && message.contains("tool calling round trips")) {
+                return new BusinessException(ErrorCode.SYSTEM_ERROR,
+                        "模型连续调用了过多轮工具（疑似在原地重复写同一批文件），已中止本轮生成。"
+                                + "请重新发起；若仍复现，请把需求拆成更小的步骤。");
+            }
+            current = current.getCause();
+        }
+        return throwable;
+    }
+
+    /**
      * 判断异常是否为"工具消息不完整"这类记忆损坏，是的话失效该应用的生成服务缓存
      * <p>
-     * 只有清掉缓存的实例，下一次请求才会重新加载（已被清洗的）对话记忆。
+     * 只有清掉缓存的实例，下一次请求才会重新加载对话记忆——届时
+     * {@link AiCodeGeneratorServiceFactory#getAiCodeGeneratorService} 会在新一轮开始处先做一次
+     * 工具消息配对修复（见 {@code ChatMemorySanitizer#repairStoredMessages}）。
      *
      * @param throwable 生成异常
      * @param appId     应用 id

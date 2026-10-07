@@ -435,6 +435,13 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 // 工具执行结果：记录"工具名 + 完整入参"，保证历史里能看到写了哪些文件与内容
                 String name = StrUtil.nullToEmpty(json.getStr("name"));
                 String arguments = StrUtil.nullToEmpty(json.getStr("arguments"));
+                // 失败必须留下明确痕迹：LangChain4j 对"参数不合法 / 工具名不存在 / 工具内部异常"
+                // 同样会回调 onToolExecuted，若不区分，历史里"写了文件"和"根本没写"完全一样，
+                // 用户只会看到"AI 说改好了、页面没变"（实测问题）。
+                if (json.getBool("failed", false)) {
+                    String reason = StrUtil.maxLength(StrUtil.nullToEmpty(json.getStr("result")), 500);
+                    return "\n⚠️ [工具调用失败] " + name + " " + arguments + "\n失败原因：" + reason + "\n";
+                }
                 return "\n[工具调用] " + name + " " + arguments + "\n";
             }
         } catch (Exception e) {
@@ -510,7 +517,36 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     });
                     return vo;
                 })
-                .orElseGet(() -> GenerationStatusVO.none(appId));
+                .orElseGet(() -> noTaskStatus(appId, app));
+    }
+
+    /**
+     * 没有生成任务时的状态（Vue 工程会额外报告"产物是否已经就绪"）
+     * <p>
+     * 为什么不能一律回 {@code buildStatus=idle}：生成任务注册表是<b>进程内</b>的，后端一重启
+     * 所有任务就都没了；此时如果仍然告诉前端"构建还没做完"，前端就会每 1.5 秒轮询一次状态接口
+     * 直到轮询上限——实测表现是后端日志里 {@code SELECT user} / {@code SELECT app} 两条 SQL 一直刷，
+     * 而预览区一直空白（等不到构建完成就不会去刷新预览）。
+     * <p>
+     * 产物 {@code dist/index.html} 存在就说明构建早就完成了，直接回 {@code finished}，
+     * 让前端立刻刷新预览；没有产物则维持 idle（确实从未成功构建过）。
+     *
+     * @param appId 应用ID
+     * @param app   应用实体
+     *
+     * @return 状态视图
+     */
+    private GenerationStatusVO noTaskStatus(Long appId, App app) {
+        GenerationStatusVO vo = GenerationStatusVO.none(appId);
+        if (CodeGenTypeEnum.VUE_PROJECT != CodeGenTypeEnum.getEnumByValue(app.getCodeGenType())) {
+            return vo;
+        }
+        File distIndex = new File(buildSourceDirPath(app.getCodeGenType(), appId), "dist/index.html");
+        if (distIndex.isFile()) {
+            vo.setBuildStatus(GenerationTaskRegistry.BuildStatus.FINISHED.getValue());
+            vo.setMessage("当前没有进行中的生成任务，构建产物已就绪");
+        }
+        return vo;
     }
 
     /**

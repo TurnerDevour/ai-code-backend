@@ -77,11 +77,19 @@ public class JedisChatMemoryStore implements ChatMemoryStore {
     /**
      * 读取某个会话的全部消息
      * <p>
-     * 读取时做一次工具消息配对清洗：模型在流式输出中发出工具调用后如果异常中断
-     * （例如 {@code AI回复失败: null}），这条 assistant 消息就会"有 tool_calls、没有 tool 结果"地留在
-     * Redis 里，之后每次请求都会被 OpenAI 兼容接口拒绝
-     * （{@code An assistant message with 'tool_calls' must be followed by tool messages ...}），
-     * 该应用的对话会永久失败。清洗掉未完成的那一轮工具上下文即可恢复可用。
+     * <b>这里必须是纯读取，绝不能做"工具消息配对清洗"</b>：LangChain4j 的工具循环是
+     * "先把 assistant(tool_calls) 写进记忆 → 执行工具 → 再把工具结果写进记忆"，
+     * 而 {@code MessageWindowChatMemory.add()} 每一次都会先通过本方法读一遍存储。
+     * 也就是说，在"结果还没写进来"的那一瞬间读到的记忆<b>天然</b>就是
+     * "有 tool_calls、没有结果"——这是正在进行的正常状态，不是脏数据。
+     * <p>
+     * 历史教训（实测死循环）：这里曾经调用 {@code ChatMemorySanitizer.sanitizeToolMessages} 并写回，
+     * 于是每一次工具结果写回前，刚写进去的 assistant 消息就被当成"未完成"删掉，
+     * 紧接着孤立的工具结果也在下一次读取时被删掉：模型<b>永远看不到工具结果</b>，
+     * 以为文件根本没写成功，于是反复重写同样的文件，Vue 工程模式的生成永不收敛。
+     * <p>
+     * 脏数据（上一轮异常中断留下的不完整工具上下文）只在"新一轮开始前"修复一次，
+     * 见 {@link ChatMemorySanitizer#repairStoredMessages}。
      *
      * @param memoryId 记忆 id（本项目中为 appId）
      *
@@ -95,13 +103,7 @@ public class JedisChatMemoryStore implements ChatMemoryStore {
             if (json == null || json.isBlank()) {
                 return new ArrayList<>();
             }
-            List<ChatMessage> messages = ChatMessageDeserializer.messagesFromJson(json);
-            List<ChatMessage> sanitized = ChatMemorySanitizer.sanitizeToolMessages(messages);
-            if (sanitized.size() != messages.size()) {
-                // 把清洗结果写回：否则每次加载都要重新清洗一遍，而且脏数据会一直躺在 Redis 里
-                updateMessages(memoryId, sanitized);
-            }
-            return sanitized;
+            return ChatMessageDeserializer.messagesFromJson(json);
         } catch (JedisException e) {
             log.error("读取对话记忆失败，key: {}", key, e);
             return new ArrayList<>();

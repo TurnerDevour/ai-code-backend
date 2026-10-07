@@ -1,6 +1,7 @@
 package com.example.aicodebackend.model.vo;
 
 import com.example.aicodebackend.model.enums.DeployStatusEnum;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
 import java.io.Serial;
@@ -49,6 +50,7 @@ public class DeployStatusVO implements Serializable {
     /**
      * 最近一次部署完成时间（可能为空）
      */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime deployedTime;
 
     /**
