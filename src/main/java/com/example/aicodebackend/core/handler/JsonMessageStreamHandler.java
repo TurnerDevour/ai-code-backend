@@ -1,11 +1,9 @@
 package com.example.aicodebackend.core.handler;
 
 import cn.hutool.core.util.StrUtil;
-import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.example.aicodebackend.ai.model.message.*;
-import com.example.aicodebackend.ai.tools.BaseTool;
-import com.example.aicodebackend.ai.tools.ToolManager;
+import com.example.aicodebackend.ai.tools.ToolMessageRenderer;
 import com.example.aicodebackend.constant.AppConstant;
 import com.example.aicodebackend.constant.ChatHistoryConstant;
 import com.example.aicodebackend.core.builder.VueProjectBuilder;
@@ -40,8 +38,11 @@ public class JsonMessageStreamHandler {
     @Resource
     private VueProjectBuilder vueProjectBuilder;
 
+    /**
+     * 工具展示文本生成器：工具请求/执行结果的展示文案统一由它生成（工具自己声明）
+     */
     @Resource
-    private ToolManager toolManager;
+    private ToolMessageRenderer toolMessageRenderer;
 
     /**
      * 生成收尾处理器：负责把"生成过程"与"客户端连接"解耦（客户端断开后仍等生成跑完再落库）
@@ -174,8 +175,8 @@ public class JsonMessageStreamHandler {
         if (toolId != null && !seenToolIds.add(toolId)) {
             return "";
         }
-        BaseTool tool = findTool(toolRequestMessage.getName());
-        return tool == null ? "" : wrapToolOutput(tool.generateToolRequestResponse());
+        // 展示文案统一由 ToolMessageRenderer 生成（工具自己声明，前端/历史/实时三处一致）
+        return wrapToolOutput(toolMessageRenderer.renderRequest(toolRequestMessage.getName()));
     }
 
     /**
@@ -192,55 +193,8 @@ public class JsonMessageStreamHandler {
         ToolExecutedMessage toolExecutedMessage = JSONUtil.toBean(chunk, ToolExecutedMessage.class);
         // 失败的工具调用不能渲染成"写入了文件"：LangChain4j 对参数不合法 / 工具名不存在 / 工具异常
         // 同样会回调 onToolExecuted，此时文件并没有写入（实测问题：AI 说改了、页面没变）。
-        if (toolExecutedMessage.isFailed()) {
-            return wrapToolOutput(String.format("⚠️ [工具调用失败] %s：%s", toolExecutedMessage.getName(),
-                    StrUtil.maxLength(StrUtil.nullToEmpty(toolExecutedMessage.getResult()), 500)));
-        }
-        BaseTool tool = findTool(toolExecutedMessage.getName());
-        if (tool == null) {
-            return "";
-        }
-        JSONObject arguments = parseArguments(toolExecutedMessage);
-        if (arguments == null) {
-            return "";
-        }
-        return wrapToolOutput(tool.generateToolExecutedResult(arguments));
-    }
-
-    /**
-     * 按工具名称取出工具实例
-     *
-     * @param toolName 工具英文名称
-     *
-     * @return 工具实例，未注册时返回 null
-     */
-    private BaseTool findTool(String toolName) {
-        BaseTool tool = StrUtil.isBlank(toolName) ? null : toolManager.getTool(toolName);
-        if (tool == null) {
-            log.warn("未注册的工具，已跳过展示: {}", toolName);
-        }
-        return tool;
-    }
-
-    /**
-     * 解析工具执行参数
-     *
-     * @param toolExecutedMessage 工具执行结果消息
-     *
-     * @return 参数对象，参数缺失或非法时返回 null
-     */
-    private JSONObject parseArguments(ToolExecutedMessage toolExecutedMessage) {
-        String arguments = toolExecutedMessage.getArguments();
-        if (StrUtil.isBlank(arguments)) {
-            log.warn("工具执行结果缺少参数，已跳过展示，工具: {}", toolExecutedMessage.getName());
-            return null;
-        }
-        try {
-            return JSONUtil.parseObj(arguments);
-        } catch (Exception e) {
-            log.warn("工具参数不是合法 JSON，已跳过展示，工具: {}，参数: {}", toolExecutedMessage.getName(), arguments);
-            return null;
-        }
+        return wrapToolOutput(toolMessageRenderer.renderExecuted(toolExecutedMessage.getName(),
+                toolExecutedMessage.getArguments(), toolExecutedMessage.isFailed(), toolExecutedMessage.getResult()));
     }
 
     /**

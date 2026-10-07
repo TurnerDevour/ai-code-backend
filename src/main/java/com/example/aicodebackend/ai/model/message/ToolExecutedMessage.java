@@ -32,6 +32,15 @@ public class ToolExecutedMessage extends StreamMessage {
      */
     private boolean failed;
 
+    /**
+     * 展示文本（形如 {@code [🔧 工具调用] 修改文件内容 xx.vue} + 修改前后代码块）
+     * <p>
+     * 由后端按工具自己声明的展示逻辑生成，见 {@code ToolMessageRenderer}。
+     * 前端不要按工具名猜参数结构：{@code modifyFile} 没有 content 字段，
+     * 猜成 writeToFile 会渲染出一个空代码块（实测问题：写文件输出空白）。
+     */
+    private String display;
+
     public ToolExecutedMessage(ToolExecution toolExecution) {
         super(StreamMessageTypeEnum.TOOL_EXECUTED.getValue());
         this.id = toolExecution.request().id();

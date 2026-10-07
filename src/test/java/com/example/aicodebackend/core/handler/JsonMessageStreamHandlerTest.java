@@ -4,6 +4,7 @@ import cn.hutool.json.JSONUtil;
 import com.example.aicodebackend.ai.tools.BaseTool;
 import com.example.aicodebackend.ai.tools.FileWriteTool;
 import com.example.aicodebackend.ai.tools.ToolManager;
+import com.example.aicodebackend.ai.tools.ToolMessageRenderer;
 import com.example.aicodebackend.model.entity.User;
 import com.example.aicodebackend.service.ChatHistoryService;
 import org.junit.jupiter.api.DisplayName;
@@ -107,9 +108,10 @@ class JsonMessageStreamHandlerTest {
     }
 
     /**
-     * 构建被测处理器，并按 ToolManager 的职责注入它需要的工具实例
+     * 构建被测处理器，并按 ToolMessageRenderer 的职责注入它需要的工具实例
      * <p>
-     * 工具实例在容器外无法自动装配，这里手动设置 ToolManager 的注入字段。
+     * 工具实例在容器外无法自动装配，这里手动设置 ToolManager 的注入字段，
+     * 再把它交给 ToolMessageRenderer（工具展示文案统一由它生成）。
      */
     private JsonMessageStreamHandler createHandler() {
         ToolManager toolManager = new ToolManager();
@@ -117,7 +119,7 @@ class JsonMessageStreamHandlerTest {
         toolManager.initTools();
 
         JsonMessageStreamHandler handler = new JsonMessageStreamHandler();
-        ReflectionTestUtils.setField(handler, "toolManager", toolManager);
+        ReflectionTestUtils.setField(handler, "toolMessageRenderer", new ToolMessageRenderer(toolManager));
         return handler;
     }
 

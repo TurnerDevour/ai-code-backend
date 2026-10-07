@@ -9,6 +9,7 @@ import com.example.aicodebackend.ai.model.message.AiResponseMessage;
 import com.example.aicodebackend.ai.model.message.AiThinkingMessage;
 import com.example.aicodebackend.ai.model.message.ToolExecutedMessage;
 import com.example.aicodebackend.ai.model.message.ToolRequestMessage;
+import com.example.aicodebackend.ai.tools.ToolMessageRenderer;
 import com.example.aicodebackend.config.AiCodeGeneratorServiceFactory;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
@@ -53,6 +54,13 @@ public class AiCodeGeneratorFacade {
 
     @Resource
     private AiCodeGeneratorServiceFactory aiCodeGeneratorServiceFactory;
+
+    /**
+     * 工具展示文本生成器：把工具的展示文案随流式消息一起下发，
+     * 前端只渲染文本、不猜工具参数结构（见 {@code ToolMessageRenderer}）
+     */
+    @Resource
+    private ToolMessageRenderer toolMessageRenderer;
 
     /**
      * 根据给定的提示和代码生成类型生成代码，并以流式方式返回生成的代码。
@@ -145,9 +153,14 @@ public class AiCodeGeneratorFacade {
                 sink.next(JSONUtil.toJsonStr(aiThinkingMessage));
             }).onToolExecuted(toolExecution -> {
                 ToolExecutionRequest request = toolExecution.request();
+                // 展示文本由工具自己声明（见 ToolMessageRenderer）：前端不再按工具名猜参数结构，
+                // 否则 modifyFile 也会被渲染成"写入文件 + 空代码块"
                 ToolRequestMessage toolRequestMessage = new ToolRequestMessage(request);
+                toolRequestMessage.setDisplay(toolMessageRenderer.renderRequest(request.name()));
                 sink.next(JSONUtil.toJsonStr(toolRequestMessage));
                 ToolExecutedMessage toolExecutedMessage = new ToolExecutedMessage(toolExecution);
+                toolExecutedMessage.setDisplay(toolMessageRenderer.renderExecuted(request.name(), request.arguments(),
+                        toolExecution.hasFailed(), toolExecution.result()));
                 sink.next(JSONUtil.toJsonStr(toolExecutedMessage));
             }).onCompleteResponse(chatResponse -> {
                 log.info("VUE_PROJECT 生成完成，结束原因: {}", chatResponse.finishReason());
