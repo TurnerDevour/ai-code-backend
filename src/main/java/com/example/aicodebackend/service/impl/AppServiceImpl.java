@@ -41,6 +41,7 @@ import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -64,6 +65,9 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppService {
+
+    @Value("${code.deploy-host:http://localhost}")
+    private String deployHost;
 
     @Resource
     private UserService userService;
@@ -356,21 +360,21 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
      * 生成在服务端独立运行（累积 + 结束后落库完整内容），返回给客户端的只是"订阅这份输出"；
      * 客户端断开只解绑自己的订阅，不会取消生成，也不会让历史里只有半截内容。
      *
-     * @param app              应用实体
-     * @param appId            应用ID
-     * @param prompt           提示词
-     * @param loginUser        登录用户
-     * @param codeGenTypeEnum  代码生成类型（调用方已保证是 VUE_PROJECT）
-     * @param aiModelTypeEnum  AI 模型类型
+     * @param app             应用实体
+     * @param appId           应用ID
+     * @param prompt          提示词
+     * @param loginUser       登录用户
+     * @param codeGenTypeEnum 代码生成类型（调用方已保证是 VUE_PROJECT）
+     * @param aiModelTypeEnum AI 模型类型
      *
      * @return 下发给客户端的流（每帧一个 JSON 消息）
      */
     private Flux<GenerationTaskRegistry.SequencedFrame> chatToGenCodeWithRegistry(App app,
-                                                   Long appId,
-                                                   String prompt,
-                                                   User loginUser,
-                                                   CodeGenTypeEnum codeGenTypeEnum,
-                                                   AIModelTypeEnum aiModelTypeEnum) {
+                                                                                  Long appId,
+                                                                                  String prompt,
+                                                                                  User loginUser,
+                                                                                  CodeGenTypeEnum codeGenTypeEnum,
+                                                                                  AIModelTypeEnum aiModelTypeEnum) {
         String subId = "sub-" + appId + "-" + System.nanoTime();
         GenerationTaskRegistry.GenerationTask task = generationTaskRegistry.submitOrGet(appId, loginUser,
                 () -> buildRegistryUpstream(app, appId, prompt, codeGenTypeEnum, aiModelTypeEnum));
@@ -392,10 +396,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
      * @return 上游输出流
      */
     private Flux<GenerationTaskRegistry.GenerationEmit> buildRegistryUpstream(App app,
-                                                                             Long appId,
-                                                                             String prompt,
-                                                                             CodeGenTypeEnum codeGenTypeEnum,
-                                                                             AIModelTypeEnum aiModelTypeEnum) {
+                                                                              Long appId,
+                                                                              String prompt,
+                                                                              CodeGenTypeEnum codeGenTypeEnum,
+                                                                              AIModelTypeEnum aiModelTypeEnum) {
         // 复用既有的流式生成链路（内部已按 VUE_PROJECT 处理思考内容、工具请求与工具执行结果），
         // 这里只负责把它拆成"下发帧 + 累积文本"
         return aiCodeGeneratorFacade.generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId, aiModelTypeEnum)
@@ -938,7 +942,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
      * @return 部署地址，deployKey 为空时返回 null
      */
     private String buildDeployUrl(String deployKey) {
-        return StrUtil.isBlank(deployKey) ? null : String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
+        return StrUtil.isBlank(deployKey) ? null : String.format("%s/%s/", deployHost, deployKey);
     }
 
     /**
@@ -971,10 +975,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     /**
      * 部署主体：CAS 抢占 deployKey -> 构建 -> 复制到部署目录 -> 提交部署信息
      *
-     * @param app          应用实体（调用前的快照）
-     * @param appId        应用ID
-     * @param codeGenType  代码生成类型
-     * @param sourceDir    源码目录
+     * @param app         应用实体（调用前的快照）
+     * @param appId       应用ID
+     * @param codeGenType 代码生成类型
+     * @param sourceDir   源码目录
      *
      * @return 可访问的部署地址
      */
@@ -1035,7 +1039,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             }
 
             // 5. 返回部署地址并异步生成封面截图
-            String appDeployUrl = String.format("%s/%s/", AppConstant.CODE_DEPLOY_HOST, deployKey);
+            String appDeployUrl = String.format("%s/%s/", deployHost, deployKey);
             log.info("应用部署成功，appId: {}, 部署地址: {}, 部署目录: {}", appId, appDeployUrl, deployDirPath);
             generateAndUploadScreenshotAsync(appId, appDeployUrl);
             return appDeployUrl;
@@ -1114,7 +1118,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                     .setRaw("deploy_key", "NULL")
                     .toEntity();
             QueryCondition condition = QueryCondition.create(new QueryColumn("id"), appId)
-                    .and(QueryCondition.create(new QueryColumn("deploy_key"), deployKey));            int affected = this.getMapper().updateByCondition(release, condition);
+                    .and(QueryCondition.create(new QueryColumn("deploy_key"), deployKey));
+            int affected = this.getMapper().updateByCondition(release, condition);
             log.warn("部署失败，已释放 deployKey，appId: {}, deployKey: {}, affected: {}", appId, deployKey, affected);
         } catch (Exception e) {
             log.error("部署失败后释放 deployKey 出错，appId: {}, deployKey: {}", appId, deployKey, e);

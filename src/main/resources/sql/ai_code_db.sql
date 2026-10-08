@@ -68,7 +68,6 @@ alter table app
     add column ai_model_type varchar(64) default 'deepseek-flash' null comment 'AI 模型类型（枚举）' after code_gen_type;
 
 -- 异步部署：应用表添加部署状态、失败原因与部署发起人
--- 说明：字段与索引会由 DatabaseSchemaInitializer 在启动时幂等补齐，这里同步维护脚本，便于新建库直接使用
 alter table app
     add column deploy_status varchar(32) null comment '部署状态：idle/deploying/ready/failed' after deployed_time;
 alter table app
@@ -83,6 +82,5 @@ update app set deploy_status = 'idle' where (deploy_status is null or deploy_sta
 
 -- AI 思考过程：对话历史添加 thinking 字段（推理模型的 reasoning_content，例如 DeepSeek / Qwen 的思考模式）
 -- 与 message 分开存：思考过程只在对话页顶部的「AI 思考过程」面板展示，不进正文、也不参与模型上下文
--- 说明：该字段同样由 DatabaseSchemaInitializer 在启动时幂等补齐
 alter table chat_history
     add column thinking mediumtext null comment 'AI 思考过程（推理模型的 reasoning_content）' after message;

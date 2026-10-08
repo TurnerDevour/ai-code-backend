@@ -39,8 +39,6 @@ ai:
       temperature: 0.3
       return-thinking: true
       send-thinking: true
-      log-requests: true
-      log-responses: true
     deepseek-v4-pro:
       provider: deepseek
       base-url: https://api.deepseek.com
@@ -50,8 +48,6 @@ ai:
       temperature: 0.3
       return-thinking: true
       send-thinking: true
-      log-requests: true
-      log-responses: true
     # 阿里云百炼
     "[qwen3.8-max]":
       provider: bailian
@@ -63,8 +59,6 @@ ai:
       return-thinking: true
       send-thinking: false
       enable-thinking: true
-      log-requests: true
-      log-responses: true
     "[qwen3.7-plus]":
       provider: bailian
       region: cn-beijing
@@ -75,8 +69,6 @@ ai:
       return-thinking: true
       send-thinking: false
       enable-thinking: true
-      log-requests: true
-      log-responses: true
 
   model-check:
     enabled: true

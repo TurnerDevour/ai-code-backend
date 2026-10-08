@@ -60,17 +60,25 @@ ai:
     # DeepSeek 开放平台
     deepseek-flash:
       api-key: ${DEEPSEEK_API_KEY}
+      log-requests: true
+      log-responses: true
     deepseek-v4-pro:
       api-key: ${DEEPSEEK_API_KEY}
+      log-requests: true
+      log-responses: true
     # 阿里云百炼
     "[qwen3.8-max]":
       base-url: ${ALI_AI_BASE_URL}
       workspace-id: ${ALI_WORKSPACE_ID}
       api-key: ${ALI_AI_API_KEY}
+      log-requests: true
+      log-responses: true
     "[qwen3.7-plus]":
       base-url: ${ALI_AI_BASE_URL}
       workspace-id: ${ALI_WORKSPACE_ID}
       api-key: ${ALI_AI_API_KEY}
+      log-requests: true
+      log-responses: true
 
 # 配置cos对象存储
 cos:
@@ -80,3 +88,7 @@ cos:
     bucket: ${COS_BUCKET_NAME}
     secret-id: ${COS_SECRET_ID}
     secret-key: ${COS_SECRET_KEY}
+
+# 应用部署
+code:
+  deploy-host: http://localhost
