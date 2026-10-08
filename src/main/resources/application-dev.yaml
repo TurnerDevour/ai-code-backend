@@ -47,11 +47,6 @@ deploy:
     workers: 4
     max-queue-size: 32
 
-# 截图临时目录
-screenshot:
-  temp:
-    ttl-minutes: 60
-    sweep-minutes: 10
 logging:
   file:
     name: temp/logs/ai-code-backend.log
@@ -64,64 +59,18 @@ ai:
   models:
     # DeepSeek 开放平台
     deepseek-flash:
-      provider: deepseek
-      base-url: https://api.deepseek.com
-      model-name: deepseek-flash
       api-key: ${DEEPSEEK_API_KEY}
-      timeout: 600s
-      max-tokens: 384000
-      temperature: 0.3
-      return-thinking: true
-      send-thinking: true
-      log-requests: true
-      log-responses: true
     deepseek-v4-pro:
-      provider: deepseek
-      base-url: https://api.deepseek.com
-      model-name: deepseek-v4-pro
       api-key: ${DEEPSEEK_API_KEY}
-      timeout: 600s
-      max-tokens: 384000
-      temperature: 0.3
-      return-thinking: true
-      send-thinking: true
-      log-requests: true
-      log-responses: true
     # 阿里云百炼
     "[qwen3.8-max]":
-      provider: bailian
       base-url: ${ALI_AI_BASE_URL}
       workspace-id: ${ALI_WORKSPACE_ID}
-      region: cn-beijing
-      model-name: qwen3.8-max
       api-key: ${ALI_AI_API_KEY}
-      timeout: 600s
-      max-tokens: 131072
-      temperature: 0.3
-      return-thinking: true
-      send-thinking: false
-      enable-thinking: true
-      log-requests: true
-      log-responses: true
     "[qwen3.7-plus]":
-      provider: bailian
       base-url: ${ALI_AI_BASE_URL}
       workspace-id: ${ALI_WORKSPACE_ID}
-      region: cn-beijing
-      model-name: qwen3.7-plus
       api-key: ${ALI_AI_API_KEY}
-      timeout: 600s
-      max-tokens: 131072
-      temperature: 0.3
-      return-thinking: true
-      send-thinking: false
-      enable-thinking: true
-      log-requests: true
-      log-responses: true
-
-  model-check:
-    enabled: true
-    timeout: 5s
 
 # 配置cos对象存储
 cos:

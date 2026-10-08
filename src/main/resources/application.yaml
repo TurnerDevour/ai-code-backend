@@ -3,7 +3,7 @@ spring:
     name: ai-code-backend
   profiles:
     active:
-      - dev
+      - prod
   session:
     timeout: 2592000
 
@@ -26,6 +26,67 @@ springdoc:
         - '/**'
       packages-to-scan:
         - com.example.aicodebackend.controller
+
+ai:
+  models:
+    # DeepSeek 开放平台
+    deepseek-flash:
+      provider: deepseek
+      base-url: https://api.deepseek.com
+      model-name: deepseek-flash
+      timeout: 600s
+      max-tokens: 384000
+      temperature: 0.3
+      return-thinking: true
+      send-thinking: true
+      log-requests: true
+      log-responses: true
+    deepseek-v4-pro:
+      provider: deepseek
+      base-url: https://api.deepseek.com
+      model-name: deepseek-v4-pro
+      timeout: 600s
+      max-tokens: 384000
+      temperature: 0.3
+      return-thinking: true
+      send-thinking: true
+      log-requests: true
+      log-responses: true
+    # 阿里云百炼
+    "[qwen3.8-max]":
+      provider: bailian
+      region: cn-beijing
+      model-name: qwen3.8-max
+      timeout: 600s
+      max-tokens: 131072
+      temperature: 0.3
+      return-thinking: true
+      send-thinking: false
+      enable-thinking: true
+      log-requests: true
+      log-responses: true
+    "[qwen3.7-plus]":
+      provider: bailian
+      region: cn-beijing
+      model-name: qwen3.7-plus
+      timeout: 600s
+      max-tokens: 131072
+      temperature: 0.3
+      return-thinking: true
+      send-thinking: false
+      enable-thinking: true
+      log-requests: true
+      log-responses: true
+
+  model-check:
+    enabled: true
+    timeout: 5s
+
+# 截图临时目录
+screenshot:
+  temp:
+    ttl-minutes: 60
+    sweep-minutes: 10
 
 mybatis-flex:
   configuration:
