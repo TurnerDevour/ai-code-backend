@@ -42,7 +42,10 @@ services:
       # 只在数据目录为空（首次启动）时执行一次；脚本含 create table / alter table，不是幂等脚本
       - ./src/main/resources/sql/ai_code_db.sql:/docker-entrypoint-initdb.d/01-ai_code_db.sql:ro
     ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      # 默认允许从外部连库（方便用 Navicat 等工具看数据）。
+      # 不需要外部连库时把 .env 的 MYSQL_BIND 改成 127.0.0.1 更安全。
+      # 注意：Docker 发布的端口会绕过 ufw/firewalld，真正的门禁是云安全组。
+      - "${MYSQL_BIND:-0.0.0.0}:${MYSQL_PORT:-3306}:3306"
     # 内存上限：小机器上必须给每个容器设限，避免某个容器把宿主机吃光后被内核随机 OOM
     mem_limit: 800m
     healthcheck:
@@ -78,7 +81,8 @@ services:
     volumes:
       - redis-data:/data
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      # 同 MySQL：不需要外部连 Redis 就把 REDIS_BIND 改成 127.0.0.1
+      - "${REDIS_BIND:-0.0.0.0}:${REDIS_PORT:-6379}:6379"
     mem_limit: 320m
     healthcheck:
       test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
@@ -143,7 +147,10 @@ services:
       # 生成源码 / 部署产物 / 截图临时文件，同时被 nginx 以只读方式挂载
       - app-temp:/app/temp
     ports:
-      - "${SERVER_PORT:-8123}:8123"
+      # 后端端口只绑到本机：对外统一走 nginx 的 80（/api），外部无需直连。
+      # 要从外部直连调试（http://wlbc.top:8123/api）时，把 SERVER_BIND 改成 0.0.0.0（并放行安全组）。
+      # 宿主机上的 curl http://127.0.0.1:8123/api/health 仍然可用。
+      - "${SERVER_BIND:-127.0.0.1}:${SERVER_PORT:-8123}:8123"
     # 容器内存上限（2核4G 预算见 DOCKER.md）：JVM 堆 1G + Chrome 2×0.3G + 单个 npm 构建 0.4~0.8G
     mem_limit: 2600m
     # Chrome 渲染需要共享内存；/dev/shm 也算在容器内存里，代码里已带 --disable-dev-shm-usage，给 256m 足够

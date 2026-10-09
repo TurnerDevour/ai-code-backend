@@ -1,4 +1,7 @@
-# 部署步骤详解（2 核 4G 服务器 + 域名 wlbc.top）
+# 部署步骤详解
+
+**目标环境**：Ubuntu Server 24.04 LTS 64bit（x86_64）· 2 核 4G · 域名 `http://wlbc.top`
+（跑在容器里的系统是 Debian 12，与宿主发行版无关；本文按 Ubuntu 24.04 写命令）
 
 > 本文是**按顺序照抄即可**的操作手册；每一步都说明「在干什么 / 怎么验证 / 失败了怎么办」。
 > 设计说明与依赖分析见 [DOCKER.md](DOCKER.md)。
@@ -7,7 +10,7 @@
 
 | # | 做什么 | 耗时 | 完成后状态 |
 | --- | --- | --- | --- |
-| 1 | 装 Docker + 镜像加速 + 加 swap | 5 分钟 | 服务器具备部署条件 |
+| 1 | 服务器准备：装 Docker + 免 sudo + 镜像加速 + swap | 5 分钟 | 服务器具备部署条件 |
 | 2 | 把项目代码放到服务器 | 1 分钟 | `/opt/ai-code-backend` 有代码 |
 | 3 | 写 `.env`（密钥/密码/域名） | 5 分钟 | 配置就绪 |
 | 4 | 静态校验配置 | 10 秒 | 配置无语法错 |
@@ -15,7 +18,7 @@
 | 6 | 只启动 MySQL + Redis | 1~2 分钟 | 库表已建好、健康 |
 | 7 | 启动 backend | 1~2 分钟 | 健康检查通过 |
 | 8 | 启动 nginx 并验证路由 | 10 秒 | `/api` 与 `/dist` 都通 |
-| 9 | 域名解析 + 安全组放行 | 5 分钟 | 浏览器能打开 |
+| 9 | 域名解析 + 云安全组放行 | 5 分钟 | 浏览器能打开 |
 | 10 | **打包前端并发布到 nginx** | 3~5 分钟 | `http://wlbc.top/` 打开是前端页面 |
 | 11 | 业务冒烟（注册→提权→生成→部署→截图） | 10 分钟 | 全链路可用 |
 | 12 | 收尾（自启/日志/备份） | 5 分钟 | 可长期运行 |
@@ -24,20 +27,32 @@
 
 ---
 
-## 第 1 步：装 Docker、配镜像加速、加 swap
+## 第 1 步：服务器准备（Ubuntu Server 24.04）
 
-**在干什么**：让服务器具备运行容器的条件。2 核 4G 有两件事必须提前做 —— 镜像加速（国内直连 Docker Hub 基本不通）和 swap（第 5 步编译镜像时内存会比较紧张）。
+**在干什么**：让这台 2 核 4G 的 Ubuntu 24.04 具备跑容器的条件。要点：装**官方新版** Docker（别用 apt 里的
+`docker.io` 旧版）、让当前用户免 `sudo`、配镜像加速与日志轮转、按需补 swap。
 
 ```bash
-# 1.1 安装 Docker（含 compose v2 插件）
-curl -fsSL https://get.docker.com | sh
+# 1.1 先确认基本信息
+uname -m                          # 期望 x86_64（本文的 JRE 包与 chromedriver 缓存路径都按 x64 写）
+cat /etc/os-release | head -2      # 期望 Ubuntu 24.04.x LTS
+nproc && free -h && df -h /
+
+# 1.2 时区（影响日志时间、备份文件名；容器内已单独设 TZ）
+sudo timedatectl set-timezone Asia/Shanghai
+date
+
+# 1.3 安装 Docker（官方脚本装最新版；Ubuntu 24.04 仓库里的 docker.io 是 24.0.x 老版本）
+curl -fsSL https://get.docker.com | sudo sh
 sudo systemctl enable --now docker
 
-# 1.2 验证
-docker version
-docker compose version      # 必须能打印 v2.x
+# 1.4 让当前用户免 sudo 用 docker —— 很重要：
+#     否则 compose 创建的挂载目录（如 frontend-dist）会归 root，第 10 步 scp 前端产物会 Permission denied
+sudo usermod -aG docker "$USER"
+# 退出终端重新登录（或执行 newgrp docker）后验证：
+docker version && docker compose version      # 期望 compose v2.x，且都不需要 sudo
 
-# 1.3 配置镜像加速 + 日志轮转（4G 机器磁盘小，日志必须限大小）
+# 1.5 镜像加速 + 日志轮转（4G 机器磁盘小，日志必须限大小）
 sudo mkdir -p /etc/docker
 sudo tee /etc/docker/daemon.json >/dev/null <<'EOF'
 {
@@ -47,34 +62,51 @@ sudo tee /etc/docker/daemon.json >/dev/null <<'EOF'
 }
 EOF
 sudo systemctl restart docker
+docker info | grep -A3 "Registry Mirrors"     # 确认加速器已生效
 
-# 1.4 加 2G swap（编译镜像 / npm 构建时的保命余量）
+# 1.6 swap：先看有没有，不够再补 2G（第 5 步编译镜像 / 用户工程 npm 构建时的保命余量）
+swapon --show
+# 若上面是空的（没有 swap），再执行下面四条：
 sudo fallocate -l 2G /swapfile
-sudo chmod 600 /swapfile
-sudo mkswap /swapfile
-sudo swapon /swapfile
+sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-
-# 1.5 看一眼资源
-free -h && df -h / && nproc
+free -h
 ```
 
-**预期**：`nproc` = 2，`free -h` 里 swap 有 2G，根分区剩余 ≥ 20G（镜像 + 构建缓存 + 用户生成的代码都在这台机器上）。
+**预期**：`nproc` = 2；`docker version` 与 `docker compose version` 免 sudo 可跑；swap ≥ 2G；
+根分区剩余 ≥ 20G（镜像 + 构建缓存 + 用户生成的代码都在这台机器上）。
+
+**Ubuntu 24.04 上要注意的三点**：
+1. **别用 `apt install docker.io`**：noble 仓库里是 24.0.x，还要自己另装 compose 插件；官方脚本一步到位。
+2. **不要启用 ufw**（Ubuntu Server 默认就是关闭状态，保持关闭即可）：Docker 发布端口时直接写
+   iptables/nftables 的 `DOCKER` 链，**绕过 ufw 规则**，开了反而容易出现"规则看着对、端口其实还是通的"。
+   这台机器的门禁统一用**云安全组**（见第 9 步）。
+3. Ubuntu 24.04 默认就是 **cgroup v2**，compose 里的 `mem_limit` 直接生效，不用改 grub。
 
 **失败怎么办**：
-- `docker compose version` 报错 → 单独装插件：`sudo apt install docker-compose-plugin`
-- 拉不到镜像（`docker pull hello-world` 超时）→ 加速器地址不可用，换一个，或联系云厂商的容器镜像服务
+- `docker compose version` 报错 → `sudo apt update && sudo apt install -y docker-compose-v2`（noble 里的包名）
+- 拉不到镜像（`docker pull hello-world` 超时）→ 加速器地址不可用，换一个，或用云厂商的容器镜像服务
+- 官方脚本装完仍提示 permission denied → 没重新登录（docker 组要重新登录才生效）
 
 ---
 
 ## 第 2 步：把代码放到服务器
 
-**在干什么**：把仓库放到 `/opt/ai-code-backend`。后续所有命令都在这个目录执行。
+**在干什么**：把后端仓库放到服务器的一个固定目录（本文统一用 `/opt/ai-code-backend`），后续所有命令都在这里执行。
+
+> Ubuntu 云服务器的默认登录用户通常不是 root（比如 `ubuntu`），`/opt` 本身属于 root，
+> 所以**不能**只 `sudo mkdir -p /opt` 就直接 clone（会在最后一步 Permission denied）。
 
 ```bash
-sudo mkdir -p /opt && cd /opt
-git clone <你的仓库地址> ai-code-backend
+# 方式一（本文采用）：放 /opt，先把目录建好并改属主
+sudo mkdir -p /opt/ai-code-backend
+sudo chown -R "$USER":"$USER" /opt/ai-code-backend
+git clone <你的仓库地址> /opt/ai-code-backend
 cd /opt/ai-code-backend
+
+# 方式二：放自己家目录，完全不需要 sudo
+#   mkdir -p ~/apps && cd ~/apps && git clone <仓库地址> ai-code-backend
+#   之后把本文所有 /opt/ai-code-backend 替换成 ~/apps/ai-code-backend
 ```
 
 **如果是用 scp/WinSCP 上传（不是 git）**，一定要检查脚本没有被换成 Windows 换行（CRLF 会让容器启动直接失败）：
@@ -126,9 +158,25 @@ vi .env
 ```bash
 docker compose config -q && echo "配置 OK"
 docker compose config | grep -E "CODE_DEPLOY_HOST|mem_limit|MYSQL_USER"
+# 核对"实际生效"的端口（见下面的坑）
+docker compose config | grep -A2 "published" | head -30
 ```
 
 **预期**：打印 `配置 OK`，并列出 `CODE_DEPLOY_HOST: http://wlbc.top/dist` 和各服务 `mem_limit`。
+
+> **坑：shell 里的同名环境变量会覆盖 `.env`**
+> compose 的优先级是「**当前 shell 的环境变量 > `.env` 文件**」。如果这台机器的 profile / 环境里
+> 已经导出过 `MYSQL_PORT`、`REDIS_PORT`、`COS_HOST`、`MYSQL_PASSWORD` 之类的变量，
+> 那么 `.env` 里写的值**不会生效**（实测：环境里 `REDIS_PORT=14073` 时，Redis 就发布到 14073 而不是 `.env` 的 6379）。
+> 排查方法：
+> ```bash
+> # 看哪些同名变量被 shell 覆盖了
+> env | grep -E '^(MYSQL|REDIS|COS|AI|SERVER|NGINX|CODE|DEPLOY)_' 
+> # 核对实际生效的端口
+> docker compose config | grep -B1 -A1 published
+> ```
+> 想让 `.env` 说了算：`unset REDIS_PORT MYSQL_PORT COS_HOST` 后重新执行，
+> 或每次都用干净环境：`env -u REDIS_PORT -u MYSQL_PORT docker compose up -d`。
 
 **失败怎么办**：报 `请在 .env 中设置 XXX` → 说明 `.env` 里该项还是空值/模板值，回去补；报 YAML 缩进错 → 检查是否误编辑了 `docker-compose.yml`。
 
@@ -185,7 +233,7 @@ docker compose exec mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_code_d
 
 ## 第 7 步：启动 backend
 
-**在干什么**：起 Spring Boot 服务（容器内 8123 端口，映射到宿主机 8123），它会连 MySQL/Redis、初始化 AI 模型配置。
+**在干什么**：起 Spring Boot 服务（容器内监听 8123；默认只映射到宿主机 `127.0.0.1:8123`，对外统一走 nginx 的 80），它会连 MySQL/Redis、初始化 AI 模型配置。
 
 ```bash
 docker compose up -d backend
@@ -249,24 +297,40 @@ docker compose exec backend curl -sI http://wlbc.top/dist/ | head -1
 
 ---
 
-## 第 9 步：域名解析 + 安全组 + 浏览器验收
+## 第 9 步：域名解析 + 云安全组 + 浏览器验收
 
 **在干什么**：让 `http://wlbc.top` 真正指向这台服务器。
 
 1. **DNS**：在域名解析处加 A 记录，`wlbc.top` → 服务器公网 IP。验证：
    ```bash
-   dig +short wlbc.top        # 应输出你的公网 IP（没有 dig 用 nslookup wlbc.top）
+   dig +short wlbc.top        # 应输出你的公网 IP（没装 dig 就 apt install -y dnsutils）
    ```
-2. **云安全组/防火墙**：放行 **80**（必须）；`8123` 可选（只在你想用 `http://wlbc.top:8123/api` 直连调试时开，平时建议关掉减少暴露面）。
+2. **云安全组**：在云控制台的**安全组**里放行入方向 **TCP 80**（这是唯一必须放行的端口，也是真正的门禁）。
+
+   > **Ubuntu 24.04 上请保持 ufw 关闭**（默认就是关闭的，不用动它）：
+   > Docker 发布端口时直接写 iptables/nftables 的 `DOCKER` 链，**会绕过 ufw 规则** ——
+   > `ufw allow 80` 既不能真正放行、也拦不住已发布的容器端口，开了只会让网络排查变复杂。
+   > 需要限制暴露面时，用编排里的绑定地址来做（见下表），比 ufw 可靠。
+
+   | 端口 | 默认绑定 | 谁能访问 | 怎么收紧 |
+   | --- | --- | --- | --- |
+   | 80（nginx） | 所有网卡 | 公网 | 必须开放；若要换端口改 `.env` 的 `NGINX_PORT` |
+   | 8123（后端） | `127.0.0.1` | 仅宿主机 | 已是安全默认；要外部直连才把 `SERVER_BIND` 改成 `0.0.0.0` |
+   | `MYSQL_PORT` | `0.0.0.0` | 公网 | 用 Navicat 从本机连才需要；否则把 `MYSQL_BIND` 改成 `127.0.0.1` |
+   | `REDIS_PORT` | `0.0.0.0` | 公网 | 同上，改 `REDIS_BIND` |
+
    ```bash
-   sudo ufw status            # 如果启用了 ufw
-   sudo ufw allow 80/tcp
+   # 改完绑定地址后重建容器生效
+   docker compose up -d
+   # 核对实际监听情况（应只看到你允许的绑定）
+   sudo ss -lntp | grep -E ':(80|8123|3306|6379)\b'
    ```
+
 3. **浏览器验收**：
    - 接口文档：`http://wlbc.top/api/doc.html`（默认 `admin` / `admin123`，**上线后请改掉**，见第 12 步）
    - 健康检查：`http://wlbc.top/api/health`
 
-**注意**：80 端口必须空闲。如果服务器上已有别的 nginx/apache 占用 80，先停掉它，或把 `.env` 的 `NGINX_PORT` 改成别的端口（那样地址就带端口了）。
+**注意**：80 端口必须空闲。如果服务器上已有别的 nginx/apache 占用 80，先停掉它，或把 `.env` 的 `NGINX_PORT` 改成别的端口（那样地址就带端口了）。Ubuntu 上查占用：`sudo ss -lntp | grep :80`。
 
 ---
 
@@ -307,7 +371,8 @@ npm run build      # = vue-tsc 类型检查 + vite build，产物在 ai-code-fro
 
 ```powershell
 # 上传：注意是把 dist 里面的内容铺到 frontend-dist 下，不要再套一层 dist/
-scp -r .\dist\* root@<服务器IP>:/opt/ai-code-backend/frontend-dist/
+# <用户名> 用你登录服务器用的账号（Ubuntu 云服务器常见是 ubuntu；如果是 root 就写 root）
+scp -r .\dist\* <用户名>@<服务器IP>:/opt/ai-code-backend/frontend-dist/
 ```
 
 方式 B：**在服务器上用容器打包**（服务器上没装 Node，也不想装时；直接复用第 5 步建好的后端镜像，
@@ -340,7 +405,10 @@ curl -s -o /dev/null -w '%{http_code}\n' http://wlbc.top/xxx/yyy  # 深链接也
 
 **注意**：
 - 如果 `docker compose up -d nginx` 时 `frontend-dist/` 还不存在，Docker 会把它建成 **root 所有**的空目录，
-  之后用普通用户 scp 会 `Permission denied`。所以务必先做 10.1。
+  之后用普通用户 scp 会 `Permission denied`。所以务必先做 10.1；万一已经出现，执行
+  `sudo chown -R "$USER":"$USER" /opt/ai-code-backend/frontend-dist` 修一下。
+- 同理，**别用 `sudo docker compose ...`**：sudo 跑出来的容器会以 root 创建挂载目录，
+  后面普通用户上传前端、看日志都会遇到权限问题。第 1 步把用户加进 docker 组就是为了避免这件事。
 - 前端路由是 history 模式，刷新 `/xxx/yyy` 这类深链接由 nginx 的 `try_files ... /index.html` 兜住。
 - 如果还没发布前端就访问 `http://wlbc.top/`，会是 404 —— 根路径只有前端产物，这是正常的。
 
@@ -420,7 +488,7 @@ cd D:\JAVA\ai-code-frontend
 git pull
 npm install        # 只有依赖变动时才需要
 npm run build
-scp -r .\dist\* root@<服务器IP>:/opt/ai-code-backend/frontend-dist/
+scp -r .\dist\* <用户名>@<服务器IP>:/opt/ai-code-backend/frontend-dist/
 ```
 
 ```bash

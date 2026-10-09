@@ -28,15 +28,15 @@
 浏览器 ──┬─ http://wlbc.top/                     ──> nginx ──静态──> frontend-dist 目录（ai-code-frontend 的 dist）
          ├─ http://wlbc.top/api/...              ──> nginx ──反代──> backend:8123（context-path=/api）
          ├─ http://wlbc.top/dist/{key}/          ──> nginx ──(只读)── app-temp 卷 ←─ backend 写入的部署产物
-         └─ http://wlbc.top:8123/api/...         ──> backend（端口仍发布，直连调试用）
+         └─ 127.0.0.1:8123/api/...               ──> backend（默认只绑本机，宿主机上调试用）
 
 backend ──> mysql:3306（业务库）
 backend ──> redis:6379（Session + 对话记忆）
 backend ──> 阿里云百炼 / 腾讯云 COS / npm registry（公网）
 ```
 
-> `/api/` 由 nginx 反代（含 SSE 长连接的关缓冲配置）。若前端仍直连 `:8123`，
-> 可删掉 `docker/nginx.conf` 里的 `location /api/`，不影响部署站点托管。
+> `/api/` 由 nginx 反代（含 SSE 长连接的关缓冲配置）。前端若直连后端端口（`:8123`），
+> 需要把 `.env` 的 `SERVER_BIND` 改成 `0.0.0.0`（默认只绑 `127.0.0.1`，外部访问不到）。
 > 需保证域名 `wlbc.top` 解析到本机，且本机 80 端口未被占用。
 
 ## 3. 快速开始
