@@ -1,0 +1,178 @@
+# =============================================================================
+# ai-code-backend 一键部署编排
+#
+# 服务构成：
+#   mysql   —— 业务库，首次启动自动执行 src/main/resources/sql/ai_code_db.sql
+#   redis   —— Spring Session + 对话记忆（JedisChatMemoryStore）存储
+#   backend —— 本项目（Dockerfile 构建）：AI 代码生成 + Vue 工程构建 + Selenium 截图
+#   nginx   —— 生产统一入口 http://wlbc.top
+#                /api/...            -> 反代 backend:8123
+#                /dist/{deployKey}/  -> 用户生成并部署的静态站点
+#
+# 使用：
+#   1. cp .env.example .env 并填好密钥（首次部署可复制 application-prod.yaml 里的值）
+#   2. docker compose up -d --build
+#   3. 接口文档：http://wlbc.top/api/doc.html
+# =============================================================================
+name: ai-code-backend
+
+services:
+
+  # ---------------------------------------------------------------- MySQL ----
+  mysql:
+    image: mysql:8.0
+    container_name: ai-code-mysql
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 中设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ai_code_db}
+      MYSQL_USER: ${MYSQL_USER:-root_ai_code_db}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请在 .env 中设置 MYSQL_PASSWORD}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --default-time-zone=+08:00
+      # 2核4G 小机器：限制缓冲池与连接数、关掉 performance_schema（省 150MB+）
+      - --innodb-buffer-pool-size=128M
+      - --max-connections=100
+      - --performance-schema=OFF
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 只在数据目录为空（首次启动）时执行一次；脚本含 create table / alter table，不是幂等脚本
+      - ./src/main/resources/sql/ai_code_db.sql:/docker-entrypoint-initdb.d/01-ai_code_db.sql:ro
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    # 内存上限：小机器上必须给每个容器设限，避免某个容器把宿主机吃光后被内核随机 OOM
+    mem_limit: 800m
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  # ---------------------------------------------------------------- Redis ----
+  redis:
+    image: redis:8.10
+    container_name: ai-code-redis
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # healthcheck 里要用到，必须显式注入容器环境
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      # 内存兜底：Redis 存 Session + 对话记忆，超过上限按 LRU 淘汰，
+      # 比撑爆容器被内核 OOM 杀掉（所有会话一起丢）要温和
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+    volumes:
+      - redis-data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    mem_limit: 320m
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # -------------------------------------------------------------- backend ----
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 国内构建时可换成镜像地址，例如清华 Adoptium 镜像（见 DOCKER.md）
+        JRE_URL: ${JRE_URL:-https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jre/hotspot/normal/eclipse}
+    image: ai-code-backend:${APP_VERSION:-1.0.0}
+    container_name: ai-code-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # 容器内使用 docker 专用 profile（database/redis 走服务名），不加载 prod 配置
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-docker}
+      MYSQL_USER: ${MYSQL_USER:-root_ai_code_db}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+      # 生产地址前缀：部署站点 http://wlbc.top/dist/{deployKey}/ 由 nginx 提供；
+      # 该地址同时用于返回给前端和后台截图，因此容器内也必须能访问到（详见 DOCKER.md）
+      CODE_DEPLOY_HOST: ${CODE_DEPLOY_HOST:-http://wlbc.top/dist}
+      # 并发构建队列：2 核机器建议 2（每个 Vue 工程会跑一次 npm install，很吃 CPU 与内存）
+      DEPLOY_QUEUE_WORKERS: ${DEPLOY_QUEUE_WORKERS:-2}
+      DEPLOY_QUEUE_MAX_SIZE: ${DEPLOY_QUEUE_MAX_SIZE:-32}
+      # npm registry：国内服务器建议改成 https://registry.npmmirror.com
+      NPM_CONFIG_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+      # 腾讯云 COS（封面截图上传）
+      COS_HOST: ${COS_HOST:-}
+      COS_REGION: ${COS_REGION:-}
+      COS_BUCKET: ${COS_BUCKET:-}
+      COS_SECRET_ID: ${COS_SECRET_ID:-}
+      COS_SECRET_KEY: ${COS_SECRET_KEY:-}
+      # 阿里云百炼
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_WORKSPACE_ID: ${AI_WORKSPACE_ID:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      # 数据库/Redis 连接池（2核4G 机器够用即可，池子过大会把内存和数据库连接吃光）
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-20}
+      DB_POOL_MIN_IDLE: ${DB_POOL_MIN_IDLE:-5}
+      REDIS_POOL_MAX_ACTIVE: ${REDIS_POOL_MAX_ACTIVE:-32}
+      REDIS_POOL_MAX_IDLE: ${REDIS_POOL_MAX_IDLE:-16}
+      REDIS_POOL_MIN_IDLE: ${REDIS_POOL_MIN_IDLE:-4}
+      # 堆内存显式固定（不用 MaxRAMPercentage：宿主机没设 cgroup 限制时会按整机内存算，容易吃满 4G）
+      # 截图浏览器池 2 个（每个 Chrome 约 200~400MB）
+      JAVA_OPTS: ${JAVA_OPTS:--Xms256m -Xmx1024m -XX:MaxMetaspaceSize=256m -XX:+ExitOnOutOfMemoryError -Djava.awt.headless=true -Duser.timezone=Asia/Shanghai -Dscreenshot.max-drivers=2 -Dscreenshot.borrow-timeout-seconds=300}
+    volumes:
+      # 生成源码 / 部署产物 / 截图临时文件，同时被 nginx 以只读方式挂载
+      - app-temp:/app/temp
+    ports:
+      - "${SERVER_PORT:-8123}:8123"
+    # 容器内存上限（2核4G 预算见 DOCKER.md）：JVM 堆 1G + Chrome 2×0.3G + 单个 npm 构建 0.4~0.8G
+    mem_limit: 2600m
+    # Chrome 渲染需要共享内存；/dev/shm 也算在容器内存里，代码里已带 --disable-dev-shm-usage，给 256m 足够
+    shm_size: "256m"
+    extra_hosts:
+      # 便于把 CODE_DEPLOY_HOST 指向宿主机（如 http://host.docker.internal/dist）
+      - "host.docker.internal:host-gateway"
+
+  # ---------------------------------------------------------------- nginx ----
+  nginx:
+    image: nginx:${NGINX_IMAGE_TAG:-latest}
+    container_name: ai-code-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      # 与 backend 共享 temp/code_deploy（用户部署的站点）
+      - app-temp:/var/www/temp:ro
+      # 前端构建产物（ai-code-frontend 的 dist），见 DEPLOY.md 第 10 步：
+      #   mkdir -p frontend-dist && 把 dist/* 拷进去，nginx 立即生效，无需重启
+      - ./frontend-dist:/var/www/frontend:ro
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    mem_limit: 64m
+
+volumes:
+  mysql-data:
+  redis-data:
+  app-temp:

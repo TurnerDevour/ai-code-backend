@@ -36,3 +36,7 @@ build/
 
 ### application ####
 **/src/main/resources/application-prod.yaml
+
+### docker / docker compose ###
+# 含数据库、Redis、COS、百炼等明文密钥，只提交 .env.example
+.env

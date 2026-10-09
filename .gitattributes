@@ -1,0 +1,4 @@
+# 容器内直接执行的脚本必须保持 LF：
+# 在 Windows 上 checkout 成 CRLF 后，镜像里的 /bin/sh 会报 "not found" / "exec format error"，
+# 表现为容器起不来（docker/entrypoint.sh 就是这类脚本）。
+*.sh text eol=lf
