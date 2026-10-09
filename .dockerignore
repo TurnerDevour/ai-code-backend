@@ -1,4 +1,4 @@
-# 构建上下文瘦身：镜像只需要 pom.xml、src、docker/entrypoint.sh
+# 构建上下文瘦身：镜像只需要 app.jar（jar 模式）或 pom.xml + src（源码模式）+ docker/entrypoint.sh
 .git
 .gitignore
 .idea
@@ -15,6 +15,9 @@ logs
 # 生产配置文件里是明文密钥，也不进镜像：
 # 容器内的配置由 application-docker.yaml + compose 的环境变量提供
 **/application-prod.yaml
+
+# 前端产物是给 nginx 挂载用的，与后端镜像无关
+frontend-dist
 
 # 与镜像构建无关的编排/文档文件
 docker-compose*.yml

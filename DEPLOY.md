@@ -11,10 +11,10 @@
 | # | 做什么 | 耗时 | 完成后状态 |
 | --- | --- | --- | --- |
 | 1 | 服务器准备：装 Docker + 免 sudo + 镜像加速 + swap | 5 分钟 | 服务器具备部署条件 |
-| 2 | 把项目代码放到服务器 | 1 分钟 | `/opt/ai-code-backend` 有代码 |
+| 2 | **本地打包 → 上传部署文件（jar + 编排文件）到服务器** | 2 分钟 | `/opt/ai-code-backend` 里有 `app.jar`，**没有 Java 源码** |
 | 3 | 写 `.env`（密钥/密码/域名） | 5 分钟 | 配置就绪 |
 | 4 | 静态校验配置 | 10 秒 | 配置无语法错 |
-| 5 | 构建后端镜像 | 5~10 分钟 | 有 `ai-code-backend:1.0.0` 镜像 |
+| 5 | 构建后端镜像（只装运行时 + 换 jar） | 2~3 分钟 | 有 `ai-code-backend:1.0.0` 镜像 |
 | 6 | 只启动 MySQL + Redis | 1~2 分钟 | 库表已建好、健康 |
 | 7 | 启动 backend | 1~2 分钟 | 健康检查通过 |
 | 8 | 启动 nginx 并验证路由 | 10 秒 | `/api` 与 `/dist` 都通 |
@@ -90,43 +90,97 @@ free -h
 
 ---
 
-## 第 2 步：把代码放到服务器
+## 第 2 步：本地打包 → 上传部署文件（含 app.jar）
 
-**在干什么**：把后端仓库放到服务器的一个固定目录（本文统一用 `/opt/ai-code-backend`），后续所有命令都在这里执行。
+**在干什么**：后端在**本地**（你的 Windows 机器）用 Maven 打成 Spring Boot 可执行 jar，
+再把「jar + 几个部署文件」整体传到服务器。**服务器上不需要 Java 源码，也不用装 Maven**，
+它只需要这些：
 
-> Ubuntu 云服务器的默认登录用户通常不是 root（比如 `ubuntu`），`/opt` 本身属于 root，
-> 所以**不能**只 `sudo mkdir -p /opt` 就直接 clone（会在最后一步 Permission denied）。
+```
+app.jar                              ← 本地打好的可执行 jar（镜像里真正跑的东西）
+Dockerfile                           ← 怎么把 jar 装成镜像
+docker-compose.yml                   ← 四个服务的编排
+.dockerignore                        ← 让 temp/、frontend-dist/ 等不进构建上下文
+.env                                 ← 密钥/密码/域名
+docker/entrypoint.sh, nginx.conf     ← 启动脚本、nginx 配置
+src/main/resources/sql/ai_code_db.sql ← MySQL 首次启动建表用（compose 挂载的文件）
+```
+
+**2.1 本地打包**
+
+```powershell
+cd D:\JAVA\ai-code-backend
+mvn clean package -DskipTests     # 跳过测试：单测里有依赖真实模型/网络的用例（实测约 12 秒）
+# 用 IDEA 也行：右侧 Maven 面板 → Lifecycle → package（记得跳过测试）
+```
+
+**2.2 确认产物是「可执行 fat jar」**（别省这步，很容易传错文件）
+
+```powershell
+Get-ChildItem target\*.jar* | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,2)}}
+# 实测期望：
+#   ai-code-backend-1.0.0.jar            ≈ 103 MB  ← 要的就是这个（Spring Boot 可执行 jar）
+#   ai-code-backend-1.0.0.jar.original   ≈ 0.3 MB  ← 原始"瘦 jar"，传上去会启动失败
+```
+
+**2.3 打成部署包并上传**（Windows 10/11 自带 `tar`，一条命令且能带上 `.env` 这类隐藏文件）
+
+```powershell
+# jar 复制成 Dockerfile 要求的名字（放在项目根 = 构建上下文根）
+Copy-Item target\ai-code-backend-1.0.0.jar app.jar -Force
+
+# 打包"服务器需要的东西"：注意不含 src/main/java、不含 pom.xml
+tar -czf deploy.tgz Dockerfile docker-compose.yml .dockerignore .env docker app.jar src/main/resources/sql/ai_code_db.sql
+
+# 上传到服务器（实测包大小约 94 MB，jar 本身 103 MB）
+scp deploy.tgz <用户名>@<服务器IP>:/opt/
+```
 
 ```bash
-# 方式一（本文采用）：放 /opt，先把目录建好并改属主
-sudo mkdir -p /opt/ai-code-backend
-sudo chown -R "$USER":"$USER" /opt/ai-code-backend
-git clone <你的仓库地址> /opt/ai-code-backend
+# 服务器上解包（Ubuntu 默认用户不是 root，/opt 属于 root，所以要先建目录并改属主）
+sudo mkdir -p /opt/ai-code-backend && sudo chown -R "$USER":"$USER" /opt/ai-code-backend
 cd /opt/ai-code-backend
-
-# 方式二：放自己家目录，完全不需要 sudo
-#   mkdir -p ~/apps && cd ~/apps && git clone <仓库地址> ai-code-backend
-#   之后把本文所有 /opt/ai-code-backend 替换成 ~/apps/ai-code-backend
+tar -xzf /opt/deploy.tgz && rm -f /opt/deploy.tgz
 ```
 
-**如果是用 scp/WinSCP 上传（不是 git）**，一定要检查脚本没有被换成 Windows 换行（CRLF 会让容器启动直接失败）：
+**2.4 核对（30 秒，能挡掉后面 90% 的低级错误）**
 
 ```bash
-grep -c $'\r' docker/entrypoint.sh    # 期望输出 0
-# 如果输出大于 0，修一下：
-sed -i 's/\r$//' docker/entrypoint.sh
+ls -a
+# 期望：.dockerignore  .env  Dockerfile  app.jar  docker  docker-compose.yml  src
+ls docker                        # entrypoint.sh  nginx.conf
+ls src/main/resources/sql        # ai_code_db.sql（MySQL 首次建表用，别删）
+ls -lh app.jar                   # 约 103MB —— 只有几十 KB 说明传成了 .jar.original
+
+# 更严格：确认清单里有 Spring Boot 启动类（unzip 没装就 apt install -y unzip）
+unzip -p app.jar META-INF/MANIFEST.MF | grep -E "Main-Class|Start-Class"
+#   期望 Main-Class: org.springframework.boot.loader.launch.JarLauncher
+
+# 脚本换行检查（用 scp/WinSCP 传文本文件最容易踩的坑）
+grep -c $'\r' docker/entrypoint.sh    # 期望 0；不是 0 就修：sed -i 's/\r$//' docker/entrypoint.sh
 ```
 
-**验证**：`ls` 能看到 `Dockerfile`、`docker-compose.yml`、`docker/`、`src/`、`.env.example`。
+> **为什么 SQL 在 `src/` 下**：compose 的 mysql 服务把 `./src/main/resources/sql/ai_code_db.sql`
+> 挂进容器做首次初始化，所以这个文件必须跟着部署包走（但它跟 Java 源码无关）。
+>
+> **如果更习惯用 git 管服务器上的部署文件**：也可以先在服务器 `git clone` 仓库，
+> 再单独 `scp target\ai-code-backend-1.0.0.jar <用户名>@<服务器IP>:/opt/ai-code-backend/app.jar`。
+> 好处是服务器上有完整源码（第 5 步的方式 B 就能用）；代价是多同步一份代码，且要自己保证 jar 是最新的。
+>
+> **如果 `/opt` 不想用**：放家目录也行 —— `mkdir -p ~/apps/ai-code-backend`，
+> 之后把本文所有 `/opt/ai-code-backend` 换成 `~/apps/ai-code-backend`。
 
 ---
 
-## 第 3 步：写 `.env`
+## 第 3 步：确认/修改 `.env`
 
 **在干什么**：所有密钥、密码、域名都在这个文件里（它已被 `.gitignore` 忽略，不会进仓库，也不会被打进镜像）。
+部署包里已经带了本地那份 `.env`，所以这步是**核对**；如果没带（想自己在服务器上写），就从模板拷一份：
 
 ```bash
-cp .env.example .env
+cd /opt/ai-code-backend
+ls -l .env      # 部署包里已经带了本地那一份（内含所有密钥），正常无需再拷
+# 万一缺了：把本地的 .env 单独传上来 → scp .env <用户名>@<服务器IP>:/opt/ai-code-backend/
 vi .env
 ```
 
@@ -141,6 +195,7 @@ vi .env
 | `COS_*` | 腾讯云密钥 | 不填也能跑，但部署后没有封面图 |
 | `AI_BASE_URL / AI_WORKSPACE_ID / AI_API_KEY` | 阿里云百炼 | 不填则代码生成接口不可用 |
 | `NGINX_PORT` | `80` | wlbc.top 不带端口访问就是 80 |
+| `DOCKER_SUBNET` | `10.201.0.0/24` | 容器自定义网络 `ai-code-net` 的网段，**刻意避开 Docker 默认池 172.17~172.31**；部署前先用 `ip -4 addr show \| grep inet` 核对本机/VPC 网段，撞了就换成 `10.202.0.0/24` 之类 |
 | `NPM_REGISTRY` | 已默认 `https://registry.npmmirror.com` | 用户工程构建时 `npm install` 用 |
 | `JAVA_OPTS` | 已按 2 核 4G 调好 | 堆 1G、Chrome 池 2 |
 | `DEPLOY_QUEUE_WORKERS` | `2` | 并发构建数 |
@@ -160,9 +215,15 @@ docker compose config -q && echo "配置 OK"
 docker compose config | grep -E "CODE_DEPLOY_HOST|mem_limit|MYSQL_USER"
 # 核对"实际生效"的端口（见下面的坑）
 docker compose config | grep -A2 "published" | head -30
+# 核对四个服务都挂在自定义网络 ai-code-net 上（漏挂服务 → 服务名解析不了 → 后端起不来）
+# 期望 6：mysql/redis/backend/nginx 各 1 次 + 网络定义 2 次（ai-code-net: 与 name: ai-code-net）
+docker compose config | grep -c "ai-code-net"
+# 核对容器网络网段（应是你 .env 里 DOCKER_SUBNET 的值，默认 10.201.0.0/24）
+docker compose config | grep -A6 "^networks:"
 ```
 
-**预期**：打印 `配置 OK`，并列出 `CODE_DEPLOY_HOST: http://wlbc.top/dist` 和各服务 `mem_limit`。
+**预期**：打印 `配置 OK`，列出 `CODE_DEPLOY_HOST: http://wlbc.top/dist` 和各服务 `mem_limit`，
+以及网络定义里的 `subnet: 10.201.0.0/24`。
 
 > **坑：shell 里的同名环境变量会覆盖 `.env`**
 > compose 的优先级是「**当前 shell 的环境变量 > `.env` 文件**」。如果这台机器的 profile / 环境里
@@ -184,23 +245,50 @@ docker compose config | grep -A2 "published" | head -30
 
 ## 第 5 步：构建后端镜像
 
-**在干什么**：容器里跑 Maven 编译打包（跳过测试）→ 装 Chromium/ChromeDriver/中文字体 → 装 JRE 21 → 拼出运行镜像。**这一步最吃资源，务必单独做**（此时 MySQL 还没起，内存全给它）。
+**在干什么**：用第 2 步传上来的 `app.jar` 加上运行时环境（Chromium/ChromeDriver/中文字体 + JRE 21 + Node 22），
+拼出可以直接跑的镜像。**服务器不参与编译**，所以这一步很快，也不会和 MySQL 抢内存。
+
+> 两种方式共用同一个 `Dockerfile`，用 build target 区分（运行时层完全一样），
+> 由 `.env` 的 `BACKEND_BUILD_TARGET` 决定：`runtime-from-jar`（方式 A，本手册采用）/ `runtime`（方式 B）。
+
+### 方式 A（本手册采用）：用已上传的 `app.jar` 打包
+
+服务器只装运行时（apt 装 chromium/字体 + 下 JRE）+ 拷 jar，**不跑 Maven**。
 
 ```bash
+cd /opt/ai-code-backend
+ls -lh app.jar                            # 先确认 jar 在位（约 103MB）
 docker compose build backend
+docker images | grep ai-code-backend      # 期望 ai-code-backend:1.0.0
 ```
 
-**预期**：最后出现 `naming to docker.io/library/ai-code-backend:1.0.0`，`docker images | grep ai-code` 能看到镜像（约 1.5~2G）。
+### 方式 B（可选）：服务器内从源码编译
 
-**耗时**：2 核机器大约 5~10 分钟（Maven 下载依赖 + apt 装 chromium + 下 JRE）。
+服务器上有完整源码（第 2 步选了 git clone 那种方式）、或想让 CI 一条命令出镜像时用：
 
-**失败怎么办**：
-- 卡在下载 JRE / 报 TLS 超时 → 打开 `.env` 里的 `JRE_URL` 换成清华镜像（文件末尾有现成的一行），再重新 build
-- apt 太慢 → 在 `Dockerfile` 的 apt 命令前把 Debian 源换成国内源
-- 报 `Killed` / 编译中途进程消失 → 内存不够，确认第 1 步的 swap 已生效（`free -h`），必要时 `sudo swapoff -a && sudo swapon -a`
-- 构建完想省磁盘：`docker builder prune -f`（清构建缓存，不影响已生成的镜像）
+```bash
+# 把 .env 的 BACKEND_BUILD_TARGET 改成 runtime，或只在这次命令里临时指定
+BACKEND_BUILD_TARGET=runtime docker compose build backend
+```
 
-> 如果服务器完全拉不到 `node:22-bookworm-slim` / `maven:3.9-eclipse-temurin-21`：可以在能联网的机器上 `docker compose build backend`，然后
+代价：容器里要跑 Maven（下载依赖 + 编译），2 核机器约 5~10 分钟，构建阶段内存峰值约 1G。
+
+### 两种方式的共同点与排错
+
+**耗时**：方式 A 约 2~3 分钟（主要花在 apt 装 chromium/字体 + 下载 JRE）；方式 B 约 5~10 分钟。
+**镜像大小**：约 1.5~2G。
+
+| 报错 / 现象 | 原因与处理 |
+| --- | --- |
+| `COPY failed: ... stat app.jar: file does not exist` | 方式 A 但服务器上没有 `app.jar`（没传、传错目录、或名字不对）；回第 2 步 2.3/2.4 |
+| 容器起来就退出，日志 `no main manifest attribute` | 传成了 `.jar.original`（瘦 jar，0.3MB）；回第 2 步 2.2/2.4 重传 |
+| 卡在下载 JRE / TLS 超时 | `.env` 里打开 `JRE_URL` 换成清华镜像，再 build |
+| apt 太慢 | 在 `Dockerfile` 的 apt 命令前把 Debian 源换成国内源 |
+| 方式 B 报 `Killed` / 编译中途进程消失 | 内存不够：确认 swap 已生效（`free -h`），或直接改用方式 A |
+| 想省磁盘 | `docker builder prune -f`（清构建缓存，不影响已生成的镜像） |
+
+> 如果服务器拉不到 `node:22-bookworm-slim`（方式 B 还需要 `maven:3.9-eclipse-temurin-21`）：
+> 可以在能联网的机器上 `docker compose build backend`，然后
 > `docker save ai-code-backend:1.0.0 | gzip > app.tgz`，传到服务器 `gunzip -c app.tgz | docker load`。
 > 注意 MySQL/Redis/nginx 三个基础镜像在服务器上仍需能拉取。
 
@@ -248,10 +336,20 @@ docker compose logs -f backend          # 看到 "Started AiCodeBackendApplicati
 docker compose ps                                   # backend 应为 healthy
 curl -fsS http://127.0.0.1:8123/api/health           # {"code":0,...,"data":"ok"}
 curl -s  http://127.0.0.1:8123/api/health/deploy-queue
+
+# 确认服务确实接在自定义网络 ai-code-net 上（backend 就是靠它解析 mysql / redis 的）
+docker network inspect ai-code-net --format '{{range .Containers}}{{.Name}} {{end}}'
+# 期望看到：ai-code-mysql ai-code-redis ai-code-backend
+
+# 确认网段就是你要的（默认 10.201.0.0/24，刻意避开 Docker 默认池 172.17~172.31）
+docker network inspect ai-code-net --format '{{range .IPAM.Config}}subnet={{.Subnet}} gateway={{.Gateway}}{{end}}'
+# 期望：subnet=10.201.0.0/24 gateway=10.201.0.1
 ```
 
 **失败怎么办**：
 - 日志刷 `Communications link failure` / `Access denied` → 数据库没起好或密码不一致，回第 6 步
+- 日志刷 `UnknownHostException: mysql` / 连不上 `redis` → 服务没接在同一张网络里：
+  `docker network inspect ai-code-net` 看容器列表，确认 `docker-compose.yml` 里每个服务都有 `networks: [ai-code-net]`
 - 日志刷 Redis 连接异常 → 确认 `docker compose ps` 里 redis 是 healthy、`.env` 的 `REDIS_PASSWORD` 与 compose 注入的一致
 - 容器不断重启 → `docker compose logs --tail=200 backend` 看最后一段异常；内存不足会在 `docker inspect ai-code-backend --format '{{.State.OOMKilled}}'` 显示 `true`
 
@@ -452,7 +550,9 @@ docker compose exec mysql mysql -uroot -p"$DB_ROOT_PWD" ai_code_db \
 
 ## 第 12 步：收尾
 
-1. **改掉默认密码**（接口文档）：编辑 `application-docker.yaml` 里的 `KNIFE4J_PASSWORD`，或直接在 `.env` 加 `KNIFE4J_USER` / `KNIFE4J_PASSWORD`，然后 `docker compose up -d backend`。
+1. **改掉默认密码**（接口文档）：`application-docker.yaml` 已经打进 jar 里了，服务器上改不了它 ——
+   直接在 `.env` 里加两行 `KNIFE4J_USER=xxx` / `KNIFE4J_PASSWORD=xxx`（配置项支持环境变量覆盖），
+   然后 `docker compose up -d backend`。
 2. **开机自启**：compose 里各服务已 `restart: unless-stopped`，只要 `docker` 服务是 enabled（第 1 步已做）就会自启。验证：`sudo reboot` 后 `docker compose ps`。
 3. **备份数据库**（建议加进 crontab）：
    ```bash
@@ -471,15 +571,30 @@ docker compose exec mysql mysql -uroot -p"$DB_ROOT_PWD" ai_code_db \
 
 ## 第 13 步：以后每次升级
 
-**升级后端**：
+**升级后端**（jar 模式：本地重新打包 → 上传 → 服务器重建镜像）
+
+```powershell
+# ① 本地（Windows）
+cd D:\JAVA\ai-code-backend
+git pull
+mvn clean package -DskipTests
+scp target\ai-code-backend-1.0.0.jar <用户名>@<服务器IP>:/opt/ai-code-backend/app.jar
+```
 
 ```bash
+# ② 服务器
 cd /opt/ai-code-backend
-git pull                                  # 或重新上传代码
-docker compose build backend              # 重新编译镜像
+docker compose build backend              # 只重装运行时 + 换 jar，约 1~2 分钟
 docker compose up -d backend              # 用新镜像重建容器
-docker compose logs -f --tail=100 backend # 确认启动成功
+docker compose logs -f --tail=100 backend # 确认 Started AiCodeBackendApplication
 ```
+
+> **别忘了上传新 jar** —— 只 `up -d` 不会让代码生效（镜像里的 jar 没变）。
+>
+> 如果这次还改了 **部署文件**（`Dockerfile` / `docker-compose.yml` / `docker/nginx.conf` / 建表 SQL），
+> 把第 2 步 2.3 的部署包重新打一次传上去（`tar` + `scp` + 解包覆盖），再执行上面第 ② 步；
+> 只改了 nginx 配置的话，重建 nginx 即可：`docker compose up -d nginx`。
+> 用方式 B（服务器上有源码）时则是：`git pull` 后 `docker compose build backend && docker compose up -d backend`。
 
 **升级前端**（改了 `ai-code-frontend` 时）：
 
@@ -514,7 +629,13 @@ ls -l /opt/ai-code-backend/frontend-dist/index.html /opt/ai-code-backend/fronten
 | 登录提示成功，下一个请求却变未登录 | F12 → Application → Cookies 里有没有 `SESSION` | Cookie 跨站被 SameSite 拦掉：前端必须与后端同域，不要分两个域名 |
 | 发版后前端还是旧页面 | `frontend-dist/assets/` 里的文件名有没有变 | 浏览器缓存（`index.html` 已 no-cache，强刷一次即可） |
 | `502 Bad Gateway` 访问 `/api/...` | `docker compose logs backend` | 后端没起来或崩了 |
+| 容器起来就退出，日志 `no main manifest attribute` | `ls -lh app.jar` | 传成了 `.jar.original`（瘦 jar，0.3MB）；应传 103MB 那个 fat jar（第 2 步 2.2/2.4） |
+| `docker compose build backend` 报 `stat app.jar: file does not exist` | `ls -l /opt/ai-code-backend/app.jar` | jar 模式（`BACKEND_BUILD_TARGET=runtime-from-jar`）但没上传 jar；或改用 `runtime` 让服务器自己编译 |
+| 改了代码、镜像也重建了，行为却没变 | `ls -l app.jar` 的修改时间 | 忘了在本地重新 `mvn package` 并 scp 覆盖 `app.jar`（只 `up -d` 不会换代码） |
 | 后端起不来（连不上库） | `docker compose logs mysql` | 库没初始化完；或改过 `.env` 密码但数据卷还是旧的 |
+| 启动时出现 `a network with name ai-code-net exists but was not created by compose` | `docker network inspect ai-code-net` | 只是**警告**（compose 会复用它继续启动）；想消掉：确认没别的容器在用后 `docker network rm ai-code-net`，或把它声明成 `external: true` |
+| 日志刷 `UnknownHostException: mysql` / `redis` | `docker network inspect ai-code-net` | 服务没接在同一张网络：检查 `docker-compose.yml` 里每个服务都有 `networks: [ai-code-net]` |
+| 容器连公网/内网**超时**（AI 接口不通、TLS 握手卡住、`npm install` 挂起），但 `ping` 网关正常 | `ip route \| grep -v docker` 对比 `docker network inspect ai-code-net --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'` | 网段与宿主机 VPC 撞车：改 `.env` 的 `DOCKER_SUBNET`（如 `10.202.0.0/24`）后 `docker compose up -d`（compose 会自动重建网络与容器） |
 | 部署报 `npm install 失败` | `docker compose logs backend \| grep npm` | registry 不通（换 `NPM_REGISTRY`）/ 内存不足 |
 | 部署成功但封面为空 | `docker compose logs backend \| grep -i -E "chrom\|截图"` | 容器内访问不到 `wlbc.top`（第 8 步第 ④ 条）；或 COS 密钥不对 |
 | 截图里中文是方块 | — | 镜像里的 `fonts-noto-cjk` 被删了，别动 Dockerfile 那一行 |

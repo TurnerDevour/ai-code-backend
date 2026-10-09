@@ -40,3 +40,7 @@ build/
 ### docker / docker compose ###
 # 含数据库、Redis、COS、百炼等明文密钥，只提交 .env.example
 .env
+# jar 模式下本地上传的 Spring Boot fat jar（服务器上生成，不进仓库）
+/app.jar
+# 前端构建产物上传目录（服务器上生成）
+/frontend-dist/

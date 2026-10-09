@@ -8,6 +8,10 @@
 #   nginx   —— 生产统一入口 http://wlbc.top
 #                /api/...            -> 反代 backend:8123
 #                /dist/{deployKey}/  -> 用户生成并部署的静态站点
+#                /                   -> 前端站点（frontend-dist 目录）
+#
+# 网络：四个服务都接在自定义 bridge 网络 ai-code-net 上（见文件末尾 networks:），
+#      服务之间用服务名互相解析（backend -> mysql:3306 / redis:6379）。
 #
 # 使用：
 #   1. cp .env.example .env 并填好密钥（首次部署可复制 application-prod.yaml 里的值）
@@ -48,6 +52,8 @@ services:
       - "${MYSQL_BIND:-0.0.0.0}:${MYSQL_PORT:-3306}:3306"
     # 内存上限：小机器上必须给每个容器设限，避免某个容器把宿主机吃光后被内核随机 OOM
     mem_limit: 800m
+    networks:
+      - ai-code-net
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 10s
@@ -84,6 +90,8 @@ services:
       # 同 MySQL：不需要外部连 Redis 就把 REDIS_BIND 改成 127.0.0.1
       - "${REDIS_BIND:-0.0.0.0}:${REDIS_PORT:-6379}:6379"
     mem_limit: 320m
+    networks:
+      - ai-code-net
     healthcheck:
       test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 10s
@@ -96,6 +104,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 两种构建方式（详见 Dockerfile 头部说明）：
+      #   runtime-from-jar = 用本地上传的 ./app.jar 打包（推荐：服务器不跑 Maven，快且省内存）
+      #   runtime          = 在服务器容器里从源码编译（默认值，CI / 想一条命令出镜像时用）
+      target: ${BACKEND_BUILD_TARGET:-runtime}
       args:
         # 国内构建时可换成镜像地址，例如清华 Adoptium 镜像（见 DOCKER.md）
         JRE_URL: ${JRE_URL:-https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jre/hotspot/normal/eclipse}
@@ -158,6 +170,8 @@ services:
     extra_hosts:
       # 便于把 CODE_DEPLOY_HOST 指向宿主机（如 http://host.docker.internal/dist）
       - "host.docker.internal:host-gateway"
+    networks:
+      - ai-code-net
 
   # ---------------------------------------------------------------- nginx ----
   nginx:
@@ -178,8 +192,32 @@ services:
     ports:
       - "${NGINX_PORT:-80}:80"
     mem_limit: 64m
+    networks:
+      - ai-code-net
 
 volumes:
   mysql-data:
   redis-data:
   app-temp:
+
+networks:
+  # 自定义网络，替代 compose 默认创建的 <项目名>_default：
+  #   - name 固定为 ai-code-net：不随 compose 项目名/目录名变化，其它容器或临时排查容器
+  #     可以直接 `docker run --rm -it --network ai-code-net ...` 接进来（默认网络名会变，脚本里不好写）
+  #   - 四个服务都接在同一张用户自定义 bridge 上：容器之间直接用服务名互相解析
+  #     （backend 连的就是 mysql:3306 / redis:6379，连不上会直接起不来）
+  #   - 用户自定义网络自带 DNS，且比默认 bridge 隔离性更好（只有同网络内容器能互访）
+  #   - 显式指定网段：跳过 Docker 的默认可分配池（172.17.0.0/16 ~ 172.31.0.0/16），
+  #     避免与宿主机自身的内网/VPC 网段撞车（撞了的表现：容器连内网或公网时超时、TLS 握手卡住）
+  ai-code-net:
+    name: ai-code-net
+    driver: bridge
+    ipam:
+      config:
+        # 默认 10.201.0.0/24：不在 Docker 默认池内，也不与最常见的 /16 内网段
+        # （10.0.0.0/16、172.16.0.0/16、192.168.0.0/16）重叠。
+        # 与你服务器的 VPC 网段冲突时改 .env 的 DOCKER_SUBNET（改完必须重建网络，见 DOCKER.md）
+        - subnet: ${DOCKER_SUBNET:-10.201.0.0/24}
+    # 可选：宿主机 MTU 不是 1500（云 VPC / VPN / overlay 常见 1450）导致大包黑洞（TLS 握手卡住、npm install 挂起）时打开
+    # driver_opts:
+    #   com.docker.network.driver.mtu: "1450"

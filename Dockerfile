@@ -1,7 +1,19 @@
 # =============================================================================
 # ai-code-backend 生产镜像
 #
-# 运行时依赖（由项目代码与 pom.xml 推导，缺一不可）：
+# 同一个 Dockerfile 支持两种构建方式（用 build target 区分，运行时层完全共用）：
+#
+#   ① jar 模式（推荐，2 核 4G 服务器）—— 本地先打包，镜像里只装运行时
+#        本地：  mvn clean package -DskipTests
+#        上传：  scp target/ai-code-backend-1.0.0.jar <用户>@<服务器>:/opt/ai-code-backend/app.jar
+#        服务器：docker compose build backend        # .env 里 BACKEND_BUILD_TARGET=runtime-from-jar
+#        → 服务器不跑 Maven：只 apt 装 chromium/字体 + 下 JRE + 拷贝 jar，几分钟内完成，几乎不吃额外内存
+#
+#   ② 源码模式（默认 target，CI 或想一条命令从源码出镜像时）
+#        docker compose build backend               # BACKEND_BUILD_TARGET=runtime（或不设该变量）
+#        → 在容器里跑 Maven；服务器上约 5~10 分钟，构建阶段内存峰值 1G 左右
+#
+# 运行时依赖（两种模式一致，由项目代码与 pom.xml 推导）：
 #   1. JRE 21                —— pom 的 java.version=21，代码里用到虚拟线程 Thread.ofVirtual()
 #   2. Node.js + npm         —— VueProjectBuilder 通过 ProcessBuilder 调 `npm install` /
 #                               `npm run build` 构建用户生成的 Vue 工程（部署功能必需）
@@ -16,24 +28,8 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# 阶段一：编译打包（Maven + JDK 21）
-# -----------------------------------------------------------------------------
-FROM maven:3.9-eclipse-temurin-21 AS builder
-
-WORKDIR /build
-
-# 先只复制 pom.xml：只要依赖没变，这一层就能命中缓存，改代码不必重新下载依赖
-# （go-offline 只是预热依赖缓存，允许失败：真正的失败会在下面的 package 阶段明确报出来）
-COPY pom.xml ./
-RUN mvn -B -q -DskipTests dependency:go-offline || true
-
-# 再复制源码并打包（跳过测试：单测里有依赖真实模型/网络的用例）
-COPY src ./src
-RUN mvn -B -Dmaven.test.skip=true clean package \
-    && cp target/*.jar /build/app.jar
-
-# -----------------------------------------------------------------------------
-# 阶段二：运行时
+# 运行时公共层：系统依赖 + JRE + 运行用户 + 启动脚本
+# 两种构建方式的差别只有「app.jar 从哪来」，其余全部复用这一层
 #
 # 基础镜像用 node:22-bookworm-slim，原因：
 #   - bookworm 是 Debian，apt 里有"版本互相对得上"的 chromium + chromium-driver
@@ -41,7 +37,7 @@ RUN mvn -B -Dmaven.test.skip=true clean package \
 #   - glibc，npm 生态原生模块（rollup / esbuild / tailwind 等）的预编译包最全
 #   - Node 22 已内置，满足 Vite 5/6/7 对 Node 版本的要求
 # -----------------------------------------------------------------------------
-FROM node:22-bookworm-slim AS runtime
+FROM node:22-bookworm-slim AS runtime-base
 
 # JRE 下载地址（默认 Adoptium 官方 API；国内可换成清华镜像，见 DOCKER.md）
 ARG JRE_URL="https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jre/hotspot/normal/eclipse"
@@ -91,7 +87,6 @@ RUN set -eux; \
 
 WORKDIR /app
 
-COPY --from=builder /build/app.jar /app/app.jar
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # temp/* 必须存在且属于运行用户：命名卷首次挂载时会继承这里的属主，
@@ -111,3 +106,34 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
 USER node
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+# -----------------------------------------------------------------------------
+# 模式 ①：直接用本地打好的 fat jar
+#
+# 前置条件：构建上下文根目录下有 app.jar（就是上传上来的那个 Spring Boot 可执行 jar）
+#   docker build --target runtime-from-jar -t ai-code-backend:1.0.0 .
+#   docker compose build backend        # .env 里 BACKEND_BUILD_TARGET=runtime-from-jar
+# -----------------------------------------------------------------------------
+FROM runtime-base AS runtime-from-jar
+COPY app.jar /app/app.jar
+
+# -----------------------------------------------------------------------------
+# 模式 ②：容器内从源码全流程构建（Maven + JDK 21）
+# -----------------------------------------------------------------------------
+FROM maven:3.9-eclipse-temurin-21 AS builder
+
+WORKDIR /build
+
+# 先只复制 pom.xml：只要依赖没变，这一层就能命中缓存，改代码不必重新下载依赖
+# （go-offline 只是预热依赖缓存，允许失败：真正的失败会在下面的 package 阶段明确报出来）
+COPY pom.xml ./
+RUN mvn -B -q -DskipTests dependency:go-offline || true
+
+# 再复制源码并打包（跳过测试：单测里有依赖真实模型/网络的用例）
+COPY src ./src
+RUN mvn -B -Dmaven.test.skip=true clean package \
+    && cp target/*.jar /build/app.jar
+
+# 默认 target：放在最后 = docker build / docker compose build 不带 target 时构建这个
+FROM runtime-base AS runtime
+COPY --from=builder /build/app.jar /app/app.jar

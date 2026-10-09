@@ -30,10 +30,36 @@
          ├─ http://wlbc.top/dist/{key}/          ──> nginx ──(只读)── app-temp 卷 ←─ backend 写入的部署产物
          └─ 127.0.0.1:8123/api/...               ──> backend（默认只绑本机，宿主机上调试用）
 
-backend ──> mysql:3306（业务库）
-backend ──> redis:6379（Session + 对话记忆）
+backend ──> mysql:3306（业务库）      ┐
+backend ──> redis:6379（Session + 对话记忆）│ 都走自定义网络 ai-code-net（服务名互相解析）
 backend ──> 阿里云百炼 / 腾讯云 COS / npm registry（公网）
 ```
+
+**网络**：所有服务接在同一张自定义 bridge 网络 `ai-code-net` 上（`docker-compose.yml` 末尾 `networks:`），
+不用 compose 默认生成的 `<项目名>_default`：
+
+- 名字**固定**（`name: ai-code-net`），不随 compose 项目名/部署目录变化；临时排查容器可以直接接进来：
+  ```bash
+  docker run --rm -it --network ai-code-net redis:8.10 redis-cli -h redis -a "$REDIS_PASSWORD" ping
+  ```
+- 同一张用户自定义网络上，容器之间用**服务名**互相解析（`backend` 连的就是 `mysql` / `redis`），
+  且只有同网络的容器能互访，比默认 bridge 隔离性更好。
+- **网段是显式指定的**：`10.201.0.0/24`（`.env` 的 `DOCKER_SUBNET` 可改）。
+  为什么要显式指定：Docker 的默认可分配池是 `172.17.0.0/16 ~ 172.31.0.0/16`，
+  一旦和宿主机自己的 VPC / 内网网段撞车，症状是容器连内网或公网时**超时**（TLS 握手卡住、`npm install` 挂起），
+  而且很难联想到是网段问题。选的 `10.201.0.0/24` 既不在默认池内，也不与最常见的 `/16` 内网段
+  （`10.0.0.0/16`、`172.16.0.0/16`、`192.168.0.0/16`）重叠。
+  - 部署前核对本机网段：`ip -4 addr show | grep inet`、`ip route | grep -v docker`；
+    如果本机真的用了 `10.201.0.x`，把 `DOCKER_SUBNET` 换成 `10.202.0.0/24` 之类。
+  - 改完直接 `docker compose up -d` 即可：compose 发现网络配置变化会重建网络和容器
+    （实测：`10.201.0.0/24` 改成 `10.202.0.0/24` 后 `up -d`，网络网段随之更新）。
+    若因网络被别的容器占用而重建失败，先 `docker network rm ai-code-net`（确认没别的容器在用）再 `up -d`。
+  - 核对实际网段：`docker network inspect ai-code-net --format '{{range .IPAM.Config}}{{.Subnet}} {{.Gateway}}{{end}}'`
+    → 期望 `10.201.0.0/24 10.201.0.1`。
+- 如果服务器上**已存在同名但不是 compose 创建**的网络，compose 只会打一条 warning 并复用它
+  （不会启动失败）。想消掉警告：`docker network rm ai-code-net`（确认没别的容器在用），
+  或在编排里把它声明成 `external: true`。
+- 排查用：`docker network inspect ai-code-net --format '{{range .Containers}}{{.Name}} {{end}}'`。
 
 > `/api/` 由 nginx 反代（含 SSE 长连接的关缓冲配置）。前端若直连后端端口（`:8123`），
 > 需要把 `.env` 的 `SERVER_BIND` 改成 `0.0.0.0`（默认只绑 `127.0.0.1`，外部访问不到）。
@@ -122,9 +148,12 @@ WebDriverManager 的默认流程是：**探测浏览器版本 → 访问 Chrome 
 - 想再省内存：把 `-Dscreenshot.max-drivers` 改成 1（截图串行，每张约 3 秒）。
 - 将来升级到 4 核 8G：`-Xmx2g`、`DEPLOY_QUEUE_WORKERS=4`、各服务 `mem_limit` 翻倍即可。
 - 虚拟线程（`spring.threads.virtual.enabled=true`）**默认没开**，与线上 prod 行为保持一致，2 核机器也不建议开。
-- **构建镜像本身也吃内存**（Maven 编译 + apt 装 chromium，约 5~10 分钟，且构建阶段不受 `mem_limit` 约束）：
-  建议先 `docker compose build backend` 再 `docker compose up -d`，构建时保证有 1G 以上空闲内存，
-  必要时临时加 swap，避免边跑 MySQL 边编译把机器压爆。
+- **构建镜像有两种方式**（同一个 `Dockerfile`，用 build target 区分，见文件头部注释）：
+  - `BACKEND_BUILD_TARGET=runtime-from-jar`（推荐）：本地 `mvn clean package -DskipTests` 后把
+    `target/ai-code-backend-1.0.0.jar` 传成 `./app.jar`，服务器只装运行时 —— **不跑 Maven**，约 2~3 分钟、几乎不吃额外内存；
+  - `BACKEND_BUILD_TARGET=runtime`（默认）：容器内从源码编译，2 核上约 5~10 分钟、构建阶段内存峰值约 1G
+    （构建不受 `mem_limit` 约束，所以要保证有 1G 以上空闲内存，必要时临时加 swap）。
+  无论哪种方式，都建议先 `docker compose build backend` 再 `docker compose up -d`。
 
 ## 7. 常用运维命令
 
@@ -132,7 +161,7 @@ WebDriverManager 的默认流程是：**探测浏览器版本 → 访问 Chrome 
 docker compose logs -f backend          # 后端日志（含 npm 构建输出，前缀 [npm]）
 docker compose logs -f nginx
 docker compose up -d backend             # 改完 .env 后必须用 up -d 重建容器（restart 不会重读 .env）
-docker compose up -d --build backend     # 代码更新后重新构建并重建
+docker compose build backend && docker compose up -d backend   # jar 模式升级：先传新 app.jar 再执行这行
 docker compose down                      # 停止（保留数据卷）
 docker compose down -v                   # 停止并删除数据卷（会清空数据库和已部署站点）
 docker compose exec mysql mysql -uroot -p ai_code_db   # 进库
