@@ -5,6 +5,7 @@ import com.example.aicodebackend.model.entity.App;
 import com.example.aicodebackend.model.entity.User;
 import com.example.aicodebackend.model.enums.DeployStatusEnum;
 import com.example.aicodebackend.model.vo.DeployStatusVO;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -27,6 +28,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AppServiceImplDeployStatusTest {
 
     private final AppServiceImpl appService = new AppServiceImpl();
+
+    /**
+     * 本类直接 new 出被测对象（不起 Spring 上下文），因此 {@code @Value} 不会生效：
+     * deployHost 保持为 null，拼出来的部署地址就成了 {@code null/abc123/}。
+     * 这里按 application-dev.yaml 的取值手动注入一次，让用例不依赖运行环境。
+     */
+    @BeforeEach
+    void setUp() {
+        ReflectionTestUtils.setField(appService, "deployHost", "http://localhost");
+    }
 
     @Test
     @DisplayName("历史数据（无 deploy_status）有 deployKey 时按部署完成返回")

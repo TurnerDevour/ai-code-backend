@@ -25,8 +25,6 @@ class StreamingChatModelFactoryTest {
     private final BailianStreamingChatModelFactory bailianFactory =
             new BailianStreamingChatModelFactory(endpointResolver);
 
-    private final DeepSeekStreamingChatModelFactory deepSeekFactory = new DeepSeekStreamingChatModelFactory();
-
     private static AiModelProperties.Model bailianModel() {
         AiModelProperties.Model model = new AiModelProperties.Model();
         model.setProvider("bailian");
@@ -40,19 +38,9 @@ class StreamingChatModelFactoryTest {
         return model;
     }
 
-    private static AiModelProperties.Model deepSeekModel() {
-        AiModelProperties.Model model = new AiModelProperties.Model();
-        model.setProvider("deepseek");
-        model.setBaseUrl("https://api.deepseek.com/");
-        model.setModelName("deepseek-flash");
-        model.setApiKey("sk-test");
-        return model;
-    }
-
     @Test
     void shouldDeclareProvider() {
         assertEquals(AIProviderEnum.BAILIAN, bailianFactory.provider());
-        assertEquals(AIProviderEnum.DEEPSEEK, deepSeekFactory.provider());
     }
 
     /** 百炼的模型列表地址 = base_url（自动补 /compatible-mode/v1）+ /models */
@@ -62,17 +50,10 @@ class StreamingChatModelFactoryTest {
                 bailianFactory.modelsUrl(bailianModel()));
     }
 
-    /** DeepSeek 的 base-url 直接使用，末尾多余斜杠要去掉，避免拼出 //chat/completions */
-    @Test
-    void deepSeekModelsUrlShouldTrimTrailingSlash() {
-        assertEquals("https://api.deepseek.com/models", deepSeekFactory.modelsUrl(deepSeekModel()));
-    }
-
-    /** 两个平台都能真的构建出模型对象（构建过程不发请求） */
+    /** 构建过程不发请求，配置齐全就能拿到模型对象 */
     @Test
     void shouldBuildStreamingModels() {
         assertNotNull(bailianFactory.create(bailianModel()));
-        assertNotNull(deepSeekFactory.create(deepSeekModel()));
     }
 
     /** enable-thinking 不配置时不能报错（保持平台默认） */
@@ -80,6 +61,15 @@ class StreamingChatModelFactoryTest {
     void shouldBuildWithoutEnableThinking() {
         AiModelProperties.Model model = bailianModel();
         model.setEnableThinking(null);
+        assertNotNull(bailianFactory.create(model));
+    }
+
+    /** reasoning-effort 与 enable-thinking 走同一条 customParameters 通道，配了不能报错 */
+    @Test
+    void shouldBuildWithReasoningEffort() {
+        AiModelProperties.Model model = bailianModel();
+        model.setModelName("deepseek-v4.1-flash");
+        model.setReasoningEffort("low");
         assertNotNull(bailianFactory.create(model));
     }
 
@@ -99,15 +89,6 @@ class StreamingChatModelFactoryTest {
         model.setModelName(" ");
         BusinessException exception = assertThrows(BusinessException.class, () -> bailianFactory.create(model));
         assertTrue(exception.getMessage().contains("模型名"), exception.getMessage());
-    }
-
-    /** DeepSeek 缺少 base-url 时报"接口地址" */
-    @Test
-    void shouldRejectMissingBaseUrlForDeepSeek() {
-        AiModelProperties.Model model = deepSeekModel();
-        model.setBaseUrl(null);
-        BusinessException exception = assertThrows(BusinessException.class, () -> deepSeekFactory.create(model));
-        assertTrue(exception.getMessage().contains("接口地址"), exception.getMessage());
     }
 
     /** 百炼没有 base-url 也能起来：用 workspace-id + region 拼（环境变量只配了一半时不至于直接失败） */

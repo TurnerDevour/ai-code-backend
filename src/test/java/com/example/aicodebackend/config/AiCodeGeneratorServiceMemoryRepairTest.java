@@ -123,7 +123,7 @@ class AiCodeGeneratorServiceMemoryRepairTest {
         int updatesBefore = store.updateCount;
 
         AiCodeGeneratorService service = new RepairingFactory(store)
-                .getAiCodeGeneratorService(42L, CodeGenTypeEnum.VUE_PROJECT, AIModelTypeEnum.DEEPSEEK_FLASH);
+                .getAiCodeGeneratorService(42L, CodeGenTypeEnum.VUE_PROJECT, AIModelTypeEnum.DEEPSEEK_V4_1_FLASH);
 
         assertNotNull(service);
         List<ChatMessage> repaired = store.getMessages(42L);
@@ -141,7 +141,7 @@ class AiCodeGeneratorServiceMemoryRepairTest {
                 ToolExecutionResultMessage.from("call_1", "writeToFile", "文件写入成功"))));
 
         new RepairingFactory(store)
-                .getAiCodeGeneratorService(43L, CodeGenTypeEnum.VUE_PROJECT, AIModelTypeEnum.DEEPSEEK_FLASH);
+                .getAiCodeGeneratorService(43L, CodeGenTypeEnum.VUE_PROJECT, AIModelTypeEnum.DEEPSEEK_V4_1_FLASH);
 
         assertEquals(3, store.getMessages(43L).size(), "完整的工具轮次必须原样保留");
     }
@@ -153,7 +153,7 @@ class AiCodeGeneratorServiceMemoryRepairTest {
         store.failOnRead = true;
 
         AiCodeGeneratorService service = new RepairingFactory(store)
-                .getAiCodeGeneratorService(44L, CodeGenTypeEnum.HTML, AIModelTypeEnum.DEEPSEEK_FLASH);
+                .getAiCodeGeneratorService(44L, CodeGenTypeEnum.HTML, AIModelTypeEnum.DEEPSEEK_V4_1_FLASH);
 
         assertNotNull(service, "记忆自愈失败不应影响服务获取");
     }

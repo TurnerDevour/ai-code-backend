@@ -3,7 +3,7 @@ spring:
     name: ai-code-backend
   profiles:
     active:
-      - prod
+      - dev
   session:
     timeout: 2592000
 
@@ -29,26 +29,34 @@ springdoc:
 
 ai:
   models:
-    # DeepSeek 开放平台
-    deepseek-flash:
-      provider: deepseek
-      base-url: https://api.deepseek.com
-      model-name: deepseek-flash
+    # 阿里云百炼：DeepSeek 系列
+    # key 必须与 AIModelTypeEnum.value 一致；模型名里带 "." 的要写成 "[xxx]"，
+    # 否则 Spring 的宽松绑定会把 "." 当成层级分隔符（详见 AiModelProperties 的注释）。
+    "[deepseek-v4.1-flash]":
+      provider: bailian
+      region: cn-beijing
+      model-name: deepseek-v4.1-flash
       timeout: 600s
+      # 百炼 deepseek-v4 系列的 max_tokens 与 thinking_budget 共用上限 393216（模型最大输出）
       max-tokens: 384000
       temperature: 0.3
+      # 百炼会返回 reasoning_content，但历史轮次回传没有收益（还可能被网关拒绝），出站关闭
       return-thinking: true
-      send-thinking: true
+      send-thinking: false
+      # deepseek-v4 系列默认就开启思考，这里显式声明是为了与百炼其它模型保持一致；
+      # 推理强度另有 reasoning-effort（low / high / max，默认 high；其中 low 仅本模型支持）
+      enable-thinking: true
     deepseek-v4-pro:
-      provider: deepseek
-      base-url: https://api.deepseek.com
+      provider: bailian
+      region: cn-beijing
       model-name: deepseek-v4-pro
       timeout: 600s
       max-tokens: 384000
       temperature: 0.3
       return-thinking: true
-      send-thinking: true
-    # 阿里云百炼
+      send-thinking: false
+      enable-thinking: true
+    # 阿里云百炼：Qwen 系列
     "[qwen3.8-max]":
       provider: bailian
       region: cn-beijing

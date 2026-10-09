@@ -18,8 +18,14 @@ import lombok.Getter;
 @Getter
 public enum AIModelTypeEnum {
 
-    DEEPSEEK_FLASH("DeepSeek Flash（速度快）", "deepseek-flash"),
-    DEEPSEEK_V4_PRO("DeepSeek V4 Pro（推理强）", "deepseek-v4-pro"),
+    /**
+     * 阿里云百炼（DeepSeek 系列）：速度快，适合多文件 HTML 生成
+     */
+    DEEPSEEK_V4_1_FLASH("DeepSeek V4.1-Flash（阿里云百炼，速度快）", "deepseek-v4.1-flash"),
+    /**
+     * 阿里云百炼（DeepSeek 系列）：编程、数学与通用推理最强
+     */
+    DEEPSEEK_V4_PRO("DeepSeek V4 Pro（阿里云百炼，推理强）", "deepseek-v4-pro"),
     /**
      * 阿里云百炼旗舰模型：100 万上下文、默认思考模式，支持 function-calling
      */

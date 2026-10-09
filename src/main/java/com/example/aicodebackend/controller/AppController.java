@@ -69,7 +69,7 @@ public class AppController {
         // 3. 校验代码生成类型（用户可不传，默认使用原生多文件模式）
         CodeGenTypeEnum codeGenTypeEnum = CodeGenTypeEnum.getEnumByValue(appAddRequest.getCodeGenType());
         ThrowUtils.throwIf(codeGenTypeEnum == null, ErrorCode.PARAMS_ERROR, "不支持的代码生成类型");
-        // 4. 校验 AI 模型类型（用户可不传，默认使用 deepseek-flash）
+        // 4. 校验 AI 模型类型（用户可不传，默认使用 deepseek-v4.1-flash）
         AIModelTypeEnum aiModelTypeEnum = AIModelTypeEnum.getEnumByValue(appAddRequest.getAiModelType());
         ThrowUtils.throwIf(aiModelTypeEnum == null, ErrorCode.PARAMS_ERROR, "不支持的 AI 模型类型");
         // 5. 复制属性，并补全默认值

@@ -85,14 +85,14 @@ public class AiCodeGeneratorServiceFactory {
      * 根据 appId 获取服务（带缓存）这个方法是为了兼容历史逻辑
      */
     public AiCodeGeneratorService getAiCodeGeneratorService(long appId) {
-        return getAiCodeGeneratorService(appId, CodeGenTypeEnum.HTML, AIModelTypeEnum.DEEPSEEK_FLASH);
+        return getAiCodeGeneratorService(appId, CodeGenTypeEnum.HTML, AIModelTypeEnum.DEEPSEEK_V4_1_FLASH);
     }
 
     /**
-     * 根据 appId 和代码生成类型获取服务（带缓存），使用默认模型 deepseek-flash
+     * 根据 appId 和代码生成类型获取服务（带缓存），使用默认模型 deepseek-v4.1-flash
      */
     public AiCodeGeneratorService getAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenType) {
-        return getAiCodeGeneratorService(appId, codeGenType, AIModelTypeEnum.DEEPSEEK_FLASH);
+        return getAiCodeGeneratorService(appId, codeGenType, AIModelTypeEnum.DEEPSEEK_V4_1_FLASH);
     }
 
     /**
@@ -100,12 +100,12 @@ public class AiCodeGeneratorServiceFactory {
      *
      * @param appId       应用 id
      * @param codeGenType 代码生成类型
-     * @param aiModelType AI 模型类型，为空时回落到 deepseek-flash
+     * @param aiModelType AI 模型类型，为空时回落到 deepseek-v4.1-flash
      *
      * @return AI 代码生成服务
      */
     public AiCodeGeneratorService getAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenType, AIModelTypeEnum aiModelType) {
-        AIModelTypeEnum modelType = aiModelType == null ? AIModelTypeEnum.DEEPSEEK_FLASH : aiModelType;
+        AIModelTypeEnum modelType = aiModelType == null ? AIModelTypeEnum.DEEPSEEK_V4_1_FLASH : aiModelType;
         // 新一轮生成开始前的记忆自愈：把"上一轮异常中断留下的不完整工具上下文"清掉。
         // 必须在这里（而不是记忆读取路径）做，原因见 ChatMemorySanitizer#repairStoredMessages 的说明。
         repairStoredMemory(appId);
@@ -229,9 +229,9 @@ public class AiCodeGeneratorServiceFactory {
     /**
      * 默认生成服务（兼容历史注入点，当前业务代码走 {@link #getAiCodeGeneratorService}）
      * <p>
-     * 必须 {@code @Lazy}：它默认用 deepseek-flash，而模型注册表对"配置缺失的模型"是"标记不可用、
-     * 选中时才报错"（目的是让某个平台的环境变量没配好时应用仍能启动、其它模型仍可用）。
-     * 一旦这个 Bean 在启动期被急切创建，缺少 DEEPSEEK_API_KEY 的机器就会整个起不来，
+     * 必须 {@code @Lazy}：它默认用 deepseek-v4.1-flash，而模型注册表对"配置缺失的模型"是"标记不可用、
+     * 选中时才报错"（目的是让某个平台的 Key / 环境变量没配好时应用仍能启动、其它模型仍可用）。
+     * 一旦这个 Bean 在启动期被急切创建，缺少 ALI_AI_API_KEY 的机器就会整个起不来，
      * 容错设计当场失效。改成懒加载后，只有真的有人注入它才会去取默认模型。
      */
     @Lazy

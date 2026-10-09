@@ -79,14 +79,13 @@ public class AiModelProperties {
     public static class Model {
 
         /**
-         * 所属平台（AIProviderEnum 的 value），默认 deepseek
+         * 所属平台（AIProviderEnum 的 value），默认 bailian
          */
-        private String provider = "deepseek";
+        private String provider = "bailian";
 
         /**
          * 接口根地址
          * <p>
-         * DeepSeek：完整的 OpenAI 兼容根地址（如 {@code https://api.deepseek.com}）。
          * 阿里云百炼：业务空间专属域名（如 {@code https://ws-xxx.cn-beijing.maas.aliyuncs.com}），
          * 缺少 {@code /compatible-mode/v1} 时由 {@link BailianEndpointResolver} 自动补齐；
          * 不配置时回落到"用 workspace-id + region 拼"。
@@ -107,7 +106,10 @@ public class AiModelProperties {
         private String region = "cn-beijing";
 
         /**
-         * API Key，按平台各自配置（DeepSeek 与百炼的 key 不通用，且百炼的 key 按地域绑定）
+         * API Key
+         * <p>
+         * 百炼的 Key 按地域绑定：域名与 Key 不属于同一地域时，接口只会返回 401
+         * {@code Incorrect API key provided}，从字面上看不出是"地域串了"。
          */
         private String apiKey;
 
@@ -143,18 +145,27 @@ public class AiModelProperties {
         /**
          * 是否在回放历史时把 thinking 作为 {@code reasoning_content} 回传
          * <p>
-         * DeepSeek 思考模式带 tools 时，不回传 reasoning_content 会在第二轮起报 400；
-         * 百炼（Qwen）接受回传（实测 qwen3.8-max 正常返回），因此两边默认都开。
+         * 保持 LangChain4j 的默认值，但百炼的模型在 yaml 里统一关掉：思考内容只用于前端展示，
+         * 回传既白花输入 token，也容易被网关当成"不支持的历史字段"拒绝（带 tools 的多轮尤其容易踩）。
          */
         private boolean sendThinking = true;
 
         /**
          * 是否开启思考模式（百炼专属的 {@code enable_thinking} 请求参数）
          * <p>
-         * 为 {@code null} 表示不显式传参、沿用平台默认（qwen3.8-max / qwen3.7-plus 默认开启思考）。
+         * 为 {@code null} 表示不显式传参、沿用平台默认（deepseek-v4 系列与 qwen3.8 系列默认开启思考）。
          * 关掉可以显著降低延迟与输出 token，代价是复杂代码生成的质量下降。
          */
         private Boolean enableThinking;
+
+        /**
+         * 推理强度（百炼专属的 {@code reasoning_effort} 请求参数）
+         * <p>
+         * 只有 deepseek-v4 系列支持：由低到高是 {@code low} / {@code high} / {@code max}，默认 {@code high}；
+         * 其中 {@code low} 目前仅 deepseek-v4.1-flash 支持（deepseek-v4-pro 传 low 与 high 等价）。
+         * 为 {@code null} 或空白表示不显式传参、沿用平台默认。
+         */
+        private String reasoningEffort;
 
         private boolean logRequests = true;
 

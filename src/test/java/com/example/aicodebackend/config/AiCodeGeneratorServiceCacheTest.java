@@ -50,7 +50,7 @@ class AiCodeGeneratorServiceCacheTest {
         java.lang.reflect.Field field = AiCodeGeneratorServiceFactory.class.getDeclaredField("serviceCache");
         field.setAccessible(true);
         Object cache = field.get(factory);
-        String key = appId + "_" + type.getValue() + "_" + AIModelTypeEnum.DEEPSEEK_FLASH.getValue();
+        String key = appId + "_" + type.getValue() + "_" + AIModelTypeEnum.DEEPSEEK_V4_1_FLASH.getValue();
         Method put = cache.getClass().getMethod("put", Object.class, Object.class);
         put.setAccessible(true);
         put.invoke(cache, key, DUMMY);

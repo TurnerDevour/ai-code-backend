@@ -101,7 +101,7 @@ public class AiCodeGeneratorFacade {
      * 流式生成代码（使用默认模型）
      */
     public Flux<String> generateAndSaveCodeStream(String prompt, CodeGenTypeEnum codeGenTypeEnum, Long appId) {
-        return generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId, AIModelTypeEnum.DEEPSEEK_FLASH);
+        return generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId, AIModelTypeEnum.DEEPSEEK_V4_1_FLASH);
     }
 
     /**

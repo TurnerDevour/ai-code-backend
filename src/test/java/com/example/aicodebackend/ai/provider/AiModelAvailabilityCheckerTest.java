@@ -29,6 +29,7 @@ class AiModelAvailabilityCheckerTest {
               {"id":"qwen3.8-flash","object":"model"},
               {"id":"qwen3.7-plus","object":"model"},
               {"id":"qwen3.7-max","object":"model"},
+              {"id":"deepseek-v4.1-flash","object":"model"},
               {"id":"deepseek-v4-pro","object":"model"}
             ],"first_id":"model-id-0","has_more":false}
             """;
@@ -67,12 +68,24 @@ class AiModelAvailabilityCheckerTest {
         return model;
     }
 
+    /** 百炼的模型配置：只给业务空间（域名由 workspace-id + region 拼出来） */
+    private static AiModelProperties.Model bailianModel(String modelName, String workspaceId, String apiKey) {
+        AiModelProperties.Model model = new AiModelProperties.Model();
+        model.setProvider("bailian");
+        model.setWorkspaceId(workspaceId);
+        model.setRegion("cn-beijing");
+        model.setModelName(modelName);
+        model.setApiKey(apiKey);
+        return model;
+    }
+
     /** 解析 OpenAI 兼容的 /models 响应 */
     @Test
     void shouldParseModelIds() {
         Set<String> ids = AiModelAvailabilityChecker.parseModelIds(MODELS_RESPONSE);
-        assertEquals(6, ids.size());
+        assertEquals(7, ids.size());
         assertTrue(ids.contains("qwen3.8-max"));
+        assertTrue(ids.contains("deepseek-v4.1-flash"));
         assertTrue(ids.contains("deepseek-v4-pro"));
     }
 
@@ -116,25 +129,33 @@ class AiModelAvailabilityCheckerTest {
         assertTrue(suggestions.get(3).contains("共 4 个"), suggestions.get(3));
     }
 
-    /** 同一个接口地址下的模型合并成一组核对 */
+    /**
+     * 同一个平台下不同业务空间（不同域名 = 不同模型目录）必须分成两组核对，
+     * 否则会把"A 空间没有的模型"误报成"A 空间配错了"
+     */
     @Test
     void shouldGroupModelsByEndpoint() {
         AiModelProperties properties = propertiesWith(Map.of(
-                "qwen3.8-max", model("bailian", "qwen3.8-max", "sk-1"),
-                "qwen3.7-plus", model("bailian", "qwen3.7-plus", "sk-1"),
-                "deepseek-flash", model("deepseek", "deepseek-flash", "sk-2")));
-        AiModelAvailabilityChecker checker = new AiModelAvailabilityChecker(properties, List.of(
-                factory(AIProviderEnum.BAILIAN, "https://ws-a.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models"),
-                factory(AIProviderEnum.DEEPSEEK, "https://api.deepseek.com/models")));
+                "qwen3.8-max", bailianModel("qwen3.8-max", "ws-a", "sk-1"),
+                "qwen3.7-plus", bailianModel("qwen3.7-plus", "ws-a", "sk-1"),
+                "deepseek-v4-pro", bailianModel("deepseek-v4-pro", "ws-b", "sk-2")));
+        AiModelAvailabilityChecker checker = new AiModelAvailabilityChecker(properties,
+                List.of(new BailianStreamingChatModelFactory(new BailianEndpointResolver())));
 
         Map<String, AiModelAvailabilityChecker.ProbeGroup> groups = checker.groupByEndpoint();
 
-        assertEquals(2, groups.size(), "两个平台两组，实际=" + groups.keySet());
-        AiModelAvailabilityChecker.ProbeGroup bailianGroup = groups.values().stream()
-                .filter(group -> group.provider == AIProviderEnum.BAILIAN)
+        assertEquals(2, groups.size(), "两个业务空间两组，实际=" + groups.keySet());
+        AiModelAvailabilityChecker.ProbeGroup spaceA = groups.values().stream()
+                .filter(group -> group.modelsUrl.contains("ws-a"))
                 .findFirst()
                 .orElseThrow();
-        assertEquals(Set.of("qwen3.8-max", "qwen3.7-plus"), bailianGroup.modelNames);
+        assertEquals(AIProviderEnum.BAILIAN, spaceA.provider);
+        assertEquals(Set.of("qwen3.8-max", "qwen3.7-plus"), spaceA.modelNames);
+        AiModelAvailabilityChecker.ProbeGroup spaceB = groups.values().stream()
+                .filter(group -> group.modelsUrl.contains("ws-b"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(Set.of("deepseek-v4-pro"), spaceB.modelNames);
     }
 
     /** 没配 Key（环境变量没生效）的模型不参与巡检，避免拿 ${...} 去请求 */

@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * 生成代码解析与修复的单元测试
  * <p>
- * 用例取自真实模型输出（deepseek-flash / deepseek-v4-pro 实测）：
+ * 用例取自真实模型输出（deepseek-v4.1-flash / deepseek-v4-pro 实测）：
  * 1) 标签名与属性之间的空格被吞掉（{@code <linkrel="stylesheet"href="style.css">}）；
  * 2) 多文件模式只输出 HTML 代码块，CSS / JavaScript 代码块整个缺失；
  * 3) 代码块围栏缺少换行 / 语言标记大小写不一致。

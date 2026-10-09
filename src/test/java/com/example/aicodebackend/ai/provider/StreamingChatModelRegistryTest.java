@@ -62,8 +62,7 @@ class StreamingChatModelRegistryTest {
     }
 
     private static List<StreamingChatModelFactory> factories(Set<String> failingModelNames) {
-        return List.of(new FakeFactory(AIProviderEnum.DEEPSEEK, failingModelNames),
-                new FakeFactory(AIProviderEnum.BAILIAN, failingModelNames));
+        return List.of(new FakeFactory(AIProviderEnum.BAILIAN, failingModelNames));
     }
 
     private static AiModelProperties.Model model(String provider, String modelName) {
@@ -83,11 +82,11 @@ class StreamingChatModelRegistryTest {
     @Test
     void shouldRegisterConfiguredModels() {
         StreamingChatModelRegistry registry = new StreamingChatModelRegistry(properties(Map.of(
-                "deepseek-flash", model("deepseek", "deepseek-flash"),
+                "deepseek-v4.1-flash", model("bailian", "deepseek-v4.1-flash"),
                 "qwen3.8-max", model("bailian", "qwen3.8-max"),
                 "qwen3.7-plus", model("bailian", "qwen3.7-plus"))), factories(Set.of()));
 
-        assertSame(DUMMY, registry.get(AIModelTypeEnum.DEEPSEEK_FLASH));
+        assertSame(DUMMY, registry.get(AIModelTypeEnum.DEEPSEEK_V4_1_FLASH));
         assertSame(DUMMY, registry.get(AIModelTypeEnum.QWEN_3_8_MAX));
         assertSame(DUMMY, registry.get(AIModelTypeEnum.QWEN_3_7_PLUS));
         assertTrue(registry.isAvailable(AIModelTypeEnum.QWEN_3_7_PLUS));
@@ -97,10 +96,10 @@ class StreamingChatModelRegistryTest {
     @Test
     void shouldIsolateSingleModelFailure() {
         StreamingChatModelRegistry registry = new StreamingChatModelRegistry(properties(Map.of(
-                "deepseek-flash", model("deepseek", "deepseek-flash"),
+                "deepseek-v4.1-flash", model("bailian", "deepseek-v4.1-flash"),
                 "qwen3.8-max", model("bailian", "qwen3.8-max"))), factories(Set.of("qwen3.8-max")));
 
-        assertSame(DUMMY, registry.get(AIModelTypeEnum.DEEPSEEK_FLASH), "另一个模型必须不受影响");
+        assertSame(DUMMY, registry.get(AIModelTypeEnum.DEEPSEEK_V4_1_FLASH), "另一个模型必须不受影响");
         assertFalse(registry.isAvailable(AIModelTypeEnum.QWEN_3_8_MAX));
 
         BusinessException exception = assertThrows(BusinessException.class,
@@ -125,11 +124,11 @@ class StreamingChatModelRegistryTest {
     @Test
     void shouldIgnoreUnknownModelKey() {
         StreamingChatModelRegistry registry = new StreamingChatModelRegistry(properties(Map.of(
-                "gpt-5", model("deepseek", "gpt-5"),
-                "deepseek-flash", model("deepseek", "deepseek-flash"))), factories(Set.of()));
+                "gpt-5", model("bailian", "gpt-5"),
+                "deepseek-v4.1-flash", model("bailian", "deepseek-v4.1-flash"))), factories(Set.of()));
 
         assertEquals(1, registry.availableModelTypes().size());
-        assertTrue(registry.isAvailable(AIModelTypeEnum.DEEPSEEK_FLASH));
+        assertTrue(registry.isAvailable(AIModelTypeEnum.DEEPSEEK_V4_1_FLASH));
     }
 
     /** 平台名写错：该模型不可用，报错里带上枚举值方便对照 */
@@ -149,7 +148,7 @@ class StreamingChatModelRegistryTest {
     void shouldRejectProviderWithoutFactory() {
         StreamingChatModelRegistry registry = new StreamingChatModelRegistry(properties(Map.of(
                 "qwen3.8-max", model("bailian", "qwen3.8-max"))),
-                List.of(new FakeFactory(AIProviderEnum.DEEPSEEK, Set.of())));
+                List.of());
 
         assertFalse(registry.isAvailable(AIModelTypeEnum.QWEN_3_8_MAX));
     }

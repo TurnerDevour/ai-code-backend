@@ -13,13 +13,13 @@ import java.time.Duration;
 /**
  * OpenAI 兼容协议平台的公共构建逻辑
  * <p>
- * DeepSeek 与阿里云百炼都提供 OpenAI 兼容接口，请求体与响应体结构一致，差别只在
+ * 阿里云百炼的各个模型都提供 OpenAI 兼容接口，请求体与响应体结构一致，差别只在
  * "接口根地址怎么得到"和"要不要带平台专属参数"，所以这里用模板方法把公共部分固定下来，
  * 子类只实现这两个钩子。
  * <p>
  * 不使用 starter 自动装配的 {@code openAiStreamingChatModel}：starter 的属性类没有暴露
- * {@code sendThinking}，而 DeepSeek 思考模式在带 tools 时要求回传历史轮次的 reasoning_content，
- * 缺少该开关会导致第二轮起报 400（{@code The reasoning_content ... must be passed back to the API}）。
+ * {@code sendThinking}，而思考模式的模型在带 tools 的多轮里对历史轮次的 reasoning_content
+ * 有要求，缺少该开关就只能二选一（要么全部回传、要么全部不回传）。
  */
 @Slf4j
 public abstract class AbstractStreamingChatModelFactory implements StreamingChatModelFactory {

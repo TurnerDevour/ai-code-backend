@@ -72,7 +72,7 @@ class RealModelOutputRegressionTest {
     }
 
     /**
-     * 记录一个重要的实测事实：deepseek-flash 在多文件模式下<b>经常只输出 HTML 代码块</b>
+     * 记录一个重要的实测事实：deepseek-v4.1-flash 在多文件模式下<b>经常只输出 HTML 代码块</b>
      * （{@code index.html} 里却已经写好了 {@code <link href="style.css">} 与 {@code <script src="script.js">}）。
      * <p>
      * 解析层在这里只能如实返回"CSS / JS 缺失"，真正的补齐由

@@ -15,10 +15,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * {@code ai.models} 配置绑定测试
  * <p>
- * 锁住一个很容易踩、又完全没有报错的坑：模型名里带 {@code .}（qwen3.8-max / qwen3.7-plus）时，
- * key 必须写成 {@code "[qwen3.8-max]"}。Spring 的宽松绑定会把未转义的 {@code .} 当层级分隔符，
- * 直接写 {@code qwen3.8-max:} 会被解析成 {@code ai.models.qwen3} → {@code 8-max}，
- * 而且因为"未知字段默认忽略"，绑定不会报错，最后表现为"模型没配置"。
+ * 锁住一个很容易踩、又完全没有报错的坑：模型名里带 {@code .}（deepseek-v4.1-flash / qwen3.8-max /
+ * qwen3.7-plus）时，key 必须写成 {@code "[deepseek-v4.1-flash]"}。Spring 的宽松绑定会把未转义的
+ * {@code .} 当层级分隔符，直接写 {@code deepseek-v4.1-flash:} 会被解析成
+ * {@code ai.models.deepseek-v4} → {@code 1-flash}，而且因为"未知字段默认忽略"，绑定不会报错，
+ * 最后表现为"模型没配置"。
  */
 class AiModelPropertiesBindingTest {
 
@@ -30,13 +31,18 @@ class AiModelPropertiesBindingTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withUserConfiguration(TestConfig.class);
 
-    /** 转义写法：qwen3.8-max 的整份配置都能绑上（含平台专属字段） */
+    /** 转义写法：带 {@code .} 的模型 key 整份配置都能绑上（含平台专属字段），不带 {@code .} 的直接写 */
     @Test
     void shouldBindDottedModelKeyWithBrackets() {
         runner.withPropertyValues(
-                "ai.models.deepseek-flash.provider=deepseek",
-                "ai.models.deepseek-flash.model-name=deepseek-flash",
-                "ai.models.deepseek-flash.timeout=600s",
+                "ai.models.deepseek-v4-pro.provider=bailian",
+                "ai.models.deepseek-v4-pro.model-name=deepseek-v4-pro",
+                "ai.models.deepseek-v4-pro.timeout=600s",
+                "ai.models.[deepseek-v4.1-flash].provider=bailian",
+                "ai.models.[deepseek-v4.1-flash].model-name=deepseek-v4.1-flash",
+                "ai.models.[deepseek-v4.1-flash].api-key=sk-test",
+                "ai.models.[deepseek-v4.1-flash].send-thinking=false",
+                "ai.models.[deepseek-v4.1-flash].enable-thinking=true",
                 "ai.models.[qwen3.8-max].provider=bailian",
                 "ai.models.[qwen3.8-max].model-name=qwen3.8-max",
                 "ai.models.[qwen3.8-max].api-key=sk-test",
@@ -47,7 +53,13 @@ class AiModelPropertiesBindingTest {
                 "ai.models.[qwen3.8-max].enable-thinking=true"
         ).run(context -> {
             AiModelProperties properties = context.getBean(AiModelProperties.class);
-            assertEquals(Set.of("deepseek-flash", "qwen3.8-max"), new LinkedHashSet<>(properties.getModels().keySet()));
+            assertEquals(Set.of("deepseek-v4-pro", "deepseek-v4.1-flash", "qwen3.8-max"),
+                    new LinkedHashSet<>(properties.getModels().keySet()));
+            AiModelProperties.Model flash = properties.getModels().get("deepseek-v4.1-flash");
+            assertEquals("bailian", flash.getProvider());
+            assertEquals("deepseek-v4.1-flash", flash.getModelName());
+            assertFalse(flash.isSendThinking());
+            assertTrue(flash.getEnableThinking());
             AiModelProperties.Model qwen = properties.getModels().get("qwen3.8-max");
             assertEquals("bailian", qwen.getProvider());
             assertEquals("qwen3.8-max", qwen.getModelName());
@@ -55,7 +67,7 @@ class AiModelPropertiesBindingTest {
             assertEquals("cn-beijing", qwen.getRegion());
             assertEquals(131072, qwen.getMaxTokens());
             assertTrue(qwen.getEnableThinking());
-            assertEquals(600, properties.getModels().get("deepseek-flash").getTimeout().toSeconds());
+            assertEquals(600, properties.getModels().get("deepseek-v4-pro").getTimeout().toSeconds());
         });
     }
 
@@ -66,7 +78,9 @@ class AiModelPropertiesBindingTest {
         try {
             runner.withPropertyValues(
                     "ai.models.qwen3.8-max.model-name=qwen3.8-max",
-                    "ai.models.qwen3.8-max.api-key=sk-test"
+                    "ai.models.qwen3.8-max.api-key=sk-test",
+                    "ai.models.deepseek-v4.1-flash.model-name=deepseek-v4.1-flash",
+                    "ai.models.deepseek-v4.1-flash.api-key=sk-test"
             ).run(context -> boundKeys.addAll(context.getBean(AiModelProperties.class).getModels().keySet()));
         } catch (Exception e) {
             // 直接绑定失败也算"这种写法拿不到配置"
@@ -74,6 +88,8 @@ class AiModelPropertiesBindingTest {
         }
         assertFalse(boundKeys.contains("qwen3.8-max"),
                 () -> "未转义的 . 会被当成层级分隔符，key 必须写成 \"[qwen3.8-max]\"，实际绑定到：" + boundKeys);
+        assertFalse(boundKeys.contains("deepseek-v4.1-flash"),
+                () -> "未转义的 . 会被当成层级分隔符，key 必须写成 \"[deepseek-v4.1-flash]\"，实际绑定到：" + boundKeys);
     }
 
     /** 巡检开关默认关闭：多一个外网请求不应该被隐式打开 */

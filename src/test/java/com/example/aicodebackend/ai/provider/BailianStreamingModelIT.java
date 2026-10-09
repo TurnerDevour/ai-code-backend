@@ -38,8 +38,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 覆盖三件只有真调用才能确认的事：
  * <ol>
  *     <li>业务空间专属域名 + {@code /compatible-mode/v1} 拼出来的地址确实能通（拼错就是 404/401）；</li>
- *     <li>思考模式：qwen3.8-max / qwen3.7-plus 默认返回 {@code reasoning_content}，
- *     而应用在 Vue 工程模式下依赖 onPartialThinking 才有流式输出；</li>
+ *     <li>思考模式：deepseek-v4.1-flash / deepseek-v4-pro / qwen3.8-max / qwen3.7-plus 都会返回
+ *     {@code reasoning_content}，而应用在 Vue 工程模式下依赖 onPartialThinking 才有流式输出；</li>
  *     <li>function-calling：带工具的多轮调用能正常收敛（这是"生成 Vue 工程"的核心链路）。</li>
  * </ol>
  */
@@ -69,6 +69,8 @@ class BailianStreamingModelIT {
 
     private static StreamingChatModelRegistry registry() {
         AiModelProperties properties = new AiModelProperties();
+        properties.getModels().put("deepseek-v4.1-flash", modelProperties("deepseek-v4.1-flash"));
+        properties.getModels().put("deepseek-v4-pro", modelProperties("deepseek-v4-pro"));
         properties.getModels().put("qwen3.8-max", modelProperties("qwen3.8-max"));
         properties.getModels().put("qwen3.7-plus", modelProperties("qwen3.7-plus"));
         return new StreamingChatModelRegistry(properties,
@@ -83,19 +85,21 @@ class BailianStreamingModelIT {
     @Test
     void shouldBuildConfiguredModels() {
         StreamingChatModelRegistry registry = registry();
+        assertTrue(registry.isAvailable(AIModelTypeEnum.DEEPSEEK_V4_1_FLASH));
+        assertTrue(registry.isAvailable(AIModelTypeEnum.DEEPSEEK_V4_PRO));
         assertTrue(registry.isAvailable(AIModelTypeEnum.QWEN_3_8_MAX));
         assertTrue(registry.isAvailable(AIModelTypeEnum.QWEN_3_7_PLUS));
     }
 
     /**
-     * 两个模型都能流式返回正文与思考内容
+     * 四个模型都能流式返回正文与思考内容
      *
      * @param modelName 模型名
      *
      * @throws Exception 等待超时
      */
     @ParameterizedTest
-    @ValueSource(strings = {"qwen3.8-max", "qwen3.7-plus"})
+    @ValueSource(strings = {"deepseek-v4.1-flash", "deepseek-v4-pro", "qwen3.8-max", "qwen3.7-plus"})
     void shouldAnswerWithThinking(String modelName) throws Exception {
         StringBuilder text = new StringBuilder();
         StringBuilder thinking = new StringBuilder();
@@ -174,8 +178,8 @@ class BailianStreamingModelIT {
     @Test
     void availabilityCheckShouldFetchRealCatalog() {
         AiModelProperties properties = new AiModelProperties();
+        properties.getModels().put("deepseek-v4.1-flash", modelProperties("deepseek-v4.1-flash"));
         properties.getModels().put("qwen3.8-max", modelProperties("qwen3.8-max"));
-        properties.getModels().put("qwen3.7-plus", modelProperties("qwen3.7-plus"));
         properties.getModelCheck().setEnabled(true);
         BailianStreamingChatModelFactory factory = new BailianStreamingChatModelFactory(new BailianEndpointResolver());
         AiModelAvailabilityChecker checker = new AiModelAvailabilityChecker(properties, List.of(factory));
@@ -184,8 +188,9 @@ class BailianStreamingModelIT {
                 factory.modelsUrl(modelProperties("qwen3.8-max")), System.getenv("ALI_AI_API_KEY"));
 
         assertNotNull(available, "模型列表接口不可用");
+        assertTrue(available.contains("deepseek-v4.1-flash"),
+                "平台目录里没有 deepseek-v4.1-flash：" + available.size() + " 个模型");
         assertTrue(available.contains("qwen3.8-max"), "平台目录里没有 qwen3.8-max：" + available.size() + " 个模型");
-        assertTrue(available.contains("qwen3.7-plus"), "平台目录里没有 qwen3.7-plus");
     }
 
     /**

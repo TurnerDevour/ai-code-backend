@@ -65,7 +65,7 @@ alter table chat_history
     add column parent_id bigint null comment '父消息id（用于上下文关联）';
 -- 应用表添加 AI 模型类型字段，用于记录该应用使用的模型
 alter table app
-    add column ai_model_type varchar(64) default 'deepseek-flash' null comment 'AI 模型类型（枚举）' after code_gen_type;
+    add column ai_model_type varchar(64) default 'deepseek-v4.1-flash' null comment 'AI 模型类型（枚举）' after code_gen_type;
 
 -- 异步部署：应用表添加部署状态、失败原因与部署发起人
 alter table app
@@ -84,3 +84,14 @@ update app set deploy_status = 'idle' where (deploy_status is null or deploy_sta
 -- 与 message 分开存：思考过程只在对话页顶部的「AI 思考过程」面板展示，不进正文、也不参与模型上下文
 alter table chat_history
     add column thinking mediumtext null comment 'AI 思考过程（推理模型的 reasoning_content）' after message;
+
+-- 模型平台统一改为阿里云百炼：默认模型标识由 deepseek-flash 改为 deepseek-v4.1-flash
+-- 必须迁移历史数据：ai_model_type 是 AIModelTypeEnum 的 value，注册表按它取模型，
+-- 取值不在枚举里时创建/对话会直接报"不支持的 AI 模型类型"（见 AppController 与 StreamingChatModelRegistry）
+alter table app
+    modify column ai_model_type varchar(64) default 'deepseek-v4.1-flash' null comment 'AI 模型类型（枚举）';
+update app
+set ai_model_type = 'deepseek-v4.1-flash'
+where ai_model_type is null
+   or ai_model_type = ''
+   or ai_model_type = 'deepseek-flash';
