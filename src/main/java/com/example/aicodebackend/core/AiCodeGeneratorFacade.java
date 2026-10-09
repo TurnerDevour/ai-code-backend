@@ -9,8 +9,10 @@ import com.example.aicodebackend.ai.model.message.AiResponseMessage;
 import com.example.aicodebackend.ai.model.message.AiThinkingMessage;
 import com.example.aicodebackend.ai.model.message.ToolExecutedMessage;
 import com.example.aicodebackend.ai.model.message.ToolRequestMessage;
+import com.example.aicodebackend.ai.provider.AiModelProperties;
 import com.example.aicodebackend.ai.tools.ToolMessageRenderer;
 import com.example.aicodebackend.config.AiCodeGeneratorServiceFactory;
+import com.example.aicodebackend.core.generation.ThinkingGuardProperties;
 import com.example.aicodebackend.core.generation.ThinkingRunawayGuard;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
@@ -58,8 +60,27 @@ public class AiCodeGeneratorFacade {
      */
     private static final double MIN_REPAIR_LENGTH_RATIO = 0.9;
 
+    /**
+     * 没有显式指定模型时使用的模型（与 {@link AiCodeGeneratorServiceFactory} 的默认值一致）
+     * <p>
+     * 跑飞守卫要用它去查 {@code thinking-budget}：阈值是按本轮真实使用的模型推导的。
+     */
+    private static final AIModelTypeEnum DEFAULT_MODEL_TYPE = AIModelTypeEnum.DEEPSEEK_V4_1_FLASH;
+
     @Resource
     private AiCodeGeneratorServiceFactory aiCodeGeneratorServiceFactory;
+
+    /**
+     * 模型配置：只用来读本轮所选模型的 {@code thinking-budget}，见 {@link #newThinkingGuard}
+     */
+    @Resource
+    private AiModelProperties aiModelProperties;
+
+    /**
+     * 跑飞守卫的阈值覆盖（可选，默认按模型预算推导），见 {@link ThinkingGuardProperties}
+     */
+    @Resource
+    private ThinkingGuardProperties thinkingGuardProperties;
 
     /**
      * 工具展示文本生成器：把工具的展示文案随流式消息一起下发，
@@ -92,18 +113,18 @@ public class AiCodeGeneratorFacade {
                 // 正文与思考都要下发：正文进代码解析与落盘，思考走 ai_thinking 消息单独展示
                 StringBuilder codeBuilder = new StringBuilder();
                 TokenStream tokenStream = aiCodeGeneratorService.generateHTMLCodeStream(prompt);
-                yield processCodeStream(toMessageStream(tokenStream, codeBuilder), codeBuilder,
+                yield processCodeStream(toMessageStream(tokenStream, codeBuilder, aiModelTypeEnum), codeBuilder,
                         CodeGenTypeEnum.HTML, appId, aiCodeGeneratorService, prompt);
             }
             case MULTI_FILE -> {
                 StringBuilder codeBuilder = new StringBuilder();
                 TokenStream tokenStream = aiCodeGeneratorService.generateMultipleFileCodeStream(prompt);
-                yield processCodeStream(toMessageStream(tokenStream, codeBuilder), codeBuilder,
+                yield processCodeStream(toMessageStream(tokenStream, codeBuilder, aiModelTypeEnum), codeBuilder,
                         CodeGenTypeEnum.MULTI_FILE, appId, aiCodeGeneratorService, prompt);
             }
             case VUE_PROJECT -> {
                 TokenStream tokenStream = aiCodeGeneratorService.generateVueProjectCodeStream(appId, prompt);
-                yield processCodeTokenStream(tokenStream, appId);
+                yield processCodeTokenStream(tokenStream, appId, aiModelTypeEnum);
             }
         };
     }
@@ -118,12 +139,16 @@ public class AiCodeGeneratorFacade {
      *
      * @param tokenStream 模型输出的流（含正文与思考两条增量）
      * @param codeBuilder 正文累积器：只收正文，供代码解析与落盘使用
+     * @param aiModelTypeEnum 本轮使用的模型（用来推导跑飞守卫的阈值，可为 null）
      *
      * @return 处理后的 JSON 消息流
      */
-    private Flux<String> toMessageStream(TokenStream tokenStream, StringBuilder codeBuilder) {
-        ThinkingRunawayGuard guard = new ThinkingRunawayGuard();
+    private Flux<String> toMessageStream(TokenStream tokenStream, StringBuilder codeBuilder,
+                                         AIModelTypeEnum aiModelTypeEnum) {
         return Flux.create(sink -> {
+            // 判定器每个订阅各建一个：Flux.create 可以被重复订阅，共享同一个计数器会让
+            // 第二次订阅一上来就带着上一次的累积值，把正常的一轮直接判成跑飞
+            ThinkingRunawayGuard guard = newThinkingGuard(aiModelTypeEnum);
             AtomicBoolean aborted = new AtomicBoolean(false);
             registerThinkingHandler(tokenStream, guard, aborted, sink);
             tokenStream.onPartialResponse(partialResponse -> {
@@ -254,7 +279,7 @@ public class AiCodeGeneratorFacade {
      * 流式生成代码（使用默认模型）
      */
     public Flux<String> generateAndSaveCodeStream(String prompt, CodeGenTypeEnum codeGenTypeEnum, Long appId) {
-        return generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId, AIModelTypeEnum.DEEPSEEK_V4_1_FLASH);
+        return generateAndSaveCodeStream(prompt, codeGenTypeEnum, appId, DEFAULT_MODEL_TYPE);
     }
 
     /**
@@ -272,7 +297,7 @@ public class AiCodeGeneratorFacade {
      * @return 处理后的代码流。
      */
     private Flux<String> processCodeTokenStream(TokenStream tokenStream) {
-        return processCodeTokenStream(tokenStream, null);
+        return processCodeTokenStream(tokenStream, null, null);
     }
 
     /**
@@ -284,14 +309,17 @@ public class AiCodeGeneratorFacade {
      * 记忆本身会在读取时被清洗，但已缓存的生成服务仍持有坏快照，因此这里同时把该应用的
      * 生成服务缓存失效掉——用户再发一次消息即可成功，不必重启后端。
      *
-     * @param tokenStream 生成的代码流
-     * @param appId       应用 id（为 null 时不做缓存失效）
+     * @param tokenStream     生成的代码流
+     * @param appId           应用 id（为 null 时不做缓存失效）
+     * @param aiModelTypeEnum 本轮使用的模型（用来推导跑飞守卫的阈值，可为 null）
      *
      * @return 处理后的代码流
      */
-    private Flux<String> processCodeTokenStream(TokenStream tokenStream, Long appId) {
-        ThinkingRunawayGuard guard = new ThinkingRunawayGuard();
+    private Flux<String> processCodeTokenStream(TokenStream tokenStream, Long appId,
+                                                AIModelTypeEnum aiModelTypeEnum) {
         return Flux.create(sink -> {
+            // 判定器每个订阅各建一个，原因同 toMessageStream
+            ThinkingRunawayGuard guard = newThinkingGuard(aiModelTypeEnum);
             AtomicBoolean aborted = new AtomicBoolean(false);
             tokenStream.onPartialResponse(partialResponse -> {
                 if (aborted.get()) {
@@ -329,6 +357,42 @@ public class AiCodeGeneratorFacade {
             registerThinkingHandler(tokenStream, guard, aborted, sink);
             tokenStream.start();
         });
+    }
+
+    /**
+     * 按本轮真正使用的模型创建「思考跑飞」判定器
+     * <p>
+     * 阈值必须跟着模型的 {@code thinking-budget} 走，而不是写死：预算决定"平台允许模型思考多久"，
+     * 守卫是它之外的第二道防线。<b>守卫比预算更严时，掐掉的是预算内的正常工作</b>——线上误报
+     * （{@code thinking-budget=8192} 配 5 分钟上限）就是这么来的，见 {@link ThinkingRunawayGuard}。
+     *
+     * @param aiModelTypeEnum 本轮请求的模型；为 null 表示没指定，回落默认模型
+     *
+     * @return 判定器
+     */
+    private ThinkingRunawayGuard newThinkingGuard(AIModelTypeEnum aiModelTypeEnum) {
+        Integer thinkingBudget = resolveThinkingBudget(aiModelTypeEnum);
+        if (thinkingGuardProperties == null) {
+            // 单测会直接 new 出本类（不经过 Spring），此时用"按预算推导"的默认阈值
+            return new ThinkingRunawayGuard(ThinkingRunawayGuard.Limits.forThinkingBudget(thinkingBudget));
+        }
+        return new ThinkingRunawayGuard(thinkingGuardProperties.limitsFor(thinkingBudget));
+    }
+
+    /**
+     * 取本轮模型在平台侧的思考预算（{@code ai.model-defaults.thinking-budget} 或模型自己的覆盖值）
+     *
+     * @param aiModelTypeEnum 本轮请求的模型，可为 null
+     *
+     * @return 思考预算（token）；模型没有配置该项时为 null，表示由守卫用兜底阈值
+     */
+    private Integer resolveThinkingBudget(AIModelTypeEnum aiModelTypeEnum) {
+        if (aiModelProperties == null) {
+            return null;
+        }
+        AIModelTypeEnum modelType = aiModelTypeEnum == null ? DEFAULT_MODEL_TYPE : aiModelTypeEnum;
+        AiModelProperties.Model model = aiModelProperties.getModels().get(modelType.getValue());
+        return model == null ? null : model.getThinkingBudget();
     }
 
     /**

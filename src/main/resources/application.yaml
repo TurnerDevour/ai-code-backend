@@ -57,6 +57,17 @@ ai:
     enabled: true
     timeout: 5s
 
+  # 「思考跑飞」守卫（第二道防线）：默认阈值按所选模型的 thinking-budget 推导，通常不用配。
+  #   字符上限 = thinking-budget × 4 字符/token × 1.5 安全系数（8192 预算 → 49152 字）
+  #   时长上限 = max(10 分钟, thinking-budget ÷ 6 token/秒)（8192 预算 → 约 23 分钟）
+  # 推导值一定比预算本身宽松：守卫若比预算更严，掐掉的就是预算内的合法推理
+  # （曾因此误报"模型在思考阶段长时间没有产出"）。
+  # thinking-budget 没配时用兜底值：60000 字 / 10 分钟。
+  # 只有平台不按 thinking-budget 截断（推理真的无穷无尽）时才需要在这里手工收紧。
+  thinking-guard:
+    # max-chars: 49152
+    # max-duration: 23m
+
 # 截图临时目录
 screenshot:
   temp:

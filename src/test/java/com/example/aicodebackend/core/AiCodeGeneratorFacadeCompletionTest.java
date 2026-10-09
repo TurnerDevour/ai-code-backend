@@ -409,7 +409,7 @@ class AiCodeGeneratorFacadeCompletionTest {
     void shouldAbortWhenThinkingRunsAway(@TempDir Path tempRoot) throws Exception {
         String modelOutput = fenced("html", CLEAN_HTML) + fenced("css", CLEAN_CSS) + fenced("javascript", CLEAN_JS);
         StubAiCodeGeneratorService stub = new StubAiCodeGeneratorService(modelOutput, "");
-        stub.thinkingChunks.add("想".repeat(ThinkingRunawayGuard.MAX_THINKING_CHARS + 1));
+        stub.thinkingChunks.add("想".repeat(ThinkingRunawayGuard.FALLBACK_MAX_THINKING_CHARS + 1));
 
         long appId = 990008L;
         File dir = productDir(appId);
@@ -425,6 +425,40 @@ class AiCodeGeneratorFacadeCompletionTest {
             assertTrue(received.get(0).contains("本轮已中止"), "失败原因要能直接给用户看：" + received);
             assertTrue(stub.lastTokenStream.isCancelled(), "必须真正取消模型调用，否则它还会跑到 max_tokens");
             assertFalse(dir.exists(), "被中止的一轮不应落盘任何代码");
+        } finally {
+            deleteQuietly(dir);
+        }
+    }
+
+    /**
+     * 预算内的「长思考」不能被误杀
+     * <p>
+     * 回归背景（线上误报）：守卫阈值原来写死成 20000 字 / 5 分钟，而生产配置的
+     * {@code thinking-budget=8192}（平台允许模型用 8192 个 token 做内部推理）在推理模型的实际
+     * 吞吐下本来就可能产出更多字符、耗时更久，于是"完整的合法推理"被当成跑飞掐掉，
+     * 用户看到的就是"模型在思考阶段长时间没有产出"。
+     * <p>
+     * 这里锁住：默认（不额外配置）时，超过旧阈值的长思考必须照常走完并落盘。
+     */
+    @Test
+    void shouldNotAbortLongButLegitimateThinking(@TempDir Path tempRoot) throws Exception {
+        String modelOutput = fenced("html", CLEAN_HTML) + fenced("css", CLEAN_CSS) + fenced("javascript", CLEAN_JS);
+        StubAiCodeGeneratorService stub = new StubAiCodeGeneratorService(modelOutput, "");
+        // 旧阈值（20000 字）之上、兜底阈值之内的长思考
+        stub.thinkingChunks.add("想".repeat(25_000));
+
+        long appId = 990009L;
+        File dir = productDir(appId);
+        try {
+            List<String> messages = facadeWith(stub)
+                    .generateAndSaveCodeStream("企业官网", CodeGenTypeEnum.MULTI_FILE, appId)
+                    .collectList().block();
+
+            assertNotNull(messages, "长思考必须照常走完，而不是以错误结束");
+            assertTrue(messages.stream().anyMatch(message -> message.contains("ai_thinking")),
+                    "长思考仍应作为 ai_thinking 下发");
+            assertFalse(stub.lastTokenStream.isCancelled(), "预算内的长思考不该被取消");
+            assertTrue(read(dir, "index.html").contains("<"), "长思考之后仍应正常落盘");
         } finally {
             deleteQuietly(dir);
         }
