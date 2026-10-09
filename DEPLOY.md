@@ -637,6 +637,7 @@ ls -l /opt/ai-code-backend/frontend-dist/index.html /opt/ai-code-backend/fronten
 | 日志刷 `UnknownHostException: mysql` / `redis` | `docker network inspect ai-code-net` | 服务没接在同一张网络：检查 `docker-compose.yml` 里每个服务都有 `networks: [ai-code-net]` |
 | 容器连公网/内网**超时**（AI 接口不通、TLS 握手卡住、`npm install` 挂起），但 `ping` 网关正常 | `ip route \| grep -v docker` 对比 `docker network inspect ai-code-net --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'` | 网段与宿主机 VPC 撞车：改 `.env` 的 `DOCKER_SUBNET`（如 `10.202.0.0/24`）后 `docker compose up -d`（compose 会自动重建网络与容器） |
 | 部署报 `npm install 失败` | `docker compose logs backend \| grep npm` | registry 不通（换 `NPM_REGISTRY`）/ 内存不足 |
+| 部署报 `ERR_MODULE_NOT_FOUND: … node_modules/dist/node/cli.js … imported from …/.bin/vite` | `docker compose exec backend ls -l /app/temp/code_output/` | **旧版本 bug**：构建暂存目录把上一次的 `node_modules` 整份复制过去，Linux 上 npm 的 `.bin/*` 是符号链接，复制时被实体化成真实文件，里面的相对导入就错位了。已在代码里修复（复制时跳过 `node_modules` / `dist`）—— 本地重新 `mvn package` 并上传新 `app.jar` 后重建镜像即可；`code_output` 里残留的 `node_modules` 无需手工清理 |
 | 部署成功但封面为空 | `docker compose logs backend \| grep -i -E "chrom\|截图"` | 容器内访问不到 `wlbc.top`（第 8 步第 ④ 条）；或 COS 密钥不对 |
 | 截图里中文是方块 | — | 镜像里的 `fonts-noto-cjk` 被删了，别动 Dockerfile 那一行 |
 | 容器反复重启 | `docker inspect ai-code-backend --format '{{.State.OOMKilled}}'` | 内存不够：先把 `DEPLOY_QUEUE_WORKERS` 降到 1，再把 `-Xmx1024m` 降到 `896m` |

@@ -50,9 +50,12 @@ import reactor.core.publisher.Flux;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -161,6 +164,23 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
      * Vue 工程构建的暂存目录前缀：构建发生在暂存目录里，成功后再原子切换进源码目录
      */
     private static final String BUILD_STAGING_PREFIX = ".build-staging-";
+
+    /**
+     * 复制到暂存目录时要跳过的工程根目录：这两个目录都由本次构建自己生成，带了反而会出错
+     * <p>
+     * 特别是 {@code node_modules}：Linux 上 npm 会把 {@code node_modules/.bin/*} 做成<b>符号链接</b>，
+     * 而 Hutool 的目录复制底层是 {@code Files.copy}（默认跟随符号链接），会把链接"实体化"成真实文件——
+     * 例如 {@code .bin/vite} 变成 {@code vite/bin/vite.js} 的副本，它里面的
+     * {@code import '../dist/node/cli.js'} 就会被解析成 {@code node_modules/dist/node/cli.js}（不存在），
+     * 部署构建直接失败：
+     * <pre>
+     * Error [ERR_MODULE_NOT_FOUND]: Cannot find module '.../node_modules/dist/node/cli.js'
+     *   imported from '.../node_modules/.bin/vite'
+     * </pre>
+     * 更麻烦的是随后的 {@code npm install} 在依赖树没变化时不会重建 bin 链接，修不回来；
+     * 而 Windows 上 npm 不产生这类符号链接，所以本地不会复现，只有线上（Linux）会炸。
+     */
+    private static final Set<String> STAGING_SKIP_DIRS = Set.of("node_modules", "dist");
 
     /**
      * 获取脱敏后的应用信息
@@ -1163,14 +1183,47 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         Path staging = sourceDir.toPath().resolveSibling(BUILD_STAGING_PREFIX + appId + "-" + System.nanoTime());
         FileUtil.mkdir(staging.toFile());
         try {
-            // 只复制构建需要的内容，避免把上一次的 dist/node_modules 带进暂存目录
-            FileUtil.copyContent(sourceDir, staging.toFile(), true);
-            FileUtil.del(staging.resolve("dist").toFile());
+            // 只复制构建需要的源码，跳过上一次构建留下的 node_modules / dist（原因见 STAGING_SKIP_DIRS：
+            // 把 node_modules 带过去会让 Linux 上的 .bin/* 符号链接被实体化，构建必然失败）
+            copyProjectToStaging(sourceDir.toPath(), staging);
         } catch (Exception e) {
             FileUtil.del(staging.toFile());
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "准备构建暂存目录失败：" + e.getMessage());
         }
         return staging;
+    }
+
+    /**
+     * 把工程源码复制到暂存目录：跳过工程根目录下的 {@code node_modules} 与 {@code dist}
+     * <p>
+     * 不用 {@code FileUtil.copyContent} 的原因：它无法按目录名过滤，而这两个目录又必须排除
+     * （见 {@link #STAGING_SKIP_DIRS}）。只跳过<b>根目录</b>下的同名目录，内层同名目录照常复制。
+     *
+     * @param sourceDir  源码目录
+     * @param stagingDir 暂存目录（已创建）
+     *
+     * @throws IOException 复制失败
+     */
+    private void copyProjectToStaging(Path sourceDir, Path stagingDir) throws IOException {
+        Files.walkFileTree(sourceDir, new SimpleFileVisitor<>() {
+
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+                Path relative = sourceDir.relativize(dir);
+                if (relative.getNameCount() == 1 && STAGING_SKIP_DIRS.contains(relative.getFileName().toString())) {
+                    log.debug("构建暂存目录跳过: {}", dir);
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
+                Files.createDirectories(stagingDir.resolve(relative));
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                Files.copy(file, stagingDir.resolve(sourceDir.relativize(file)), StandardCopyOption.REPLACE_EXISTING);
+                return FileVisitResult.CONTINUE;
+            }
+        });
     }
 
     /**
