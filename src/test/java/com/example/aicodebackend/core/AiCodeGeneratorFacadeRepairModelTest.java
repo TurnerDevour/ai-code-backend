@@ -20,6 +20,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -276,10 +278,10 @@ class AiCodeGeneratorFacadeRepairModelTest {
                 .chatMemoryProvider(memoryId -> MessageWindowChatMemory.withMaxMessages(20))
                 .build();
 
-        List<String> firstTurnChunks = service.generateHTMLCodeStream("第一轮：做个工具网站").collectList().block();
+        List<String> firstTurnChunks = collect(service.generateHTMLCodeStream("第一轮：做个工具网站"));
         assertNotNull(firstTurnChunks);
         assertTrue(String.join("", firstTurnChunks).contains("ok"));
-        assertNotNull(service.generateHTMLCodeStream("第二轮：你刚刚做了什么？").collectList().block());
+        assertNotNull(collect(service.generateHTMLCodeStream("第二轮：你刚刚做了什么？")));
 
         assertEquals(2, model.requests.size(), "两次流式调用都应打到模型");
         String secondTurnContext = model.requests.get(1).messages().stream()
@@ -293,6 +295,30 @@ class AiCodeGeneratorFacadeRepairModelTest {
         AiCodeGeneratorFacade facade = new AiCodeGeneratorFacade();
         ReflectionTestUtils.setField(facade, "aiCodeGeneratorServiceFactory", new StubFactory(service));
         return facade;
+    }
+
+    /**
+     * 把一次 TokenStream 调用收成"正文增量列表"（HTML / 多文件模式的返回类型是 TokenStream，
+     * 这样才能同时拿到正文与思考两条增量，见 {@code AiCodeGeneratorService}）
+     *
+     * @param tokenStream 模型的流式输出
+     *
+     * @return 正文增量列表
+     */
+    private static List<String> collect(dev.langchain4j.service.TokenStream tokenStream) {
+        List<String> chunks = new ArrayList<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        tokenStream.onPartialResponse(chunks::add)
+                .onCompleteResponse(response -> latch.countDown())
+                .onError(error -> latch.countDown())
+                .start();
+        try {
+            assertTrue(latch.await(5, TimeUnit.SECONDS), "TokenStream 没有在预期时间内结束");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+        return chunks;
     }
 
     private static File productDir(long appId) {

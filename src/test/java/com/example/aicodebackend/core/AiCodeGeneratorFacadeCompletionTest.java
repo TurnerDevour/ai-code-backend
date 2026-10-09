@@ -1,6 +1,8 @@
 package com.example.aicodebackend.core;
 
+import cn.hutool.json.JSONUtil;
 import com.example.aicodebackend.ai.AiCodeGeneratorService;
+import com.example.aicodebackend.ai.StubTokenStream;
 import com.example.aicodebackend.config.AiCodeGeneratorServiceFactory;
 import com.example.aicodebackend.constant.AppConstant;
 import com.example.aicodebackend.model.enums.AIModelTypeEnum;
@@ -137,25 +139,28 @@ class AiCodeGeneratorFacadeCompletionTest {
         private final String repairResponse;
         final List<String> repairPrompts = new ArrayList<>();
 
+        /** 本轮要下发的思考增量（模拟推理模型的 reasoning_content） */
+        final List<String> thinkingChunks = new ArrayList<>();
+
         StubAiCodeGeneratorService(String streamResponse, String repairResponse) {
             this.streamResponse = streamResponse;
             this.repairResponse = repairResponse;
         }
 
         @Override
-        public Flux<String> generateHTMLCodeStream(String prompt) {
-            return Flux.just(streamResponse);
+        public TokenStream generateHTMLCodeStream(String prompt) {
+            return new StubTokenStream(List.of(streamResponse), thinkingChunks);
         }
 
         @Override
-        public Flux<String> generateMultipleFileCodeStream(String prompt) {
+        public TokenStream generateMultipleFileCodeStream(String prompt) {
             // 按模型真实行为分片（分片边界不能影响解析结果）
             List<String> chunks = new ArrayList<>();
             int step = 64;
             for (int i = 0; i < streamResponse.length(); i += step) {
                 chunks.add(streamResponse.substring(i, Math.min(streamResponse.length(), i + step)));
             }
-            return Flux.fromIterable(chunks);
+            return new StubTokenStream(chunks, thinkingChunks);
         }
 
         @Override
@@ -336,6 +341,51 @@ class AiCodeGeneratorFacadeCompletionTest {
 
             assertEquals(GLUED_CSS.strip(), read(dir, "style.css").strip(),
                     "明显缩水的候选必须被丢弃（不能让模型用片段替换整份样式）");
+        } finally {
+            deleteQuietly(dir);
+        }
+    }
+
+    /**
+     * 思考过程必须随流单独下发（{@code type=ai_thinking}），且不能混进正文与落盘文件
+     * <p>
+     * 回归背景（实测）：HTML / 多文件模式原来用 {@code Flux<String>} 接模型输出，langchain4j 的 Reactor
+     * 适配器只接正文增量，思考内容（reasoning_content）在适配层就被丢掉了，前端「AI 思考过程」面板永远是空的。
+     * 现在这两个模式也走 TokenStream，思考增量必须作为独立消息下发——同时正文与落盘内容都要保持"只有代码"。
+     */
+    @Test
+    void shouldStreamThinkingSeparatelyFromCode(@TempDir Path tempRoot) throws Exception {
+        String modelOutput = fenced("html", CLEAN_HTML) + fenced("css", CLEAN_CSS) + fenced("javascript", CLEAN_JS);
+        StubAiCodeGeneratorService stub = new StubAiCodeGeneratorService(modelOutput, "");
+        stub.thinkingChunks.add("先想一下页面结构");
+        stub.thinkingChunks.add("再想一下配色");
+
+        long appId = 990007L;
+        File dir = productDir(appId);
+        try {
+            List<String> messages = facadeWith(stub)
+                    .generateAndSaveCodeStream("博客首页", CodeGenTypeEnum.MULTI_FILE, appId)
+                    .collectList().block();
+
+            assertNotNull(messages, "消息流不应为空");
+            List<String> thinking = messages.stream()
+                    .filter(message -> JSONUtil.parseObj(message).getStr("type") != null
+                            && "ai_thinking".equals(JSONUtil.parseObj(message).getStr("type")))
+                    .map(message -> JSONUtil.parseObj(message).getStr("data"))
+                    .toList();
+            assertEquals(List.of("先想一下页面结构", "再想一下配色"), thinking,
+                    "思考增量必须以 ai_thinking 消息单独下发（前端据此渲染思考面板）");
+
+            String content = messages.stream()
+                    .filter(message -> "ai_response".equals(JSONUtil.parseObj(message).getStr("type")))
+                    .map(message -> JSONUtil.parseObj(message).getStr("data"))
+                    .reduce("", String::concat);
+            assertTrue(content.contains("```html"), "正文增量应与模型输出一致: " + content.substring(0, Math.min(80, content.length())));
+            assertFalse(content.contains("先想一下页面结构"), "思考内容不能混进正文，否则代码解析与对话历史都会被污染");
+
+            assertFalse(read(dir, "index.html").contains("先想一下页面结构"), "落盘文件不能带上推理内容");
+            assertFalse(read(dir, "style.css").contains("先想一下页面结构"));
+            assertFalse(read(dir, "script.js").contains("先想一下页面结构"));
         } finally {
             deleteQuietly(dir);
         }

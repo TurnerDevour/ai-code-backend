@@ -83,18 +83,86 @@ public class AiCodeGeneratorFacade {
 
         return switch (codeGenTypeEnum) {
             case HTML -> {
-                Flux<String> codeStream = aiCodeGeneratorService.generateHTMLCodeStream(prompt);
-                yield processCodeStream(codeStream, CodeGenTypeEnum.HTML, appId, aiCodeGeneratorService, prompt);
+                // 正文与思考都要下发：正文进代码解析与落盘，思考走 ai_thinking 消息单独展示
+                StringBuilder codeBuilder = new StringBuilder();
+                TokenStream tokenStream = aiCodeGeneratorService.generateHTMLCodeStream(prompt);
+                yield processCodeStream(toMessageStream(tokenStream, codeBuilder), codeBuilder,
+                        CodeGenTypeEnum.HTML, appId, aiCodeGeneratorService, prompt);
             }
             case MULTI_FILE -> {
-                Flux<String> codeStream = aiCodeGeneratorService.generateMultipleFileCodeStream(prompt);
-                yield processCodeStream(codeStream, CodeGenTypeEnum.MULTI_FILE, appId, aiCodeGeneratorService, prompt);
+                StringBuilder codeBuilder = new StringBuilder();
+                TokenStream tokenStream = aiCodeGeneratorService.generateMultipleFileCodeStream(prompt);
+                yield processCodeStream(toMessageStream(tokenStream, codeBuilder), codeBuilder,
+                        CodeGenTypeEnum.MULTI_FILE, appId, aiCodeGeneratorService, prompt);
             }
             case VUE_PROJECT -> {
                 TokenStream tokenStream = aiCodeGeneratorService.generateVueProjectCodeStream(appId, prompt);
                 yield processCodeTokenStream(tokenStream, appId);
             }
         };
+    }
+
+    /**
+     * 把 HTML / 多文件模式的 {@link TokenStream} 转换成前端可消费的 JSON 消息流
+     * <p>
+     * 与 Vue 工程模式的差别只有一个：这两个模式没有工具，因此不需要 tool_request / tool_executed 消息。
+     * 换成 JSON 消息（而不是以前的纯文本增量）是"思考过程能显示出来"的前提：
+     * 纯文本通道承载不了两种语义的增量，思考内容只能和正文混在一起（或者被直接丢掉）。
+     * 前端对 {@code ai_response} 的渲染与以前的纯文本完全一致，正文展示不受影响。
+     *
+     * @param tokenStream 模型输出的流（含正文与思考两条增量）
+     * @param codeBuilder 正文累积器：只收正文，供代码解析与落盘使用
+     *
+     * @return 处理后的 JSON 消息流
+     */
+    private Flux<String> toMessageStream(TokenStream tokenStream, StringBuilder codeBuilder) {
+        return Flux.create(sink -> {
+            tokenStream.onPartialResponse(partialResponse -> {
+                // 空增量（模型首个 delta 常常是空字符串）不下发，避免无意义的消息帧
+                if (StrUtil.isEmpty(partialResponse)) {
+                    return;
+                }
+                codeBuilder.append(partialResponse);
+                sink.next(responseMessage(partialResponse));
+            }).onPartialThinking(partialThinking -> {
+                String thinking = partialThinking.text();
+                if (StrUtil.isBlank(thinking)) {
+                    return;
+                }
+                sink.next(thinkingMessage(thinking));
+            }).onCompleteResponse(chatResponse -> {
+                log.info("代码生成完成，结束原因: {}", chatResponse.finishReason());
+                sink.complete();
+            }).onError(throwable -> {
+                log.error("处理代码流时发生错误", throwable);
+                sink.error(toUserFacingError(throwable));
+            }).start();
+        });
+    }
+
+    /**
+     * 正文增量消息（{@code type=ai_response}）
+     *
+     * @param text 正文增量
+     *
+     * @return JSON 消息
+     */
+    private static String responseMessage(String text) {
+        return JSONUtil.toJsonStr(new AiResponseMessage(text));
+    }
+
+    /**
+     * 思考过程消息（{@code type=ai_thinking}）
+     * <p>
+     * 思考过程单独一种消息类型：前端放进对话页顶部的「AI 思考过程」面板，
+     * 后端单独累积进 {@code chat_history.thinking}（不进正文，否则历史与上下文会被推理内容淹没）。
+     *
+     * @param text 思考增量
+     *
+     * @return JSON 消息
+     */
+    private static String thinkingMessage(String text) {
+        return JSONUtil.toJsonStr(new AiThinkingMessage(text));
     }
 
     /**
@@ -140,8 +208,7 @@ public class AiCodeGeneratorFacade {
         return Flux.create(sink -> {
             tokenStream.onPartialResponse(partialResponse -> {
                 log.info("VUE_PROJECT 文本增量: {}", StrUtil.maxLength(partialResponse, 200));
-                AiResponseMessage aiResponseMessage = new AiResponseMessage(partialResponse);
-                sink.next(JSONUtil.toJsonStr(aiResponseMessage));
+                sink.next(responseMessage(partialResponse));
             }).onPartialThinking(partialThinking -> {
                 String thinking = partialThinking.text();
                 if (StrUtil.isBlank(thinking)) {
@@ -149,8 +216,7 @@ public class AiCodeGeneratorFacade {
                 }
                 // 思考过程单独一种消息类型：前端放进对话页顶部的「AI 思考过程」面板，
                 // 后端单独累积进 chat_history.thinking（不进正文，否则历史与上下文会被推理内容淹没）
-                AiThinkingMessage aiThinkingMessage = new AiThinkingMessage(thinking);
-                sink.next(JSONUtil.toJsonStr(aiThinkingMessage));
+                sink.next(thinkingMessage(thinking));
             }).onToolExecuted(toolExecution -> {
                 ToolExecutionRequest request = toolExecution.request();
                 // 展示文本由工具自己声明（见 ToolMessageRenderer）：前端不再按工具名猜参数结构，
@@ -225,17 +291,19 @@ public class AiCodeGeneratorFacade {
     }
 
     /**
-     * 处理代码流，将生成的代码保存到文件中。
+     * 处理消息流，将生成的代码保存到文件中。
      * <p>
      * 实测背景：HTML / 多文件模式下，模型并不总是遵守系统提示词——多文件模式经常只输出
      * {@code index.html} 一个代码块（有时连 CSS 一起漏掉），此时产物目录里没有 style.css / script.js，
      * 预览自然"没有样式、没有交互"。这里在流结束、落盘之前做一次补全：
      * 先把流内容累积下来，解析后发现缺少文件就用一次流式"修复"调用把缺失部分补齐并一起落盘。
      * <p>
-     * 累积仍然内联在这条链上（写的是 StringBuilder，不需要客户端在线）；
+     * 累积是上游在产出正文增量时同步写入的（写的是 StringBuilder，不需要客户端在线），
+     * 且<b>只累积正文</b>：思考过程（{@code ai_thinking}）不属于代码，混进来会让解析与落盘都带上推理内容；
      * 客户端断开时 Reactor 会取消这条链，{@code doOnComplete} 不再触发，与原有语义一致。
      *
-     * @param codeStream          生成的代码流
+     * @param messageStream       下发给前端的 JSON 消息流（正文 + 思考）
+     * @param codeBuilder         正文累积器（只含正文增量）
      * @param codeGenTypeEnum     代码生成类型枚举，指定生成 HTML 代码或多文件代码
      * @param appId               应用 id
      * @param aiCodeGeneratorService 生成服务（补全时复用同一个实例，保持对话记忆）
@@ -243,14 +311,13 @@ public class AiCodeGeneratorFacade {
      *
      * @return 处理后的代码流。
      */
-    private Flux<String> processCodeStream(Flux<String> codeStream,
+    private Flux<String> processCodeStream(Flux<String> messageStream,
+                                          StringBuilder codeBuilder,
                                           CodeGenTypeEnum codeGenTypeEnum,
                                           Long appId,
                                           AiCodeGeneratorService aiCodeGeneratorService,
                                           String prompt) {
-        StringBuilder codeBuilder = new StringBuilder();
-        return codeStream
-                .doOnNext(codeBuilder::append)
+        return messageStream
                 .doOnComplete(() -> {
                     try {
                         String completeCode = codeBuilder.toString();

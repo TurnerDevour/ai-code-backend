@@ -1,5 +1,6 @@
 package com.example.aicodebackend.core;
 
+import cn.hutool.json.JSONUtil;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import jakarta.annotation.Resource;
 import org.junit.jupiter.api.Test;
@@ -9,7 +10,9 @@ import reactor.core.publisher.Flux;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 代码生成链路的真机联调（需要外网 + 真实 API Key + MySQL/Redis）
@@ -23,6 +26,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * </pre>
  * 这里验证的是"配置齐全时整条链路能跑通"：模型构建 → 流式生成 → 落盘 → 记忆写入；
  * 解析、修复、补齐等细粒度逻辑由同包的单元测试覆盖，不需要真调用。
+ * <p>
+ * 另外它锁住一条只有真调用才能确认的行为：HTML / 多文件模式也要下发思考过程
+ * （{@code type=ai_thinking}）。这两个模式曾经因为用 {@code Flux<String>} 接模型输出，
+ * 思考内容被 langchain4j 的 Reactor 适配器直接丢掉，前端「AI 思考过程」面板永远是空的。
  */
 @SpringBootTest
 @EnabledIfEnvironmentVariable(named = "ALI_AI_API_KEY", matches = ".+")
@@ -39,6 +46,19 @@ class AiCodeGeneratorFacadeIT {
         assertNotNull(result);
         String completeContent = String.join("", result);
         assertNotNull(completeContent);
+
+        int thinkingChars = result.stream()
+                .filter(message -> "ai_thinking".equals(JSONUtil.parseObj(message).getStr("type")))
+                .mapToInt(message -> JSONUtil.parseObj(message).getStr("data").length())
+                .sum();
+        int responseChars = result.stream()
+                .filter(message -> "ai_response".equals(JSONUtil.parseObj(message).getStr("type")))
+                .mapToInt(message -> JSONUtil.parseObj(message).getStr("data").length())
+                .sum();
+        assertTrue(responseChars > 0, "多文件模式没有下发正文增量");
+        assertTrue(thinkingChars > 0,
+                "多文件模式没有下发思考过程（ai_thinking）：检查模型是否开启了思考模式，"
+                        + "以及整条链路是否还在用会丢弃 reasoning_content 的 Flux<String>");
     }
 
     @Test
@@ -52,5 +72,6 @@ class AiCodeGeneratorFacadeIT {
         assertNotNull(result);
         String completeContent = String.join("", result);
         assertNotNull(completeContent);
+        assertFalse(result.isEmpty(), "Vue 工程模式没有产生任何消息");
     }
 }

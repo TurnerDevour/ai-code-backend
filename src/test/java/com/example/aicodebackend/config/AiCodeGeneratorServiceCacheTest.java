@@ -1,6 +1,7 @@
 package com.example.aicodebackend.config;
 
 import com.example.aicodebackend.ai.AiCodeGeneratorService;
+import com.example.aicodebackend.ai.StubTokenStream;
 import com.example.aicodebackend.model.enums.AIModelTypeEnum;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import org.junit.jupiter.api.Test;
@@ -21,13 +22,13 @@ class AiCodeGeneratorServiceCacheTest {
     /** 只用于往缓存里塞占位对象的空实现 */
     private static final AiCodeGeneratorService DUMMY = new AiCodeGeneratorService() {
         @Override
-        public reactor.core.publisher.Flux<String> generateHTMLCodeStream(String prompt) {
-            return reactor.core.publisher.Flux.empty();
+        public dev.langchain4j.service.TokenStream generateHTMLCodeStream(String prompt) {
+            return new StubTokenStream(java.util.List.of());
         }
 
         @Override
-        public reactor.core.publisher.Flux<String> generateMultipleFileCodeStream(String prompt) {
-            return reactor.core.publisher.Flux.empty();
+        public dev.langchain4j.service.TokenStream generateMultipleFileCodeStream(String prompt) {
+            return new StubTokenStream(java.util.List.of());
         }
 
         @Override

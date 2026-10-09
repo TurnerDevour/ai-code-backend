@@ -65,6 +65,8 @@ public class GenerationCompletionHandler {
 
     /**
      * 处理一条生成流：透传下发 + 内联累积，并在三种结束方式下落库
+     * <p>
+     * 不累积思考过程（思考由调用方自己落库，例如 Vue 工程模式的生成任务注册表）。
      *
      * @param originFlux         上游生成流
      * @param display            把上游 chunk 转成"下发给客户端的内容"，返回 null/空表示不下发
@@ -83,7 +85,36 @@ public class GenerationCompletionHandler {
                                long appId,
                                User loginUser,
                                boolean buildProject) {
+        return handle(originFlux, display, accumulator, null, chatHistoryService, appId, loginUser, buildProject);
+    }
+
+    /**
+     * 处理一条生成流：透传下发 + 内联累积（正文与思考分开），并在三种结束方式下落库
+     *
+     * @param originFlux          上游生成流
+     * @param display             把上游 chunk 转成"下发给客户端的内容"，返回 null/空表示不下发
+     * @param accumulator         内部内容丰富器（例如按工具调用补充展示内容），返回需要累积进正文的内容
+     * @param thinkingAccumulator 思考过程累积器（返回需要累积进 {@code chat_history.thinking} 的文本）；
+     *                            为 null 表示该链路的思考过程由别处落库（Vue 工程模式走生成任务注册表）
+     * @param chatHistoryService  对话历史服务
+     * @param appId               应用ID
+     * @param loginUser           登录用户
+     * @param buildProject        收尾时是否触发 Vue 工程异步构建
+     *
+     * @return 下发给客户端的流
+     */
+    public Flux<String> handle(Flux<String> originFlux,
+                               Function<String, String> display,
+                               BiFunction<String, StringBuilder, String> accumulator,
+                               Function<String, String> thinkingAccumulator,
+                               ChatHistoryService chatHistoryService,
+                               long appId,
+                               User loginUser,
+                               boolean buildProject) {
         StringBuilder accumulated = new StringBuilder();
+        // 思考过程单独累积：它要单独落库到 chat_history.thinking 并单独展示，绝不能并进正文，
+        // 否则对话历史与多轮上下文里会夹着大段推理内容
+        StringBuilder thinking = new StringBuilder();
         AtomicBoolean persisted = new AtomicBoolean(false);
         // 同时产出的展示内容：display 可能因为去重而不产出（例如工具请求已经被累积侧消费过），
         // 此时把累积侧的内容作为下发内容，保证"下发给客户端的内容"与"落库内容"完全一致、不会丢消息
@@ -101,6 +132,16 @@ public class GenerationCompletionHandler {
                     } catch (Exception e) {
                         log.error("累积生成内容失败，appId: {}", appId, e);
                     }
+                    if (thinkingAccumulator != null) {
+                        try {
+                            String toAccumulate = thinkingAccumulator.apply(chunk);
+                            if (StrUtil.isNotEmpty(toAccumulate)) {
+                                thinking.append(toAccumulate);
+                            }
+                        } catch (Exception e) {
+                            log.error("累积思考过程失败，appId: {}", appId, e);
+                        }
+                    }
                 })
                 .map(chunk -> {
                     String displayed = display == null ? chunk : StrUtil.nullToEmpty(display.apply(chunk));
@@ -111,11 +152,11 @@ public class GenerationCompletionHandler {
                     return emitted.get();
                 })
                 .filter(StrUtil::isNotEmpty)
-                .doOnComplete(() -> finish(chatHistoryService, appId, loginUser, accumulated, persisted, buildProject,
+                .doOnComplete(() -> finish(chatHistoryService, appId, loginUser, accumulated, thinking, persisted, buildProject,
                         FinishType.COMPLETED, null))
-                .doOnError(error -> finish(chatHistoryService, appId, loginUser, accumulated, persisted, buildProject,
+                .doOnError(error -> finish(chatHistoryService, appId, loginUser, accumulated, thinking, persisted, buildProject,
                         FinishType.FAILED, "AI回复失败: " + (error == null ? "未知错误" : error.getMessage())))
-                .doOnCancel(() -> finish(chatHistoryService, appId, loginUser, accumulated, persisted, buildProject,
+                .doOnCancel(() -> finish(chatHistoryService, appId, loginUser, accumulated, thinking, persisted, buildProject,
                         FinishType.INTERRUPTED, null));
     }
 
@@ -137,7 +178,8 @@ public class GenerationCompletionHandler {
      * @param chatHistoryService 对话历史服务
      * @param appId              应用ID
      * @param loginUser          登录用户
-     * @param accumulated        已累积的生成内容
+     * @param accumulated        已累积的生成内容（正文）
+     * @param thinking           已累积的思考过程（与正文分列落库）
      * @param persisted          一次性标记（三种结束方式互斥）
      * @param buildProject       是否触发构建
      * @param finishType         结束类型
@@ -147,6 +189,7 @@ public class GenerationCompletionHandler {
                         long appId,
                         User loginUser,
                         StringBuilder accumulated,
+                        StringBuilder thinking,
                         AtomicBoolean persisted,
                         boolean buildProject,
                         FinishType finishType,
@@ -181,9 +224,17 @@ public class GenerationCompletionHandler {
             }
         }
         if (toSave != null) {
+            String thinkingText = thinking == null ? "" : thinking.toString();
             try {
-                chatHistoryService.addChatMessage(appId, loginUser.getId(), toSave, ChatMessageTypeEnum.AI);
-                log.info("生成结束已写入对话历史，appId: {}, 类型: {}, 字符数: {}", appId, finishType, toSave.length());
+                if (StrUtil.isNotEmpty(thinkingText)) {
+                    // 思考过程单独一列：不进 message，避免历史正文与多轮上下文被推理内容淹没
+                    chatHistoryService.addAiChatMessage(appId, loginUser.getId(), toSave, thinkingText);
+                    log.info("生成结束已写入对话历史，appId: {}, 类型: {}, 字符数: {}, 思考字符数: {}",
+                            appId, finishType, toSave.length(), thinkingText.length());
+                } else {
+                    chatHistoryService.addChatMessage(appId, loginUser.getId(), toSave, ChatMessageTypeEnum.AI);
+                    log.info("生成结束已写入对话历史，appId: {}, 类型: {}, 字符数: {}", appId, finishType, toSave.length());
+                }
             } catch (Exception e) {
                 log.error("保存 AI 回复到对话历史失败，appId: {}", appId, e);
             }

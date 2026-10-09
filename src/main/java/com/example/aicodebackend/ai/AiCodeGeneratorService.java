@@ -17,23 +17,32 @@ public interface AiCodeGeneratorService {
 
     /**
      * 生成HTML代码流
+     * <p>
+     * 返回 {@link TokenStream} 而不是 {@code Flux<String>}：LangChain4j 的 Reactor 适配器
+     * （{@code TokenStreamToFluxAdapter}）只把正文增量接进 Flux，模型的思考内容
+     * （{@code reasoning_content}）在适配层就被丢掉了——前端「AI 思考过程」面板因此永远是空的。
+     * 实测：同一个百炼模型裸调用能拿到思考文本，而换成 {@code Flux<String>} 返回类型后一个字都拿不到。
+     * 只有 {@link TokenStream} 才能同时拿到"正文"与"思考"两条增量（见 AiCodeGeneratorFacade）。
      *
      * @param prompt 用户输入的提示信息
      *
-     * @return 生成的代码流
+     * @return 生成的代码流（含正文与思考两条增量）
      */
     @SystemMessage(fromResource = "prompt/codegen-html-system-prompt.txt")
-    Flux<String> generateHTMLCodeStream(@UserMessage String prompt);
+    TokenStream generateHTMLCodeStream(@UserMessage String prompt);
 
     /**
      * 生成多文件代码流
+     * <p>
+     * 与 {@link #generateHTMLCodeStream(String)} 同理用 {@link TokenStream} 而不是 {@code Flux<String>}：
+     * 否则思考内容会在 LangChain4j 的 Reactor 适配层被丢掉。
      *
      * @param prompt 用户输入的提示信息
      *
-     * @return 生成的多文件代码流
+     * @return 生成的多文件代码流（含正文与思考两条增量）
      */
     @SystemMessage(fromResource = "prompt/codegen-multi-file-system-prompt.txt")
-    Flux<String> generateMultipleFileCodeStream(@UserMessage String prompt);
+    TokenStream generateMultipleFileCodeStream(@UserMessage String prompt);
 
     /**
      * 生成Vue项目代码流

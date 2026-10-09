@@ -1,6 +1,7 @@
 package com.example.aicodebackend.config;
 
 import com.example.aicodebackend.ai.AiCodeGeneratorService;
+import com.example.aicodebackend.ai.StubTokenStream;
 import com.example.aicodebackend.model.enums.AIModelTypeEnum;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -37,13 +38,13 @@ class AiCodeGeneratorServiceMemoryRepairTest {
     /** 只用于占位的服务实现（本用例不调用模型） */
     private static final AiCodeGeneratorService DUMMY = new AiCodeGeneratorService() {
         @Override
-        public Flux<String> generateHTMLCodeStream(String prompt) {
-            return Flux.empty();
+        public dev.langchain4j.service.TokenStream generateHTMLCodeStream(String prompt) {
+            return new StubTokenStream(List.of());
         }
 
         @Override
-        public Flux<String> generateMultipleFileCodeStream(String prompt) {
-            return Flux.empty();
+        public dev.langchain4j.service.TokenStream generateMultipleFileCodeStream(String prompt) {
+            return new StubTokenStream(List.of());
         }
 
         @Override

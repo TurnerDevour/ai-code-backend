@@ -57,30 +57,29 @@ logging:
 
 ai:
   models:
-    # 阿里云百炼：DeepSeek 系列（与 Qwen 系列共用同一套业务空间凭据）
     "[deepseek-v4.1-flash]":
-      base-url: ${ALI_AI_BASE_URL}
+      base-url: ${ALI_BAILIAN_BASE_URL}
       workspace-id: ${ALI_WORKSPACE_ID}
-      api-key: ${ALI_AI_API_KEY}
+      api-key: ${ALI_BAILIAN_API_KEY}
       log-requests: true
       log-responses: true
     deepseek-v4-pro:
-      base-url: ${ALI_AI_BASE_URL}
+      base-url: ${ALI_BAILIAN_BASE_URL}
       workspace-id: ${ALI_WORKSPACE_ID}
-      api-key: ${ALI_AI_API_KEY}
+      api-key: ${ALI_BAILIAN_API_KEY}
       log-requests: true
       log-responses: true
     # 阿里云百炼：Qwen 系列
     "[qwen3.8-max]":
-      base-url: ${ALI_AI_BASE_URL}
+      base-url: ${ALI_BAILIAN_BASE_URL}
       workspace-id: ${ALI_WORKSPACE_ID}
-      api-key: ${ALI_AI_API_KEY}
+      api-key: ${ALI_BAILIAN_API_KEY}
       log-requests: true
       log-responses: true
     "[qwen3.7-plus]":
-      base-url: ${ALI_AI_BASE_URL}
+      base-url: ${ALI_BAILIAN_BASE_URL}
       workspace-id: ${ALI_WORKSPACE_ID}
-      api-key: ${ALI_AI_API_KEY}
+      api-key: ${ALI_BAILIAN_API_KEY}
       log-requests: true
       log-responses: true
 

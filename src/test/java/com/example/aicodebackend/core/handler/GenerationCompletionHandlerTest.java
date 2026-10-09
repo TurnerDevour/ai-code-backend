@@ -120,17 +120,67 @@ class GenerationCompletionHandlerTest {
     }
 
     /**
+     * 思考过程单独落库：配了思考累积器时走 {@code addAiChatMessage}，
+     * 思考文本进第 4 个参数（chat_history.thinking），绝不并进正文
+     */
+    @Test
+    @DisplayName("思考过程与正文分列落库，互不污染")
+    void thinkingShouldBePersistedInSeparateColumn() {
+        List<String> persistedMessages = new ArrayList<>();
+        List<String> persistedThinking = new ArrayList<>();
+
+        List<String> received = new GenerationCompletionHandler()
+                .handle(
+                        Flux.just("{\"type\":\"ai_thinking\",\"data\":\"先想\"}", "正文一", "正文二"),
+                        chunk -> chunk,
+                        // 与 JsonMessageStreamHandler#accumulateChunk 一致：思考消息不属于正文
+                        (chunk, accumulated) -> chunk.startsWith("{\"type\":\"ai_thinking\"") ? "" : chunk,
+                        // 思考过程单独累积（真实调用里由 JsonMessageStreamHandler#thinkingText 提供）
+                        chunk -> chunk.startsWith("{\"type\":\"ai_thinking\"") ? "先想" : "",
+                        stub(persistedMessages, persistedThinking),
+                        1L,
+                        new User(),
+                        false
+                )
+                .collectList()
+                .block();
+
+        assertEquals(3, received.size(), "思考与正文都要下发给客户端");
+        assertEquals(1, persistedMessages.size(), "只应落库一次");
+        assertEquals("正文一正文二", persistedMessages.get(0), "正文里不能夹着思考内容");
+        assertEquals(1, persistedThinking.size(), "思考过程应单独落库");
+        assertEquals("先想", persistedThinking.get(0));
+    }
+
+    /**
      * 手写 ChatHistoryService 桩对象（当前环境 Mockito 不可用）
      *
      * @param persistedMessages 收集落库内容
      */
     private ChatHistoryService stub(List<String> persistedMessages) {
+        return stub(persistedMessages, null);
+    }
+
+    /**
+     * 手写 ChatHistoryService 桩对象（当前环境 Mockito 不可用）
+     *
+     * @param persistedMessages 收集落库的正文
+     * @param persistedThinking 收集落库的思考过程，为 null 时不关心
+     */
+    private ChatHistoryService stub(List<String> persistedMessages, List<String> persistedThinking) {
         return (ChatHistoryService) Proxy.newProxyInstance(
                 ChatHistoryService.class.getClassLoader(),
                 new Class<?>[]{ChatHistoryService.class},
                 (proxy, method, args) -> {
                     if ("addChatMessage".equals(method.getName()) && args != null && args.length >= 3) {
                         persistedMessages.add(String.valueOf(args[2]));
+                        return 1L;
+                    }
+                    if ("addAiChatMessage".equals(method.getName()) && args != null && args.length >= 4) {
+                        persistedMessages.add(String.valueOf(args[2]));
+                        if (persistedThinking != null) {
+                            persistedThinking.add(String.valueOf(args[3]));
+                        }
                         return 1L;
                     }
                     return switch (method.getName()) {

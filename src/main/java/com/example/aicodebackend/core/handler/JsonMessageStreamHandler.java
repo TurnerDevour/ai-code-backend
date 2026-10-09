@@ -21,10 +21,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * JSON 消息流处理器
- * 处理 VUE_PROJECT 类型的复杂流式响应，包含工具调用信息
+ * 处理流式响应里的结构化消息：正文增量、思考过程、工具请求与工具执行结果
  * <p>
  * 处理器只负责识别消息类型、按名称取到工具实例并统一包装流式格式，
  * 具体展示成什么样由各个工具自己决定（见 {@link BaseTool}）。
+ * <p>
+ * 两种用法：
+ * <ol>
+ *     <li>{@link #handle} —— Vue 工程模式（有工具、可能多轮），收尾时还要触发工程构建；
+ *     它的思考过程由生成任务注册表单独落库（见 {@code GenerationTaskRegistry}）；</li>
+ *     <li>{@link #handleGeneratedFiles} —— HTML / 多文件模式（无工具），
+ *     思考过程在这里累积并单独落库到 {@code chat_history.thinking}。</li>
+ * </ol>
  */
 @Slf4j
 @Component
@@ -96,6 +104,57 @@ public class JsonMessageStreamHandler {
     }
 
     /**
+     * 处理 HTML / 多文件模式的消息流（无工具，只有正文与思考两条增量）
+     * <p>
+     * 与 Vue 工程模式的两点差别：
+     * <ol>
+     *     <li>收尾不触发 Vue 工程构建；</li>
+     *     <li>思考过程在这里累积并单独落库到 {@code chat_history.thinking}——这两个模式不走生成任务注册表，
+     *     没有别的地方能把思考内容存下来（前端因此看不到「AI 思考过程」面板）。</li>
+     * </ol>
+     *
+     * @param originFlux         原始流（正文 / 思考的 JSON 消息）
+     * @param chatHistoryService 聊天历史服务
+     * @param appId              应用ID
+     * @param loginUser          登录用户
+     *
+     * @return 处理后的流
+     */
+    public Flux<String> handleGeneratedFiles(Flux<String> originFlux, ChatHistoryService chatHistoryService,
+                                            long appId, User loginUser) {
+        // 这两个模式没有工具，去重集合只是为了让两个通道共用同一套解析逻辑
+        Set<String> seenToolIds = new HashSet<>();
+        return completionHandler().handle(
+                originFlux,
+                // 下发给客户端：正文增量 + 思考过程（原样透传 ai_thinking 消息）
+                chunk -> displayChunk(chunk, seenToolIds),
+                // 内部累积（用于落库）：只收正文，思考过程不属于正文
+                (chunk, accumulated) -> accumulateChunk(chunk, seenToolIds),
+                // 思考过程单独累积，收尾时写进 chat_history.thinking
+                JsonMessageStreamHandler::thinkingText,
+                chatHistoryService,
+                appId,
+                loginUser,
+                false
+        );
+    }
+
+    /**
+     * 取出思考消息里的文本（非思考消息返回空串），供落库时单独累积
+     *
+     * @param chunk 上游消息块
+     *
+     * @return 思考文本，非思考消息返回空串
+     */
+    private static String thinkingText(String chunk) {
+        StreamMessage streamMessage = JSONUtil.toBean(chunk, StreamMessage.class);
+        if (!StreamMessageTypeEnum.AI_THINKING.getValue().equals(streamMessage.getType())) {
+            return "";
+        }
+        return StrUtil.nullToEmpty(JSONUtil.toBean(chunk, AiThinkingMessage.class).getData());
+    }
+
+    /**
      * 把上游 JSON 消息块转换成"下发给客户端"的内容
      * <p>
      * 生成被中断后已经没有客户端在接收，但这里仍按同样格式产出，
@@ -146,7 +205,8 @@ public class JsonMessageStreamHandler {
         return switch (typeEnum) {
             case AI_RESPONSE -> StrUtil.nullToEmpty(JSONUtil.toBean(chunk, AiResponseMessage.class).getData());
             // 思考过程不属于正文：这里不累积（否则对话历史里正文与推理内容会混在一起）。
-            // VUE_PROJECT 的落库走 GenerationTaskRegistry 的独立思考通道（chat_history.thinking）
+            // 它走各自的独立思考通道落到 chat_history.thinking：
+            // VUE_PROJECT 在 GenerationTaskRegistry，HTML / 多文件在 handleGeneratedFiles 传入的累积器
             case AI_THINKING -> "";
             case TOOL_REQUEST -> handleToolRequestMessage(chunk, seenToolIds);
             case TOOL_EXECUTED -> handleToolExecutedMessage(chunk);
