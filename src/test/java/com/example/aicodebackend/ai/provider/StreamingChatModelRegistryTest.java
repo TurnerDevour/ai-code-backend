@@ -84,12 +84,12 @@ class StreamingChatModelRegistryTest {
         StreamingChatModelRegistry registry = new StreamingChatModelRegistry(properties(Map.of(
                 "deepseek-v4.1-flash", model("bailian", "deepseek-v4.1-flash"),
                 "qwen3.8-max", model("bailian", "qwen3.8-max"),
-                "qwen3.7-plus", model("bailian", "qwen3.7-plus"))), factories(Set.of()));
+                "qwen3.8-flash", model("bailian", "qwen3.8-flash"))), factories(Set.of()));
 
         assertSame(DUMMY, registry.get(AIModelTypeEnum.DEEPSEEK_V4_1_FLASH));
         assertSame(DUMMY, registry.get(AIModelTypeEnum.QWEN_3_8_MAX));
-        assertSame(DUMMY, registry.get(AIModelTypeEnum.QWEN_3_7_PLUS));
-        assertTrue(registry.isAvailable(AIModelTypeEnum.QWEN_3_7_PLUS));
+        assertSame(DUMMY, registry.get(AIModelTypeEnum.QWEN_3_8_FLASH));
+        assertTrue(registry.isAvailable(AIModelTypeEnum.QWEN_3_8_FLASH));
     }
 
     /** 某一个模型构建失败只影响它自己：出错信息要保留原因，其它模型照常可用 */
@@ -116,8 +116,8 @@ class StreamingChatModelRegistryTest {
 
         assertTrue(registry.availableModelTypes().isEmpty());
         BusinessException exception = assertThrows(BusinessException.class,
-                () -> registry.get(AIModelTypeEnum.QWEN_3_7_PLUS));
-        assertTrue(exception.getMessage().contains("ai.models.qwen3.7-plus"), exception.getMessage());
+                () -> registry.get(AIModelTypeEnum.QWEN_3_8_FLASH));
+        assertTrue(exception.getMessage().contains("ai.models.qwen3.8-flash"), exception.getMessage());
     }
 
     /** 未注册的模型标识（枚举里没有）只记警告，不能影响启动 */

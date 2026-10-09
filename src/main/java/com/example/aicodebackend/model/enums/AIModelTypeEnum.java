@@ -33,7 +33,7 @@ public enum AIModelTypeEnum {
     /**
      * 阿里云百炼高性价比模型：同样支持思考模式与 function-calling，单价明显更低
      */
-    QWEN_3_7_PLUS("Qwen3.7-Plus（阿里云百炼高性价比）", "qwen3.7-plus");
+    QWEN_3_8_FLASH("Qwen3.8-Flash（阿里云百炼高性价比）", "qwen3.8-flash");
 
     private final String text;
 

@@ -137,7 +137,7 @@ class AiModelAvailabilityCheckerTest {
     void shouldGroupModelsByEndpoint() {
         AiModelProperties properties = propertiesWith(Map.of(
                 "qwen3.8-max", bailianModel("qwen3.8-max", "ws-a", "sk-1"),
-                "qwen3.7-plus", bailianModel("qwen3.7-plus", "ws-a", "sk-1"),
+                "qwen3.8-flash", bailianModel("qwen3.8-flash", "ws-a", "sk-1"),
                 "deepseek-v4-pro", bailianModel("deepseek-v4-pro", "ws-b", "sk-2")));
         AiModelAvailabilityChecker checker = new AiModelAvailabilityChecker(properties,
                 List.of(new BailianStreamingChatModelFactory(new BailianEndpointResolver())));
@@ -150,7 +150,7 @@ class AiModelAvailabilityCheckerTest {
                 .findFirst()
                 .orElseThrow();
         assertEquals(AIProviderEnum.BAILIAN, spaceA.provider);
-        assertEquals(Set.of("qwen3.8-max", "qwen3.7-plus"), spaceA.modelNames);
+        assertEquals(Set.of("qwen3.8-max", "qwen3.8-flash"), spaceA.modelNames);
         AiModelAvailabilityChecker.ProbeGroup spaceB = groups.values().stream()
                 .filter(group -> group.modelsUrl.contains("ws-b"))
                 .findFirst()

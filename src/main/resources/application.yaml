@@ -28,54 +28,30 @@ springdoc:
         - com.example.aicodebackend.controller
 
 ai:
+  # 所有模型共用的配置：各模型只写自己不一样的部分（模型名、max-tokens 等）
+  model-defaults:
+    provider: bailian
+    region: cn-beijing
+    timeout: 600s
+    temperature: 0.3
+    return-thinking: true
+    send-thinking: false
+    enable-thinking: true
+    thinking-budget: 8192
   models:
     "[deepseek-v4.1-flash]":
-      provider: bailian
-      region: cn-beijing
       model-name: deepseek-v4.1-flash
-      timeout: 600s
-      max-tokens: 384000
-      temperature: 0.3
-      return-thinking: true
-      send-thinking: false
-      enable-thinking: true
-      # 思考预算（token）：不设上限时模型遇到"做不到的需求"会反复推敲不收敛，
-      # 前端思考面板表现为死循环；实测同一请求不设预算 10 分钟以上不停，设 1024 后 19 秒收敛
-      thinking-budget: 8192
+      max-tokens: 393216
     deepseek-v4-pro:
-      provider: bailian
-      region: cn-beijing
       model-name: deepseek-v4-pro
-      timeout: 600s
-      max-tokens: 384000
-      temperature: 0.3
-      return-thinking: true
-      send-thinking: false
-      enable-thinking: true
-      thinking-budget: 8192
+      max-tokens: 393216
     # 阿里云百炼：Qwen 系列
     "[qwen3.8-max]":
-      provider: bailian
-      region: cn-beijing
       model-name: qwen3.8-max
-      timeout: 600s
       max-tokens: 131072
-      temperature: 0.3
-      return-thinking: true
-      send-thinking: false
-      enable-thinking: true
-      thinking-budget: 8192
-    "[qwen3.7-plus]":
-      provider: bailian
-      region: cn-beijing
-      model-name: qwen3.7-plus
-      timeout: 600s
+    "[qwen3.8-flash]":
+      model-name: qwen3.8-flash
       max-tokens: 131072
-      temperature: 0.3
-      return-thinking: true
-      send-thinking: false
-      enable-thinking: true
-      thinking-budget: 8192
 
   model-check:
     enabled: true

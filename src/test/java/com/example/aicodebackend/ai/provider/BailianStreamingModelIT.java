@@ -38,7 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 覆盖三件只有真调用才能确认的事：
  * <ol>
  *     <li>业务空间专属域名 + {@code /compatible-mode/v1} 拼出来的地址确实能通（拼错就是 404/401）；</li>
- *     <li>思考模式：deepseek-v4.1-flash / deepseek-v4-pro / qwen3.8-max / qwen3.7-plus 都会返回
+ *     <li>思考模式：deepseek-v4.1-flash / deepseek-v4-pro / qwen3.8-max / qwen3.8-flash 都会返回
  *     {@code reasoning_content}，而应用在 Vue 工程模式下依赖 onPartialThinking 才有流式输出；</li>
  *     <li>function-calling：带工具的多轮调用能正常收敛（这是"生成 Vue 工程"的核心链路）。</li>
  * </ol>
@@ -74,7 +74,7 @@ class BailianStreamingModelIT {
         properties.getModels().put("deepseek-v4.1-flash", modelProperties("deepseek-v4.1-flash"));
         properties.getModels().put("deepseek-v4-pro", modelProperties("deepseek-v4-pro"));
         properties.getModels().put("qwen3.8-max", modelProperties("qwen3.8-max"));
-        properties.getModels().put("qwen3.7-plus", modelProperties("qwen3.7-plus"));
+        properties.getModels().put("qwen3.8-flash", modelProperties("qwen3.8-flash"));
         return new StreamingChatModelRegistry(properties,
                 List.of(new BailianStreamingChatModelFactory(new BailianEndpointResolver())));
     }
@@ -90,7 +90,7 @@ class BailianStreamingModelIT {
         assertTrue(registry.isAvailable(AIModelTypeEnum.DEEPSEEK_V4_1_FLASH));
         assertTrue(registry.isAvailable(AIModelTypeEnum.DEEPSEEK_V4_PRO));
         assertTrue(registry.isAvailable(AIModelTypeEnum.QWEN_3_8_MAX));
-        assertTrue(registry.isAvailable(AIModelTypeEnum.QWEN_3_7_PLUS));
+        assertTrue(registry.isAvailable(AIModelTypeEnum.QWEN_3_8_FLASH));
     }
 
     /**
@@ -101,7 +101,7 @@ class BailianStreamingModelIT {
      * @throws Exception 等待超时
      */
     @ParameterizedTest
-    @ValueSource(strings = {"deepseek-v4.1-flash", "deepseek-v4-pro", "qwen3.8-max", "qwen3.7-plus"})
+    @ValueSource(strings = {"deepseek-v4.1-flash", "deepseek-v4-pro", "qwen3.8-max", "qwen3.8-flash"})
     void shouldAnswerWithThinking(String modelName) throws Exception {
         StringBuilder text = new StringBuilder();
         StringBuilder thinking = new StringBuilder();

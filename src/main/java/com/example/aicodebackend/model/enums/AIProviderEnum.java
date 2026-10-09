@@ -7,7 +7,7 @@ import lombok.Getter;
  * AI 模型平台（服务商）枚举
  * <p>
  * 同一个模型标识（{@link AIModelTypeEnum}）可能来自不同平台，而不同平台的接口约定并不一致。
- * 目前项目里的四个模型（deepseek-v4.1-flash / deepseek-v4-pro / qwen3.8-max / qwen3.7-plus）
+ * 目前项目里的四个模型（deepseek-v4.1-flash / deepseek-v4-pro / qwen3.8-max / qwen3.8-flash）
  * 全部部署在阿里云百炼：OpenAI 兼容路径固定是 {@code /compatible-mode/v1}，业务空间（workspace）
  * 体现在域名里，需要拼接与校验，见 {@code BailianEndpointResolver}。
  * <p>
