@@ -18,7 +18,8 @@
 #   2. Node.js + npm         —— VueProjectBuilder 通过 ProcessBuilder 调 `npm install` /
 #                               `npm run build` 构建用户生成的 Vue 工程（部署功能必需）
 #   3. Chromium + ChromeDriver —— WebScreenshotUtils 用 Selenium 打开部署后的页面截图，
-#                               压缩后上传腾讯云 COS 作为应用封面
+#                               压缩后上传腾讯云 COS 作为应用封面。
+#                               两者必须同主版本，构建期会校验（见下方 chromium/chromedriver 校验步骤）
 #   4. 中日韩字体            —— 截图的页面多为中文，无 CJK 字体会渲染成方块
 #   5. 可写目录 /app/temp    —— AppConstant 用 user.dir 拼出 temp/code_output（生成源码）、
 #                               temp/code_deploy（部署产物）、temp/screenshots（截图临时文件）
@@ -48,12 +49,8 @@ ENV LANG=C.UTF-8
 ENV JAVA_HOME=/opt/java
 ENV PATH="/opt/java/bin:$PATH"
 
-# WebDriverManager 的驱动缓存目录：镜像内预置与 chromium 同版本的 chromedriver，
-# 让截图功能完全离线可用（见 docker/entrypoint.sh）
-ENV WDM_CACHEPATH=/opt/wdm-cache
-
 # 系统依赖：
-#   chromium / chromium-driver —— 截图用，二者同源同版本
+#   chromium / chromium-driver —— 截图用，二者同源同版本（构建期会校验主版本一致）
 #   fonts-noto-cjk 等          —— 中文渲染（想瘦身可换成体积小得多的 fonts-wqy-zenhei）
 #   curl                       —— 下载 JRE + 容器 HEALTHCHECK
 #   tzdata / procps            —— 时区与容器内排查工具
@@ -72,6 +69,18 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime; \
     echo $TZ > /etc/timezone
+
+# 构建期校验：chromium 与 chromedriver 必须同主版本。
+# 运行期截图用的就是这一对（WebScreenshotUtils 显式使用 /usr/bin/chromedriver，见 ChromeInstallation），
+# 一旦不匹配，Selenium 会报
+#   session not created: This version of ChromeDriver only supports Chrome version X
+#   Current browser version is Y with binary path /usr/bin/chromium
+# 所有截图（应用封面）整体不可用。与其等线上暴露，不如让构建直接失败。
+RUN set -eux; \
+    chrome_major="$(chromium --version | awk '{print $2}' | cut -d. -f1)"; \
+    driver_major="$(chromedriver --version | awk '{print $2}' | cut -d. -f1)"; \
+    echo "chromium major=$chrome_major, chromedriver major=$driver_major"; \
+    [ "$chrome_major" = "$driver_major" ]
 
 # 安装 Temurin JRE 21（解压到 /opt/java）
 RUN set -eux; \
@@ -93,8 +102,8 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 # 否则 Vue 工程构建（npm install）会因为没有写权限而失败
 RUN set -eux; \
     chmod +x /usr/local/bin/entrypoint.sh; \
-    mkdir -p /app/temp/code_output /app/temp/code_deploy /app/temp/screenshots /opt/wdm-cache; \
-    chown -R node:node /app /opt/wdm-cache
+    mkdir -p /app/temp/code_output /app/temp/code_deploy /app/temp/screenshots; \
+    chown -R node:node /app
 
 EXPOSE 8123
 

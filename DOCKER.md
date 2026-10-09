@@ -14,7 +14,7 @@
 | MySQL 8 | pom `mysql-connector-j`，prod 配置写死了线上 IP | compose 起 `mysql` 服务，首次启动执行 `src/main/resources/sql/ai_code_db.sql` |
 | Redis | `jedis` + `spring-session-data-redis` + `langchain4j-community-redis`（对话记忆） | compose 起 `redis` 服务（带密码 + AOF） |
 | Node.js + npm | `VueProjectBuilder` 用 `ProcessBuilder` 执行 `npm install` / `npm run build` | 基础镜像用 `node:22-bookworm-slim`，npm 直接可用 |
-| Chromium + ChromeDriver | `selenium-java` + `webdrivermanager`（`WebScreenshotUtils` 无头截图） | Debian apt 安装 `chromium` + `chromium-driver`，并在容器启动时把驱动写入 WebDriverManager 缓存（见第 4 节） |
+| Chromium + ChromeDriver | `selenium-java` + `webdrivermanager`（`WebScreenshotUtils` 无头截图） | Debian apt 安装 `chromium` + `chromium-driver`（同源同版本，构建期校验主版本一致），运行期显式使用系统驱动（见第 4 节） |
 | 中文字体 | 截图对象是中文页面 | 安装 `fonts-noto-cjk` 等字体 |
 | 本地文件目录 | `AppConstant` 用 `user.dir` 拼 `temp/code_output`、`temp/code_deploy`、`temp/screenshots` | `WORKDIR /app` + 命名卷 `app-temp:/app/temp` |
 | 腾讯云 COS | `cos_api`，封面截图上传 | 密钥由 `.env` 注入 |
@@ -82,19 +82,28 @@ docker compose ps
 
 ## 4. 关于截图（最容易踩的坑）
 
-`WebScreenshotUtils` 每次创建 Chrome 都会调用 `WebDriverManager.chromedriver().setup()`。
-WebDriverManager 的默认流程是：**探测浏览器版本 → 访问 Chrome for Testing 端点查驱动版本 →
-从 `storage.googleapis.com` 下载驱动 → 导出 `webdriver.chrome.driver`**。
-它不会自动使用系统里已有的 `chromedriver`，而 `storage.googleapis.com` 在国内服务器基本不通，
-一旦下载失败，所有截图（应用封面）都会失败。
+截图要求**驱动与浏览器同主版本**。镜像里 apt 安装的是同源同版本的 `chromium` + `chromium-driver`，
+代码显式使用系统里的驱动：`ChromeInstallation` 的定位顺序是
+系统属性 `screenshot.chrome-driver-path` → 环境变量 `CHROMEDRIVER_BIN` → `/usr/bin/chromedriver`；
+浏览器同理（`screenshot.chrome-binary-path` / `CHROME_BIN` / `/usr/bin/chromium`）。
+容器启动时 `docker/entrypoint.sh` 会把这两个路径导出并在日志里打印一次版本。
 
-因此镜像里做了两件事：
+**为什么不靠 WebDriverManager 自动解析**（原来就是它踩的坑）：`WebDriverManager.chromedriver().setup()`
+的流程是"探测浏览器版本 → 访问 Chrome for Testing 端点查驱动版本 → 从 `storage.googleapis.com`
+下载驱动"。它既会卡在国内网络上（下载失败则截图整体不可用），也可能解析出与镜像里浏览器不同版本的驱动，
+报出实测过的这条错误：
 
-1. apt 安装 **同源同版本** 的 `chromium` 与 `chromium-driver`；
-2. 容器启动时（`docker/entrypoint.sh`）把 `/usr/bin/chromedriver` 放进 WebDriverManager 期望的
-   缓存结构 `${WDM_CACHEPATH}/chromedriver/linux64/<版本>/chromedriver`，
-   并导出 `WDM_CHROMEDRIVERSION=<版本>`。驱动版本已知时 WebDriverManager 会跳过联网查版本，
-   直接命中本地缓存 —— 全程离线。
+```
+session not created: This version of ChromeDriver only supports Chrome version 155
+Current browser version is 154.0.8037.92 with binary path /usr/bin/chromium
+```
+
+现在 WebDriverManager 只在**系统里没有驱动**时才兜底（开发机 Windows/macOS 走这条路径），
+并且：
+
+1. `Dockerfile` 在**构建期**校验 `chromium` 与 `chromedriver` 主版本一致，不一致直接构建失败；
+2. 运行期创建实例前再校验一次，不匹配时抛出说清修法的业务异常（而不是 Selenium 的 500）；
+3. 实际使用的一对会打进日志：`docker compose logs backend | grep "截图使用的浏览器与驱动"`。
 
 另外 `CODE_DEPLOY_HOST` 既是返回给前端的部署地址，也是后台截图访问的地址，
 **必须容器内也能访问**。生产值就是 `http://wlbc.top/dist`：
@@ -179,7 +188,7 @@ docker compose exec mysql sh -c 'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" 
 | 现象 | 排查方向 |
 | --- | --- |
 | 启动失败，日志报数据库连接不上 | `docker compose ps` 看 mysql 是否 healthy；确认 `.env` 的 `MYSQL_USER/MYSQL_PASSWORD` 与初始化时一致（改密码不会同步到已有数据卷，需 `down -v` 重建） |
-| 部署成功但封面为空 / 日志有 `初始化 ChromeDriver 失败` | 看 `docker compose logs backend | grep -i chrom`；确认 `CODE_DEPLOY_HOST` 容器内可访问（`docker compose exec backend curl -I http://wlbc.top/dist/`） |
+| 部署成功但封面为空 / 日志有 `初始化 ChromeDriver 失败` | 看 `docker compose logs backend \| grep -i chrom`；若日志里有 `ChromeDriver 与浏览器版本不匹配`，说明驱动与浏览器不同主版本（重建镜像即可，构建期会拦住），或 `-Dscreenshot.chrome-driver-path` / `CHROMEDRIVER_BIN` 手工指错了路径。另确认 `CODE_DEPLOY_HOST` 容器内可访问（`docker compose exec backend curl -I http://wlbc.top/dist/`） |
 | 部署报 `npm install 失败` | 日志里会带 npm 末尾输出；多为 registry 不通（换 `NPM_REGISTRY`）或内存不足 |
 | 截图里中文变方块 | 字体缺失（镜像已装 `fonts-noto-cjk`，自行改镜像时别删） |
 | 部署后打开页面白屏 | 产物用了 `base: './'`（`VueProjectBuilder` 会注入），确认访问地址带了 `/dist/{deployKey}/` 且结尾有斜杠 |

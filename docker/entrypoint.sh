@@ -2,50 +2,34 @@
 # =============================================================================
 # 容器启动脚本
 #
-# 主要做一件事：把镜像里 apt 装好的 chromedriver 登记到 WebDriverManager 的缓存目录，
-# 并固定驱动版本，让截图功能不再依赖"运行时联网下载驱动"。
+# 只做一件事：把镜像里 apt 装好的 Chromium / ChromeDriver 路径显式导出，并在启动日志里打印一次版本。
 #
-# 背景（实测 + 源码确认）：
-#   WebScreenshotUtils 每次初始化 Chrome 都会调用 WebDriverManager.chromedriver().setup()。
-#   WebDriverManager 的解析流程是"探测浏览器版本 -> 到 Chrome for Testing 端点查驱动版本 ->
-#   下载到 ~/.cache/selenium -> 用系统属性 webdriver.chrome.driver 导出路径"，
-#   它<b>不会</b>自动使用 PATH 里已有的 /usr/bin/chromedriver。
-#   而 chrome-for-testing 走的是 storage.googleapis.com，国内服务器基本拉不通，
-#   一旦下载失败，截图（应用封面）就整体不可用。
+# 背景（线上实测）：
+#   镜像里 apt 装的 chromium 与 chromium-driver 本来同源同版本，但截图代码原来每次都让
+#   WebDriverManager.chromedriver().setup() 自己解析驱动（探测浏览器版本 → 联网查驱动版本 →
+#   从 storage.googleapis.com 下载）。国内服务器拉不通这条链路不说，一旦它的解析结果与镜像里的
+#   浏览器不是同一主版本，Selenium 就会报：
+#     session not created: This version of ChromeDriver only supports Chrome version 155
+#     Current browser version is 154.0.8037.92 with binary path /usr/bin/chromium
+#   表现是所有截图（应用封面）整体失败，而报错里看不出该改什么。
 #
-# 规避方式：
-#   1. 镜像里 apt 安装的 chromium 与 chromium-driver 来自同一个源码版本，天然匹配；
-#   2. 这里把它放进 WebDriverManager 期望的缓存结构
-#      ${WDM_CACHEPATH}/chromedriver/linux64/<版本>/chromedriver；
-#   3. 导出 WDM_CHROMEDRIVERSION=<版本>（对应配置项 wdm.chromeDriverVersion）。
-#      驱动版本一旦已知，WebDriverManager 会跳过"联网查版本"这一步，
-#      直接命中本地缓存；即使镜像换版本，也会由本脚本重新计算，无需改配置。
+# 现在（见 WebScreenshotUtils#buildDriverService 与 ChromeInstallation）：
+#   1. 直接用系统里 apt 装的 /usr/bin/chromedriver，完全离线，不再由 WebDriverManager 猜版本；
+#   2. Dockerfile 在构建期校验 chromium 与 chromedriver 主版本一致，不一致根本构建不出来；
+#   3. 这里导出路径只是"显式化"：代码的定位顺序是 系统属性 -> 这两个环境变量 -> /usr/bin 下的常见路径，
+#      去掉这两行也能被常见路径兜住。
 # =============================================================================
 set -e
 
-WDM_CACHE_DIR="${WDM_CACHEPATH:-/opt/wdm-cache}"
 CHROMEDRIVER_BIN="${CHROMEDRIVER_BIN:-/usr/bin/chromedriver}"
-
-if [ -x "$CHROMEDRIVER_BIN" ]; then
-    CHROMEDRIVER_VERSION="$("$CHROMEDRIVER_BIN" --version 2>/dev/null | awk '{print $2}')"
-    if [ -n "$CHROMEDRIVER_VERSION" ]; then
-        TARGET_DIR="$WDM_CACHE_DIR/chromedriver/linux64/$CHROMEDRIVER_VERSION"
-        if [ ! -x "$TARGET_DIR/chromedriver" ]; then
-            mkdir -p "$TARGET_DIR"
-            cp "$CHROMEDRIVER_BIN" "$TARGET_DIR/chromedriver"
-            chmod +x "$TARGET_DIR/chromedriver"
-            echo "[entrypoint] chromedriver $CHROMEDRIVER_VERSION 已写入 WebDriverManager 缓存: $TARGET_DIR"
-        fi
-        export WDM_CHROMEDRIVERSION="${WDM_CHROMEDRIVERSION:-$CHROMEDRIVER_VERSION}"
-    fi
-fi
-
-# chromedriver 会在 PATH 里依次找 chrome / google-chrome / chromium / chromium-browser，
-# debian 装的 /usr/bin/chromium 能被直接找到；这里额外导出 CHROME_BIN 作为显式兜底。
 if [ -z "${CHROME_BIN:-}" ]; then
     CHROME_BIN="$(command -v chromium || command -v chromium-browser || true)"
-    export CHROME_BIN
 fi
+export CHROMEDRIVER_BIN CHROME_BIN
+
+# 启动日志里打印一次：下次出问题先看这两行，比进容器敲 --version 快
+echo "[entrypoint] chromedriver: $("$CHROMEDRIVER_BIN" --version 2>/dev/null || echo '未找到')"
+echo "[entrypoint] chromium:    $("${CHROME_BIN:-chromium}" --version 2>/dev/null || echo '未找到')"
 
 # JAVA_OPTS 需要按空格拆分成多个参数，因此这里不加引号
 # shellcheck disable=SC2086

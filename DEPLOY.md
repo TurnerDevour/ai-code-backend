@@ -34,7 +34,7 @@
 
 ```bash
 # 1.1 先确认基本信息
-uname -m                          # 期望 x86_64（本文的 JRE 包与 chromedriver 缓存路径都按 x64 写）
+uname -m                          # 期望 x86_64（本文的 JRE 包按 x64 写；镜像里 chromium/chromedriver 由 apt 安装）
 cat /etc/os-release | head -2      # 期望 Ubuntu 24.04.x LTS
 nproc && free -h && df -h /
 

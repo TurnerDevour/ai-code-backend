@@ -16,14 +16,18 @@ import org.openqa.selenium.OutputType;
 import org.openqa.selenium.TakesScreenshot;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.chrome.ChromeDriver;
+import org.openqa.selenium.chrome.ChromeDriverService;
 import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.support.ui.WebDriverWait;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -79,6 +83,11 @@ public class WebScreenshotUtils {
      * 已创建的实例总数（含借出中），用于控制总量不超过 MAX_DRIVERS
      */
     private static final AtomicInteger CREATED_DRIVERS = new AtomicInteger();
+
+    /**
+     * 「实际使用的浏览器与驱动」只记一次日志：进程内这一对不会变，重复记录只会刷屏
+     */
+    private static final AtomicBoolean VERSIONS_LOGGED = new AtomicBoolean(false);
 
     static {
         // 进程退出时统一关闭浏览器，避免留下 chrome 僵尸进程
@@ -288,11 +297,15 @@ public class WebScreenshotUtils {
      */
     private static WebDriver initChromeDriver(int width, int height) {
         try {
-            WebDriverManager.chromedriver().setup(); // 自动下载和配置 ChromeDriver
-            ChromeDriver chromeDriver = getChromeDriver(width, height);
+            ChromeDriver chromeDriver = new ChromeDriver(buildDriverService(), chromeOptions(width, height));
             chromeDriver.manage().timeouts().pageLoadTimeout(Duration.ofSeconds(30)); // 设置页面加载超时时间
             chromeDriver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10)); // 设置隐式等待时间
             return chromeDriver;
+        } catch (BusinessException e) {
+            // 已经是我们自己给出原因的业务异常（例如驱动与浏览器版本不匹配）：原样抛出，
+            // 别把"该改哪里"的处置信息降级成一句笼统的"初始化 ChromeDriver 失败"
+            log.error("初始化 ChromeDriver 失败: {}", e.getMessage());
+            throw e;
         } catch (Exception e) {
             log.error("初始化 ChromeDriver 失败: {}", e.getMessage(), e);
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "初始化 ChromeDriver 失败");
@@ -300,14 +313,53 @@ public class WebScreenshotUtils {
     }
 
     /**
-     * 获取 ChromeDriver 实例
+     * 创建 ChromeDriver 服务：<b>优先用系统里已经装好的驱动</b>，只有系统里没有才回退 WebDriverManager
+     * <p>
+     * 线上故障（实测）：镜像里 apt 装的 {@code chromium} 与 {@code chromium-driver} 本来同源同版本，
+     * 但每次都让 {@code WebDriverManager.chromedriver().setup()} 自己解析驱动，一旦它的解析结果不是
+     * 镜像里的那一版，Selenium 就报
+     * {@code session not created: This version of ChromeDriver only supports Chrome version 155 /
+     * Current browser version is 154.0.8037.92}——所有截图（应用封面）整体失败。
+     * 现在改成把系统里的 {@code /usr/bin/chromedriver} 显式交给 Selenium：用哪个驱动完全由镜像决定，
+     * 不再受 WebDriverManager"探测浏览器版本 → 联网查版本 → 下载到缓存"这条链路影响
+     * （国内服务器还会卡在 storage.googleapis.com 下载上）。
+     * <p>
+     * 校验放在创建实例之前：主版本不一致时抛出说清修法的业务异常，
+     * 而不是把驱动返回的 500（"只支持 Chrome 155"）原样抛给用户。
+     *
+     * @return ChromeDriver 服务
+     *
+     * @throws IOException 驱动不可执行
+     */
+    private static ChromeDriverService buildDriverService() throws IOException {
+        Path systemDriver = ChromeInstallation.findDriver();
+        if (systemDriver == null) {
+            // 开发机（Windows / macOS）通常没有系统级驱动：仍交给 WebDriverManager 自动下载
+            log.info("未找到系统安装的 ChromeDriver，回退 WebDriverManager 自动解析（开发环境路径）");
+            WebDriverManager.chromedriver().setup();
+            return ChromeDriverService.createDefaultService();
+        }
+        Path systemBrowser = ChromeInstallation.findBrowser();
+        ChromeInstallation.verifyCompatible(systemDriver, systemBrowser);
+        if (VERSIONS_LOGGED.compareAndSet(false, true)) {
+            // 只记一次：出问题时日志里能直接看到"用的是哪一对"，不必再进容器敲 --version
+            log.info("截图使用的浏览器与驱动: {}", ChromeInstallation.describe(systemDriver, systemBrowser));
+        }
+        return new ChromeDriverService.Builder()
+                .usingDriverExecutable(systemDriver.toFile())
+                .usingAnyFreePort()
+                .build();
+    }
+
+    /**
+     * 获取 Chrome 启动参数
      *
      * @param width  窗口宽度
      * @param height 窗口高度
      *
-     * @return ChromeDriver 实例
+     * @return 启动参数
      */
-    private static @NonNull ChromeDriver getChromeDriver(int width, int height) {
+    private static @NonNull ChromeOptions chromeOptions(int width, int height) {
         ChromeOptions options = new ChromeOptions();
         options.addArguments("--headless"); // 无头模式
         options.addArguments("--disable-gpu"); // 禁用 GPU 加速
@@ -316,7 +368,13 @@ public class WebScreenshotUtils {
         options.addArguments("--window-size=" + width + "," + height); // 设置窗口大小
         options.addArguments("--disable-extensions"); // 禁用扩展
         options.addArguments("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"); // 设置用户代理
-        return new ChromeDriver(options);
+        // 显式指定浏览器可执行文件：驱动必须与"被校验过的那一个浏览器"配对，
+        // 否则驱动可能自己找到另一个 chrome（例如容器里同时存在 chromium 与 google-chrome）
+        Path browser = ChromeInstallation.findBrowser();
+        if (browser != null) {
+            options.setBinary(browser.toFile());
+        }
+        return options;
     }
 
     /**
