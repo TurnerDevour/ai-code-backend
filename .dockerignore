@@ -20,7 +20,7 @@ logs
 frontend-dist
 
 # 与镜像构建无关的编排/文档文件
-docker-compose*.yml
+docker-compose.yaml
 DOCKER.md
 DEPLOY.md
 README.md

@@ -239,7 +239,7 @@ docker compose config | grep -A6 "^networks:"
 > 想让 `.env` 说了算：`unset REDIS_PORT MYSQL_PORT COS_HOST` 后重新执行，
 > 或每次都用干净环境：`env -u REDIS_PORT -u MYSQL_PORT docker compose up -d`。
 
-**失败怎么办**：报 `请在 .env 中设置 XXX` → 说明 `.env` 里该项还是空值/模板值，回去补；报 YAML 缩进错 → 检查是否误编辑了 `docker-compose.yml`。
+**失败怎么办**：报 `请在 .env 中设置 XXX` → 说明 `.env` 里该项还是空值/模板值，回去补；报 YAML 缩进错 → 检查是否误编辑了 `docker-compose.yaml`。
 
 ---
 
@@ -349,7 +349,7 @@ docker network inspect ai-code-net --format '{{range .IPAM.Config}}subnet={{.Sub
 **失败怎么办**：
 - 日志刷 `Communications link failure` / `Access denied` → 数据库没起好或密码不一致，回第 6 步
 - 日志刷 `UnknownHostException: mysql` / 连不上 `redis` → 服务没接在同一张网络里：
-  `docker network inspect ai-code-net` 看容器列表，确认 `docker-compose.yml` 里每个服务都有 `networks: [ai-code-net]`
+  `docker network inspect ai-code-net` 看容器列表，确认 `docker-compose.yaml` 里每个服务都有 `networks: [ai-code-net]`
 - 日志刷 Redis 连接异常 → 确认 `docker compose ps` 里 redis 是 healthy、`.env` 的 `REDIS_PASSWORD` 与 compose 注入的一致
 - 容器不断重启 → `docker compose logs --tail=200 backend` 看最后一段异常；内存不足会在 `docker inspect ai-code-backend --format '{{.State.OOMKilled}}'` 显示 `true`
 
@@ -591,7 +591,7 @@ docker compose logs -f --tail=100 backend # 确认 Started AiCodeBackendApplicat
 
 > **别忘了上传新 jar** —— 只 `up -d` 不会让代码生效（镜像里的 jar 没变）。
 >
-> 如果这次还改了 **部署文件**（`Dockerfile` / `docker-compose.yml` / `docker/nginx.conf` / 建表 SQL），
+> 如果这次还改了 **部署文件**（`Dockerfile` / `docker-compose.yaml` / `docker/nginx.conf` / 建表 SQL），
 > 把第 2 步 2.3 的部署包重新打一次传上去（`tar` + `scp` + 解包覆盖），再执行上面第 ② 步；
 > 只改了 nginx 配置的话，重建 nginx 即可：`docker compose up -d nginx`。
 > 用方式 B（服务器上有源码）时则是：`git pull` 后 `docker compose build backend && docker compose up -d backend`。
@@ -634,7 +634,7 @@ ls -l /opt/ai-code-backend/frontend-dist/index.html /opt/ai-code-backend/fronten
 | 改了代码、镜像也重建了，行为却没变 | `ls -l app.jar` 的修改时间 | 忘了在本地重新 `mvn package` 并 scp 覆盖 `app.jar`（只 `up -d` 不会换代码） |
 | 后端起不来（连不上库） | `docker compose logs mysql` | 库没初始化完；或改过 `.env` 密码但数据卷还是旧的 |
 | 启动时出现 `a network with name ai-code-net exists but was not created by compose` | `docker network inspect ai-code-net` | 只是**警告**（compose 会复用它继续启动）；想消掉：确认没别的容器在用后 `docker network rm ai-code-net`，或把它声明成 `external: true` |
-| 日志刷 `UnknownHostException: mysql` / `redis` | `docker network inspect ai-code-net` | 服务没接在同一张网络：检查 `docker-compose.yml` 里每个服务都有 `networks: [ai-code-net]` |
+| 日志刷 `UnknownHostException: mysql` / `redis` | `docker network inspect ai-code-net` | 服务没接在同一张网络：检查 `docker-compose.yaml` 里每个服务都有 `networks: [ai-code-net]` |
 | 容器连公网/内网**超时**（AI 接口不通、TLS 握手卡住、`npm install` 挂起），但 `ping` 网关正常 | `ip route \| grep -v docker` 对比 `docker network inspect ai-code-net --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'` | 网段与宿主机 VPC 撞车：改 `.env` 的 `DOCKER_SUBNET`（如 `10.202.0.0/24`）后 `docker compose up -d`（compose 会自动重建网络与容器） |
 | 部署报 `npm install 失败` | `docker compose logs backend \| grep npm` | registry 不通（换 `NPM_REGISTRY`）/ 内存不足 |
 | 部署报 `ERR_MODULE_NOT_FOUND: … node_modules/dist/node/cli.js … imported from …/.bin/vite` | `docker compose exec backend ls -l /app/temp/code_output/` | **旧版本 bug**：构建暂存目录把上一次的 `node_modules` 整份复制过去，Linux 上 npm 的 `.bin/*` 是符号链接，复制时被实体化成真实文件，里面的相对导入就错位了。已在代码里修复（复制时跳过 `node_modules` / `dist`）—— 本地重新 `mvn package` 并上传新 `app.jar` 后重建镜像即可；`code_output` 里残留的 `node_modules` 无需手工清理 |

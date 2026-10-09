@@ -3,7 +3,7 @@
 > **想直接照着做**：操作手册见 [DEPLOY.md](DEPLOY.md)（一步一步的命令、验证与排错）。
 > 本文侧重"为什么这么设计"：依赖分析、镜像里的关键机制、参数取舍。
 
-本文件说明如何用 `Dockerfile` + `docker-compose.yml` 部署 ai-code-backend。
+本文件说明如何用 `Dockerfile` + `docker-compose.yaml` 部署 ai-code-backend。
 
 ## 1. 依赖分析结论（决定了镜像里装什么）
 
@@ -35,7 +35,7 @@ backend ──> redis:6379（Session + 对话记忆）│ 都走自定义网络 
 backend ──> 阿里云百炼 / 腾讯云 COS / npm registry（公网）
 ```
 
-**网络**：所有服务接在同一张自定义 bridge 网络 `ai-code-net` 上（`docker-compose.yml` 末尾 `networks:`），
+**网络**：所有服务接在同一张自定义 bridge 网络 `ai-code-net` 上（`docker-compose.yaml` 末尾 `networks:`），
 不用 compose 默认生成的 `<项目名>_default`：
 
 - 名字**固定**（`name: ai-code-net`），不随 compose 项目名/部署目录变化；临时排查容器可以直接接进来：
@@ -124,7 +124,7 @@ Current browser version is 154.0.8037.92 with binary path /usr/bin/chromium
 
 ## 6. 资源与调优（按 2 核 4G 服务器配置）
 
-**内存预算**（`docker-compose.yml` 里每个服务都有 `mem_limit`，防止某个容器把整机吃光后被内核随机 OOM）：
+**内存预算**（`docker-compose.yaml` 里每个服务都有 `mem_limit`，防止某个容器把整机吃光后被内核随机 OOM）：
 
 | 服务 | mem_limit | 说明 |
 | --- | --- | --- |
