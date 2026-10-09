@@ -3,12 +3,16 @@ package com.example.aicodebackend.ai;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.PartialThinking;
+import dev.langchain4j.model.chat.response.PartialThinkingContext;
+import dev.langchain4j.model.chat.response.StreamingHandle;
 import dev.langchain4j.rag.content.Content;
 import dev.langchain4j.service.TokenStream;
 import dev.langchain4j.service.tool.ToolExecution;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
@@ -19,6 +23,9 @@ import java.util.function.Consumer;
  * {@link TokenStream} 的 {@code onPartialThinking} 等方法没有可用的默认实现（默认实现会抛
  * {@code UnsupportedOperationException}），所以必须显式实现，不能只实现 {@code onPartialResponse}。
  * <p>
+ * 同时实现带上下文的 {@code onPartialThinkingWithContext}：生产代码靠它拿到 {@link StreamingHandle}
+ * 来取消跑飞的模型调用，桩对象必须一起实现，否则测不到"跑飞时真的取消了"。
+ * <p>
  * 语义与真实 TokenStream 一致：先注册回调，{@code start()} 时才按顺序回调。
  */
 public class StubTokenStream implements TokenStream {
@@ -27,10 +34,13 @@ public class StubTokenStream implements TokenStream {
 
     private final List<String> thinkingChunks;
 
+    /** 是否已被调用方取消（生产代码在判定"思考跑飞"时会取消） */
+    private final AtomicBoolean cancelled = new AtomicBoolean(false);
+
     private Consumer<String> partialResponseConsumer = chunk -> {
     };
 
-    private Consumer<PartialThinking> partialThinkingConsumer = partialThinking -> {
+    private BiConsumer<PartialThinking, PartialThinkingContext> partialThinkingConsumer = (partialThinking, context) -> {
     };
 
     private Consumer<ToolExecution> toolExecutedConsumer = toolExecution -> {
@@ -62,6 +72,13 @@ public class StubTokenStream implements TokenStream {
         this.thinkingChunks = new ArrayList<>(thinkingChunks);
     }
 
+    /**
+     * 模型调用是否已被取消（跑飞中止的断言点）
+     */
+    public boolean isCancelled() {
+        return cancelled.get();
+    }
+
     @Override
     public TokenStream onPartialResponse(Consumer<String> consumer) {
         this.partialResponseConsumer = consumer;
@@ -70,6 +87,13 @@ public class StubTokenStream implements TokenStream {
 
     @Override
     public TokenStream onPartialThinking(Consumer<PartialThinking> consumer) {
+        this.partialThinkingConsumer = (partialThinking, context) -> consumer.accept(partialThinking);
+        return this;
+    }
+
+    @Override
+    public TokenStream onPartialThinkingWithContext(
+            BiConsumer<PartialThinking, PartialThinkingContext> consumer) {
         this.partialThinkingConsumer = consumer;
         return this;
     }
@@ -104,7 +128,28 @@ public class StubTokenStream implements TokenStream {
 
     @Override
     public void start() {
-        thinkingChunks.forEach(chunk -> partialThinkingConsumer.accept(new PartialThinking(chunk)));
+        StreamingHandle handle = new StreamingHandle() {
+            @Override
+            public void cancel() {
+                cancelled.set(true);
+            }
+
+            @Override
+            public boolean isCancelled() {
+                return cancelled.get();
+            }
+        };
+        PartialThinkingContext context = new PartialThinkingContext(handle);
+        for (String chunk : thinkingChunks) {
+            if (cancelled.get()) {
+                // 真实实现被取消后也会停止回调：这里保持同样的语义
+                return;
+            }
+            partialThinkingConsumer.accept(new PartialThinking(chunk), context);
+        }
+        if (cancelled.get()) {
+            return;
+        }
         responseChunks.forEach(partialResponseConsumer);
         completeResponseConsumer.accept(ChatResponse.builder()
                 .aiMessage(AiMessage.from(String.join("", responseChunks)))

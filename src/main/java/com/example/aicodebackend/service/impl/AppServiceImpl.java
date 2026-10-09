@@ -345,7 +345,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                             return Flux.empty();
                         }
                         log.error("生成代码流式响应失败，appId: {}", appId, error);
-                        return Flux.just(JSONUtil.toJsonStr(new ErrorMessage("代码生成失败，请稍后重试")));
+                        // 业务异常是"我们已经判断清楚并给出处置建议"的失败（例如模型思考跑飞被主动中止），
+                        // 它的原因必须原样告诉用户；未知异常才退化成通用文案，避免泄露内部细节
+                        String reason = userFacingReason(error);
+                        return Flux.just(JSONUtil.toJsonStr(new ErrorMessage(reason)));
                     })
                     .map(chunk -> new GenerationTaskRegistry.SequencedFrame(htmlSeq.incrementAndGet(), chunk));
         } catch (RuntimeException e) {
@@ -586,6 +589,28 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             current = current.getCause();
         }
         return false;
+    }
+
+    /**
+     * 取"可以原样展示给用户"的失败原因
+     * <p>
+     * 业务异常（{@link BusinessException}）是我们自己判定的失败，消息本身就是给用户看的处置建议
+     * （例如"模型思考跑飞已中止，请拆小需求"）；其它异常一律退化成通用文案，
+     * 避免把 {@code jdbc:mysql://...} 这类内部细节下发到前端。
+     *
+     * @param error 流内异常
+     *
+     * @return 可直接下发的失败原因
+     */
+    private String userFacingReason(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof BusinessException && StrUtil.isNotBlank(current.getMessage())) {
+                return current.getMessage();
+            }
+            current = current.getCause();
+        }
+        return "代码生成失败，请稍后重试";
     }
 
     /**

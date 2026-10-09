@@ -11,6 +11,7 @@ import com.example.aicodebackend.ai.model.message.ToolExecutedMessage;
 import com.example.aicodebackend.ai.model.message.ToolRequestMessage;
 import com.example.aicodebackend.ai.tools.ToolMessageRenderer;
 import com.example.aicodebackend.config.AiCodeGeneratorServiceFactory;
+import com.example.aicodebackend.core.generation.ThinkingRunawayGuard;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.model.enums.AIModelTypeEnum;
@@ -21,17 +22,22 @@ import com.example.aicodebackend.parser.GeneratedCodeRepair;
 import com.example.aicodebackend.saver.CodeFileSaverExecutor;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.PartialThinking;
+import dev.langchain4j.model.chat.response.StreamingHandle;
 import dev.langchain4j.service.TokenStream;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.FluxSink;
 
 import java.io.File;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.function.ToIntFunction;
 
 /**
@@ -116,20 +122,19 @@ public class AiCodeGeneratorFacade {
      * @return 处理后的 JSON 消息流
      */
     private Flux<String> toMessageStream(TokenStream tokenStream, StringBuilder codeBuilder) {
+        ThinkingRunawayGuard guard = new ThinkingRunawayGuard();
         return Flux.create(sink -> {
+            AtomicBoolean aborted = new AtomicBoolean(false);
+            registerThinkingHandler(tokenStream, guard, aborted, sink);
             tokenStream.onPartialResponse(partialResponse -> {
-                // 空增量（模型首个 delta 常常是空字符串）不下发，避免无意义的消息帧
-                if (StrUtil.isEmpty(partialResponse)) {
+                if (aborted.get() || StrUtil.isEmpty(partialResponse)) {
+                    // 空增量（模型首个 delta 常常是空字符串）不下发，避免无意义的消息帧
                     return;
                 }
+                // 有正文产出 = 有进展：重新开始"思考跑飞"计时
+                guard.onProgress();
                 codeBuilder.append(partialResponse);
                 sink.next(responseMessage(partialResponse));
-            }).onPartialThinking(partialThinking -> {
-                String thinking = partialThinking.text();
-                if (StrUtil.isBlank(thinking)) {
-                    return;
-                }
-                sink.next(thinkingMessage(thinking));
             }).onCompleteResponse(chatResponse -> {
                 log.info("代码生成完成，结束原因: {}", chatResponse.finishReason());
                 sink.complete();
@@ -138,6 +143,86 @@ public class AiCodeGeneratorFacade {
                 sink.error(toUserFacingError(throwable));
             }).start();
         });
+    }
+
+    /**
+     * 注册思考增量回调：累积、判定跑飞，必要时尽力取消这次模型调用
+     * <p>
+     * 为什么要尝试取消：只中断我们这条流的话，模型调用还会继续跑到 token 上限，白烧 token。
+     * 但能不能取消取决于模型实现——见 {@link #cancelQuietly}。拿不到句柄时（TokenStream 实现不支持）
+     * 直接降级为"只结束下发"，并在日志里说明。
+     *
+     * @param tokenStream 模型输出的流（回调必须在这里注册，{@code start()} 之后不再生效）
+     * @param guard       跑飞判定器
+     * @param aborted     是否已中止（避免中止后继续下发）
+     * @param sink        下游数据槽
+     */
+    private void registerThinkingHandler(TokenStream tokenStream,
+                                         ThinkingRunawayGuard guard,
+                                         AtomicBoolean aborted,
+                                         FluxSink<String> sink) {
+        Consumer<PartialThinking> emitThinking = partialThinking -> {
+            String thinking = partialThinking.text();
+            if (aborted.get() || StrUtil.isBlank(thinking)) {
+                return;
+            }
+            guard.onThinking(thinking);
+            if (guard.isRunaway()) {
+                aborted.set(true);
+                log.warn("思考跑飞，已中止本轮生成：{}，说明：模型既没有输出正文也没有调用工具", guard.describe());
+                sink.error(thinkingRunawayError());
+                return;
+            }
+            sink.next(thinkingMessage(thinking));
+        };
+        AtomicBoolean cancelAttempted = new AtomicBoolean(false);
+        try {
+            tokenStream.onPartialThinkingWithContext((partialThinking, context) -> {
+                emitThinking.accept(partialThinking);
+                if (aborted.get() && cancelAttempted.compareAndSet(false, true)) {
+                    cancelQuietly(context.streamingHandle());
+                }
+            });
+        } catch (UnsupportedOperationException e) {
+            log.warn("当前 TokenStream 不支持取消句柄，思考跑飞时只能中断下发：{}", e.getMessage());
+            tokenStream.onPartialThinking(emitThinking);
+        }
+    }
+
+    /**
+     * 尽力取消这次模型调用（取消不了也不能影响"用户已经看到失败原因"这件事）
+     * <p>
+     * 实测：langchain4j 里能不能取消由<b>模型实现</b>决定。{@code OpenAiStreamingChatModel} 走的是传统
+     * String 回调路径，拿到的是 {@code CancellationUnsupportedStreamingHandle}，调用 {@code cancel()}
+     * 会抛 {@code UnsupportedFeatureException}（"Streaming cancellation is not supported by this
+     * StreamingChatModel implementation"）。这里吞掉它并降级：
+     * <ul>
+     *     <li>用户侧：我们这条流已经以明确原因结束，思考面板立刻停止滚动；</li>
+     *     <li>模型侧：那一次调用会继续跑到 {@code thinking-budget} 用完为止（这正是必须配思考预算的原因）。</li>
+     * </ul>
+     * 以后换成支持取消的模型实现（在回调里传 {@code PartialResponseContext} 的那种）时，
+     * 这段代码不用改就会真正把请求掐断。
+     *
+     * @param handle 流式调用的取消句柄
+     */
+    private void cancelQuietly(StreamingHandle handle) {
+        try {
+            handle.cancel();
+            log.info("已取消本次模型调用（思考跑飞）");
+        } catch (RuntimeException e) {
+            log.warn("当前模型实现不支持取消流式调用，已降级为只中断下发（模型侧由 thinking-budget 兜住）：{}",
+                    e.getMessage());
+        }
+    }
+
+    /**
+     * 思考跑飞的失败原因（直接给用户看，必须说清"怎么办"）
+     */
+    private static BusinessException thinkingRunawayError() {
+        return new BusinessException(ErrorCode.SYSTEM_ERROR,
+                "模型在思考阶段长时间没有产出（既没有回复正文，也没有调用工具），本轮已中止。"
+                        + "常见原因是需求超出了当前能力（例如要求联网获取真实图片/实时数据）。"
+                        + "请换一种说法、拆成更小的步骤，或改用可实现的替代方案后重试。");
     }
 
     /**
@@ -205,19 +290,23 @@ public class AiCodeGeneratorFacade {
      * @return 处理后的代码流
      */
     private Flux<String> processCodeTokenStream(TokenStream tokenStream, Long appId) {
+        ThinkingRunawayGuard guard = new ThinkingRunawayGuard();
         return Flux.create(sink -> {
+            AtomicBoolean aborted = new AtomicBoolean(false);
             tokenStream.onPartialResponse(partialResponse -> {
-                log.info("VUE_PROJECT 文本增量: {}", StrUtil.maxLength(partialResponse, 200));
-                sink.next(responseMessage(partialResponse));
-            }).onPartialThinking(partialThinking -> {
-                String thinking = partialThinking.text();
-                if (StrUtil.isBlank(thinking)) {
+                if (aborted.get()) {
                     return;
                 }
-                // 思考过程单独一种消息类型：前端放进对话页顶部的「AI 思考过程」面板，
-                // 后端单独累积进 chat_history.thinking（不进正文，否则历史与上下文会被推理内容淹没）
-                sink.next(thinkingMessage(thinking));
+                // 有正文产出 = 有进展：重新开始"思考跑飞"计时
+                guard.onProgress();
+                log.info("VUE_PROJECT 文本增量: {}", StrUtil.maxLength(partialResponse, 200));
+                sink.next(responseMessage(partialResponse));
             }).onToolExecuted(toolExecution -> {
+                if (aborted.get()) {
+                    return;
+                }
+                // 工具真的跑了 = 有进展：即使这一轮思考很长，也不能算跑飞
+                guard.onProgress();
                 ToolExecutionRequest request = toolExecution.request();
                 // 展示文本由工具自己声明（见 ToolMessageRenderer）：前端不再按工具名猜参数结构，
                 // 否则 modifyFile 也会被渲染成"写入文件 + 空代码块"
@@ -235,7 +324,10 @@ public class AiCodeGeneratorFacade {
                 log.error("处理代码流时发生错误", throwable);
                 invalidateServiceCacheIfToolMessagesInvalid(throwable, appId);
                 sink.error(toUserFacingError(throwable));
-            }).start();
+            });
+            // 思考回调放在最后注册：它内部可能在判定跑飞时立刻结束这条流
+            registerThinkingHandler(tokenStream, guard, aborted, sink);
+            tokenStream.start();
         });
     }
 

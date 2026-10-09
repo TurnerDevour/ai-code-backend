@@ -2,9 +2,13 @@ package com.example.aicodebackend.ai.provider;
 
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.model.enums.AIProviderEnum;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -71,6 +75,31 @@ class StreamingChatModelFactoryTest {
         model.setModelName("deepseek-v4.1-flash");
         model.setReasoningEffort("low");
         assertNotNull(bailianFactory.create(model));
+    }
+
+    /**
+     * 思考预算必须真的进到请求参数里
+     * <p>
+     * 这是"思考过程死循环"的硬性防线：模型在需求做不到时会长时间自我推敲，只有请求体里带了
+     * {@code thinking_budget}，平台侧才会把推理截断（实测同一请求不设预算 10 分钟以上不收敛）。
+     */
+    @Test
+    void shouldPassThinkingBudgetToRequestParameters() {
+        AiModelProperties.Model model = bailianModel();
+        model.setThinkingBudget(8192);
+
+        OpenAiStreamingChatModel built = (OpenAiStreamingChatModel) bailianFactory.create(model);
+
+        assertEquals(Map.of("enable_thinking", true, "thinking_budget", 8192),
+                built.defaultRequestParameters().customParameters());
+    }
+
+    /** 没配思考预算时不自己造默认值（各模型支持度不同，只有显式配置才发） */
+    @Test
+    void shouldNotSendThinkingBudgetWhenAbsent() {
+        OpenAiStreamingChatModel built = (OpenAiStreamingChatModel) bailianFactory.create(bailianModel());
+
+        assertFalse(built.defaultRequestParameters().customParameters().containsKey("thinking_budget"));
     }
 
     /** 缺少 Key 时报"API Key"，而不是拿着 ${ALI_AI_API_KEY} 去请求 */

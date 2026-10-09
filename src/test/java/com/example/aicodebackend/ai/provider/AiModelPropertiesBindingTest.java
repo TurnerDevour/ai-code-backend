@@ -50,7 +50,8 @@ class AiModelPropertiesBindingTest {
                 "ai.models.[qwen3.8-max].workspace-id=ws-abc",
                 "ai.models.[qwen3.8-max].region=cn-beijing",
                 "ai.models.[qwen3.8-max].max-tokens=131072",
-                "ai.models.[qwen3.8-max].enable-thinking=true"
+                "ai.models.[qwen3.8-max].enable-thinking=true",
+                "ai.models.[qwen3.8-max].thinking-budget=8192"
         ).run(context -> {
             AiModelProperties properties = context.getBean(AiModelProperties.class);
             assertEquals(Set.of("deepseek-v4-pro", "deepseek-v4.1-flash", "qwen3.8-max"),
@@ -67,6 +68,7 @@ class AiModelPropertiesBindingTest {
             assertEquals("cn-beijing", qwen.getRegion());
             assertEquals(131072, qwen.getMaxTokens());
             assertTrue(qwen.getEnableThinking());
+            assertEquals(8192, qwen.getThinkingBudget());
             assertEquals(600, properties.getModels().get("deepseek-v4-pro").getTimeout().toSeconds());
         });
     }

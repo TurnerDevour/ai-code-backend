@@ -5,6 +5,7 @@ import com.example.aicodebackend.ai.AiCodeGeneratorService;
 import com.example.aicodebackend.ai.StubTokenStream;
 import com.example.aicodebackend.config.AiCodeGeneratorServiceFactory;
 import com.example.aicodebackend.constant.AppConstant;
+import com.example.aicodebackend.core.generation.ThinkingRunawayGuard;
 import com.example.aicodebackend.model.enums.AIModelTypeEnum;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import dev.langchain4j.service.TokenStream;
@@ -142,6 +143,9 @@ class AiCodeGeneratorFacadeCompletionTest {
         /** 本轮要下发的思考增量（模拟推理模型的 reasoning_content） */
         final List<String> thinkingChunks = new ArrayList<>();
 
+        /** 最近一次返回给门面的流，供断言"跑飞时是否真的取消了模型调用" */
+        StubTokenStream lastTokenStream;
+
         StubAiCodeGeneratorService(String streamResponse, String repairResponse) {
             this.streamResponse = streamResponse;
             this.repairResponse = repairResponse;
@@ -149,7 +153,8 @@ class AiCodeGeneratorFacadeCompletionTest {
 
         @Override
         public TokenStream generateHTMLCodeStream(String prompt) {
-            return new StubTokenStream(List.of(streamResponse), thinkingChunks);
+            lastTokenStream = new StubTokenStream(List.of(streamResponse), thinkingChunks);
+            return lastTokenStream;
         }
 
         @Override
@@ -160,7 +165,8 @@ class AiCodeGeneratorFacadeCompletionTest {
             for (int i = 0; i < streamResponse.length(); i += step) {
                 chunks.add(streamResponse.substring(i, Math.min(streamResponse.length(), i + step)));
             }
-            return new StubTokenStream(chunks, thinkingChunks);
+            lastTokenStream = new StubTokenStream(chunks, thinkingChunks);
+            return lastTokenStream;
         }
 
         @Override
@@ -386,6 +392,39 @@ class AiCodeGeneratorFacadeCompletionTest {
             assertFalse(read(dir, "index.html").contains("先想一下页面结构"), "落盘文件不能带上推理内容");
             assertFalse(read(dir, "style.css").contains("先想一下页面结构"));
             assertFalse(read(dir, "script.js").contains("先想一下页面结构"));
+        } finally {
+            deleteQuietly(dir);
+        }
+    }
+
+    /**
+     * 思考跑飞必须被主动中止
+     * <p>
+     * 回归背景（实测）：应用只有文件读写工具、没有联网能力，用户却要求"上网找真实的历史人物画像"，
+     * 模型就在推理里反复推翻自己——既不出正文也不调用工具，前端「AI 思考过程」面板一直滚，
+     * 实测跑 15 分钟以上仍未结束。这里锁住三件事：以明确原因失败、<b>真正取消</b>模型调用
+     * （不然它还会继续跑到 max_tokens 白烧 token）、中止的一轮不落盘半截代码。
+     */
+    @Test
+    void shouldAbortWhenThinkingRunsAway(@TempDir Path tempRoot) throws Exception {
+        String modelOutput = fenced("html", CLEAN_HTML) + fenced("css", CLEAN_CSS) + fenced("javascript", CLEAN_JS);
+        StubAiCodeGeneratorService stub = new StubAiCodeGeneratorService(modelOutput, "");
+        stub.thinkingChunks.add("想".repeat(ThinkingRunawayGuard.MAX_THINKING_CHARS + 1));
+
+        long appId = 990008L;
+        File dir = productDir(appId);
+        try {
+            List<String> received = facadeWith(stub)
+                    .generateAndSaveCodeStream("暗黑话题社区", CodeGenTypeEnum.MULTI_FILE, appId)
+                    .onErrorResume(error -> Flux.just("ERROR:" + error.getMessage()))
+                    .collectList().block();
+
+            assertNotNull(received);
+            assertEquals(1, received.size(), "跑飞时应立即以错误结束，而不是继续下发思考内容");
+            assertTrue(received.get(0).startsWith("ERROR:"), "应以错误结束：" + received);
+            assertTrue(received.get(0).contains("本轮已中止"), "失败原因要能直接给用户看：" + received);
+            assertTrue(stub.lastTokenStream.isCancelled(), "必须真正取消模型调用，否则它还会跑到 max_tokens");
+            assertFalse(dir.exists(), "被中止的一轮不应落盘任何代码");
         } finally {
             deleteQuietly(dir);
         }

@@ -63,6 +63,8 @@ class BailianStreamingModelIT {
         model.setApiKey(System.getenv("ALI_AI_API_KEY"));
         model.setMaxTokens(65536);
         model.setEnableThinking(true);
+        // 与 application.yaml 保持一致：思考预算必须有，否则推理跑飞时整条链路会一直挂着
+        model.setThinkingBudget(2048);
         model.setSendThinking(false);
         return model;
     }
@@ -176,8 +178,7 @@ class BailianStreamingModelIT {
      * 这条能力就是"模型改名/下架时提前发现"的依据，所以它自己也要被验证，而不是只验证日志能打出来。
      */
     @Test
-    void availabilityCheckShouldFetchRealCatalog() {
-        AiModelProperties properties = new AiModelProperties();
+    void availabilityCheckShouldFetchRealCatalog() {        AiModelProperties properties = new AiModelProperties();
         properties.getModels().put("deepseek-v4.1-flash", modelProperties("deepseek-v4.1-flash"));
         properties.getModels().put("qwen3.8-max", modelProperties("qwen3.8-max"));
         properties.getModelCheck().setEnabled(true);

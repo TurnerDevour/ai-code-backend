@@ -167,6 +167,17 @@ public class AiModelProperties {
          */
         private String reasoningEffort;
 
+        /**
+         * 思考预算（百炼专属的 {@code thinking_budget} 请求参数）
+         * <p>
+         * 单次请求里最多允许模型用多少 token 做内部推理；为 {@code null} 表示不显式传参、沿用平台默认
+         * （即不设上限）。思考模式的模型在"需求做不到 / 需要反复取舍"时很容易陷入长时间自我推敲，
+         * 表现为前端「AI 思考过程」面板永远在往上滚（实测：同一个"找网上真实画像"的请求，
+         * 不设预算时思考 10 分钟以上仍不收敛，设成 1024 后同一请求 19 秒内收敛并正常调用工具）。
+         * 因此生产配置必须给一个上限，让跑飞的推理被平台侧硬性截断，而不是靠人盯着刷新页面。
+         */
+        private Integer thinkingBudget;
+
         private boolean logRequests = true;
 
         private boolean logResponses = true;

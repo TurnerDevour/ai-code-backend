@@ -16,9 +16,10 @@ import java.util.Map;
  * <ol>
  *     <li>接口地址：base_url 固定以 {@code /compatible-mode/v1} 结尾，业务空间 ID 在域名里，
  *     交给 {@link BailianEndpointResolver} 拼装与校验；</li>
- *     <li>百炼专属的请求参数：思考模式开关 {@code enable_thinking} 与推理强度 {@code reasoning_effort}。
- *     前者不是 OpenAI 协议里的字段，只能通过 {@code customParameters} 透传进请求体；
- *     后者虽是标准字段，也一并走同一条通道，免得同一类参数出现两种写法。</li>
+ *     <li>百炼专属的请求参数：思考模式开关 {@code enable_thinking}、推理强度 {@code reasoning_effort}
+ *     与思考预算 {@code thinking_budget}。
+ *     第一个不是 OpenAI 协议里的字段，只能通过 {@code customParameters} 透传进请求体；
+ *     后两个虽是标准字段，也一并走同一条通道，免得同一类参数出现两种写法。</li>
  * </ol>
  * 响应里的 {@code reasoning_content} 由父类打开的 return-thinking / send-thinking 处理，
  * 百炼的模型都会返回该字段；历史轮次要不要回传由配置里的 send-thinking 决定（yaml 里统一关闭）。
@@ -36,6 +37,11 @@ public class BailianStreamingChatModelFactory extends AbstractStreamingChatModel
      * 百炼推理强度的请求参数名
      */
     static final String REASONING_EFFORT_PARAM = "reasoning_effort";
+
+    /**
+     * 百炼思考预算的请求参数名（单次请求允许用于内部推理的 token 上限）
+     */
+    static final String THINKING_BUDGET_PARAM = "thinking_budget";
 
     private final BailianEndpointResolver endpointResolver;
 
@@ -62,6 +68,10 @@ public class BailianStreamingChatModelFactory extends AbstractStreamingChatModel
         }
         if (StrUtil.isNotBlank(properties.getReasoningEffort())) {
             parameters.put(REASONING_EFFORT_PARAM, properties.getReasoningEffort().trim());
+        }
+        // 思考预算：给推理过程一个硬性上限，避免"模型反复推敲不收敛"时前端思考面板一直滚
+        if (properties.getThinkingBudget() != null) {
+            parameters.put(THINKING_BUDGET_PARAM, properties.getThinkingBudget());
         }
         if (parameters.isEmpty()) {
             return;
