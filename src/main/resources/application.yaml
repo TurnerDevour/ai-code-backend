@@ -3,7 +3,7 @@ spring:
     name: ai-code-backend
   profiles:
     active:
-      - docker
+      - dev
   session:
     timeout: 2592000
 
