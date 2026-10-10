@@ -209,6 +209,11 @@ vi .env
 > 1. 密码里如果含 `$`，compose 会当成变量插值 → 要么别用 `$`，要么写成 `$$`。
 > 2. 数据库密码只在**第一次**初始化数据卷时写入 MySQL；之后改 `.env` 不会改数据库里已有的密码，会导致连不上（解决办法见第 6 步的"重置"）。
 
+> **数据库与 Redis 不对外暴露**：编排里 mysql/redis **没有 `ports:`**，
+> 它们只挂在 `ai-code-net` 上，宿主机和公网都连不到 3306/6379（backend 用服务名 `mysql:3306`、`redis:6379` 连）。
+> 所以 `.env` 里的 `MYSQL_BIND` / `REDIS_BIND` 平时**不起作用**（只有临时加回 ports 映射时才会用到）。
+> 要连库/Redis 请看第 6 步的容器内命令，需要图形工具时用第 9 步里的 SSH 隧道方式。
+
 ---
 
 ## 第 4 步：静态校验配置（不启动任何服务）
@@ -218,7 +223,8 @@ vi .env
 ```bash
 docker compose config -q && echo "配置 OK"
 docker compose config | grep -E "CODE_DEPLOY_HOST|mem_limit|MYSQL_USER"
-# 核对"实际生效"的端口（见下面的坑）
+# 核对"实际发布"的端口：期望只有 nginx 的 80/443 与 backend 的 127.0.0.1:8123，
+# 不应出现 mysql/redis 的 3306/6379（它们只在编排网络内可达，见下面的坑）
 docker compose config | grep -A2 "published" | head -30
 # 核对四个服务都挂在自定义网络 ai-code-net 上（漏挂服务 → 服务名解析不了 → 后端起不来）
 # 期望 6：mysql/redis/backend/nginx 各 1 次 + 网络定义 2 次（ai-code-net: 与 name: ai-code-net）
@@ -228,21 +234,22 @@ docker compose config | grep -A6 "^networks:"
 ```
 
 **预期**：打印 `配置 OK`，列出 `CODE_DEPLOY_HOST: https://wlbc.top/dist` 和各服务 `mem_limit`，
-以及网络定义里的 `subnet: 10.201.0.0/24`。
+以及网络定义里的 `subnet: 10.201.0.0/24`；`published` 里**只有 80、443、127.0.0.1 的 8123**。
 
 > **坑：shell 里的同名环境变量会覆盖 `.env`**
 > compose 的优先级是「**当前 shell 的环境变量 > `.env` 文件**」。如果这台机器的 profile / 环境里
-> 已经导出过 `MYSQL_PORT`、`REDIS_PORT`、`COS_HOST`、`MYSQL_PASSWORD` 之类的变量，
-> 那么 `.env` 里写的值**不会生效**（实测：环境里 `REDIS_PORT=14073` 时，Redis 就发布到 14073 而不是 `.env` 的 6379）。
+> 已经导出过 `MYSQL_PASSWORD`、`CODE_DEPLOY_HOST`、`COS_HOST` 之类的变量，
+> 那么 `.env` 里写的值**不会生效**（实测踩过：环境里残留的 `REDIS_PORT` 曾让 Redis 发布到 14073 而不是 6379；
+> 现在 mysql/redis 已不再发布端口，这个变量也就用不到了，但同样的机制对其它变量照样成立）。
 > 排查方法：
 > ```bash
 > # 看哪些同名变量被 shell 覆盖了
-> env | grep -E '^(MYSQL|REDIS|COS|AI|SERVER|NGINX|CODE|DEPLOY)_' 
+> env | grep -E '^(MYSQL|REDIS|COS|AI|SERVER|NGINX|CODE|DEPLOY)_'
 > # 核对实际生效的端口
 > docker compose config | grep -B1 -A1 published
 > ```
-> 想让 `.env` 说了算：`unset REDIS_PORT MYSQL_PORT COS_HOST` 后重新执行，
-> 或每次都用干净环境：`env -u REDIS_PORT -u MYSQL_PORT docker compose up -d`。
+> 想让 `.env` 说了算：`unset MYSQL_PASSWORD COS_HOST` 后重新执行，
+> 或每次都用干净环境：`env -u MYSQL_PASSWORD -u COS_HOST docker compose up -d`。
 
 **失败怎么办**：报 `请在 .env 中设置 XXX` → 说明 `.env` 里该项还是空值/模板值，回去补；报 YAML 缩进错 → 检查是否误编辑了 `docker-compose.yaml`。
 
@@ -303,6 +310,9 @@ BACKEND_BUILD_TARGET=runtime docker compose build backend
 
 **在干什么**：先把数据库起来，并**首次执行建表脚本** `src/main/resources/sql/ai_code_db.sql`（用户表、应用表、对话历史表 + 索引）。这一步做完再起后端，避免后端连不上库刷一堆报错。
 
+> mysql / redis **不发布宿主机端口**，所以只能用容器内客户端验证（下面这条），
+> 宿主机上 `mysql -h127.0.0.1` / `redis-cli` 是连不上的——这是刻意的，见编排里的注释。
+
 ```bash
 docker compose up -d mysql redis
 docker compose ps                       # 等 STATUS 变成 healthy（约 30~60 秒）
@@ -313,6 +323,8 @@ docker compose logs --tail=50 mysql     # 看到 "ready for connections" 即完�
 
 ```bash
 docker compose exec mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_code_db -e "show tables;"'
+# Redis 同理（容器内客户端）
+docker compose exec redis sh -c 'redis-cli --no-auth-warning -a "$REDIS_PASSWORD" ping'   # PONG
 ```
 
 **预期**：列出 `app`、`chat_history`、`user` 三张表。
@@ -437,14 +449,29 @@ docker compose exec backend curl -sI https://wlbc.top/dist/ | head -1
    | 443（nginx，HTTPS） | 所有网卡 | 公网 | **必须开放**（真正承载业务）；要换端口改 `.env` 的 `NGINX_SSL_PORT` |
    | 80（nginx，跳转） | 所有网卡 | 公网 | 建议开放（http 自动跳 https + 备用探活）；要换端口改 `.env` 的 `NGINX_PORT` |
    | 8123（后端） | `127.0.0.1` | 仅宿主机 | 已是安全默认；要外部直连才把 `SERVER_BIND` 改成 `0.0.0.0` |
-   | `MYSQL_PORT` | `0.0.0.0` | 公网 | 用 Navicat 从本机连才需要；否则把 `MYSQL_BIND` 改成 `127.0.0.1` |
-   | `REDIS_PORT` | `0.0.0.0` | 公网 | 同上，改 `REDIS_BIND` |
+   | 3306 / 6379（MySQL / Redis） | **不发布** | 只有编排网络内的容器 | 不用收紧：编排里根本没有 `ports:`；临时排查用 SSH 隧道（见下），别改成发布到 `0.0.0.0` |
 
    ```bash
    # 改完绑定地址后重建容器生效
    docker compose up -d
-   # 核对实际监听情况（应只看到你允许的绑定）
-   sudo ss -lntp | grep -E ':(80|443|8123|3306|6379)\b'
+   # 核对实际监听情况：应只看到 443、80（以及 127.0.0.1 上的 8123）
+   sudo ss -lntp | grep -E ':(80|443|8123)\b'
+   # 反向确认数据库/Redis 没有对外监听（没有任何输出才是对的）
+   sudo ss -lntp | grep -E ':(3306|6379)\b' || echo "3306/6379 未对外监听（正确）"
+   ```
+
+   **需要用 Navicat / DBeaver / RedisInsight 看数据**时，别把端口发布到公网，用 SSH 隧道直连**容器 IP**：
+
+   ```bash
+   # ① 服务器上取容器 IP（每次重建容器可能变，先取一次）
+   docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ai-code-mysql   # 例如 10.201.0.2
+   docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ai-code-redis   # 例如 10.201.0.3
+
+   # ② 本地（Windows PowerShell 自带 ssh）建立隧道：本机 13306/16379 → 容器 3306/6379
+   ssh -N -L 13306:10.201.0.2:3306 -L 16379:10.201.0.3:6379 <用户>@<服务器IP>
+
+   # ③ 图形工具连 127.0.0.1:13306（MySQL）/ 127.0.0.1:16379（Redis，密码就是 .env 的 REDIS_PASSWORD）
+   #    注意隧道期间凭据仍会经过你的 SSH 连接，公网上没有任何新端口被打开
    ```
 
 3. **HTTPS 证书**：仓库里已经带好了腾讯云免费 DV 证书（TrustAsia 签发），不用自己生成：

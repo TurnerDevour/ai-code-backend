@@ -2,13 +2,17 @@
 # ai-code-backend 一键部署编排
 #
 # 服务构成：
-#   mysql   —— 业务库，首次启动自动执行 src/main/resources/sql/ai_code_db.sql
-#   redis   —— Spring Session + 对话记忆（JedisChatMemoryStore）存储
+#   mysql   —— 业务库，首次启动自动执行 src/main/resources/sql/ai_code_db.sql（**不发布端口**，见该服务注释）
+#   redis   —— Spring Session + 对话记忆（JedisChatMemoryStore）存储（**不发布端口**）
 #   backend —— 本项目（Dockerfile 构建）：AI 代码生成 + Vue 工程构建 + Selenium 截图
-#   nginx   —— 生产统一入口 http://wlbc.top
+#   nginx   —— 生产统一入口 https://wlbc.top（80 只做 301 跳转，业务在 443）
 #                /api/...            -> 反代 backend:8123
 #                /dist/{deployKey}/  -> 用户生成并部署的静态站点
 #                /                   -> 前端站点（frontend-dist 目录）
+#
+# 对外只发布 nginx 的 80/443 与 backend 的 127.0.0.1:8123：
+#   mysql / redis 只在本编排网络内可达（服务名解析），宿主机与公网都连不到，
+#   需要图形工具时走 SSH 隧道直连容器 IP（见这两个服务的注释）。
 #
 # 网络：四个服务都接在自定义 bridge 网络 ai-code-net 上（见文件末尾 networks:），
 #      服务之间用服务名互相解析（backend -> mysql:3306 / redis:6379）。
@@ -16,7 +20,7 @@
 # 使用：
 #   1. cp .env.example .env 并填好密钥（首次部署可复制 application-prod.yaml 里的值）
 #   2. docker compose up -d --build
-#   3. 接口文档：http://wlbc.top/api/doc.html
+#   3. 接口文档：https://wlbc.top/api/doc.html
 # =============================================================================
 name: ai-code-backend
 
@@ -45,11 +49,27 @@ services:
       - mysql-data:/var/lib/mysql
       # 只在数据目录为空（首次启动）时执行一次；脚本含 create table / alter table，不是幂等脚本
       - ./src/main/resources/sql/ai_code_db.sql:/docker-entrypoint-initdb.d/01-ai_code_db.sql:ro
-    ports:
-      # 默认允许从外部连库（方便用 Navicat 等工具看数据）。
-      # 不需要外部连库时把 .env 的 MYSQL_BIND 改成 127.0.0.1 更安全。
-      # 注意：Docker 发布的端口会绕过 ufw/firewalld，真正的门禁是云安全组。
-      - "${MYSQL_BIND:-0.0.0.0}:${MYSQL_PORT:-3306}:3306"
+    # 刻意**不发布到宿主机**：backend 在同一张编排网络里用服务名连它（mysql:3306），
+    # 宿主机和公网都不需要这个端口。发布端口的两个代价：
+    #   1. Docker 直接写 iptables/nftables 的 DOCKER 链，**绕过 ufw/firewalld**，门禁只剩云防火墙；
+    #   2. 一旦绑到 0.0.0.0 就等于把库摆到公网 —— 3306/6379 是全网扫描的重灾区，弱口令会被直接爆破。
+    #
+    # 日常查库（不需要任何宿主机端口）：
+    #   docker compose exec mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_code_db -e "show tables;"'
+    #
+    # 需要用 Navicat / DBeaver 图形工具时，走 SSH 隧道直连**容器 IP**，同样不用发布端口：
+    #   # 服务器上取容器 IP（例如 10.201.0.2）
+    #   docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ai-code-mysql
+    #   # 本地执行（把 3306 隧道到本机 13306），然后 Navicat 连 127.0.0.1:13306
+    #   ssh -L 13306:10.201.0.2:3306 <用户>@<服务器IP>
+    #
+    # 兜底：确实需要宿主机端口时，临时加回下面两行并 docker compose up -d mysql，
+    # **只绑 127.0.0.1**（绝不写 0.0.0.0），用完删掉再 up -d，否则端口会一直开着：
+    #   ports:
+    #     - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
+    # expose 只是声明"本网络内提供这个端口"，不会发布到宿主机
+    expose:
+      - "3306"
     # 内存上限：小机器上必须给每个容器设限，避免某个容器把宿主机吃光后被内核随机 OOM
     mem_limit: 800m
     networks:
@@ -86,9 +106,21 @@ services:
       - allkeys-lru
     volumes:
       - redis-data:/data
-    ports:
-      # 同 MySQL：不需要外部连 Redis 就把 REDIS_BIND 改成 127.0.0.1
-      - "${REDIS_BIND:-0.0.0.0}:${REDIS_PORT:-6379}:6379"
+    # 同 MySQL：**不发布端口**。Redis 里存的是 Session 与对话记忆，暴露到公网等于会话可被他人读取/篡改，
+    # 而且它只有一层 requirepass 口令；backend 用服务名 redis:6379 连，宿主机不需要这个端口。
+    #
+    # 日常查 Redis：
+    #   docker compose exec redis sh -c 'redis-cli --no-auth-warning -a "$REDIS_PASSWORD" info keyspace'
+    #
+    # 需要图形工具（Another Redis Desktop / RedisInsight）时同样走 SSH 隧道到容器 IP：
+    #   docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ai-code-redis
+    #   ssh -L 16379:10.201.0.3:6379 <用户>@<服务器IP>      # 本地工具连 127.0.0.1:16379
+    #
+    # 兜底（临时需要宿主机端口时，只绑本机，用完删掉）：
+    #   ports:
+    #     - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    expose:
+      - "6379"
     mem_limit: 320m
     networks:
       - ai-code-net

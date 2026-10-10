@@ -40,6 +40,12 @@ backend ──> 阿里云百炼 / 腾讯云 COS / npm registry（公网）
 > 其它 Host（IP、以及截图兜底用的 `host.docker.internal`）保留 `/dist/` 与 `/nginx-health` 的 http 直连，
 > 原因是跳到 https 后证书与这些 Host 不匹配，浏览器会直接拒绝（详见第 5 节与 `docker/nginx.conf` 里的注释）。
 
+> **对外只发布三个端口**：nginx 的 `80`、`443`，以及 backend 的 `127.0.0.1:8123`（只绑本机，宿主机调试用）。
+> **mysql / redis 不发布任何宿主机端口**（编排里没有 `ports:`，只声明了 `expose:`），
+> 它们只挂在 `ai-code-net` 上、由 backend 用服务名访问。这样做的原因：Docker 发布端口会绕过 ufw/firewalld，
+> 且 `3306` / `6379` 是全网扫描与爆破的重灾区，Redis 里还存着 Session（暴露 = 会话可被读取/篡改）。
+> 需要图形客户端时用 SSH 隧道直连容器 IP，见第 8 节。
+
 **网络**：所有服务接在同一张自定义 bridge 网络 `ai-code-net` 上（`docker-compose.yaml` 末尾 `networks:`），
 不用 compose 默认生成的 `<项目名>_default`：
 
@@ -217,10 +223,25 @@ docker compose up -d backend             # 改完 .env 后必须用 up -d 重建
 docker compose build backend && docker compose up -d backend   # jar 模式升级：先传新 app.jar 再执行这行
 docker compose down                      # 停止（保留数据卷）
 docker compose down -v                   # 停止并删除数据卷（会清空数据库和已部署站点）
-docker compose exec mysql mysql -uroot -p ai_code_db   # 进库
+docker compose exec mysql mysql -uroot -p ai_code_db   # 进库（mysql 不发布端口，只能用容器内客户端）
 docker compose exec backend sh                          # 进容器排查
 docker compose exec nginx nginx -t                      # 校验 nginx 配置（改完 nginx.conf 先跑这条）
 docker compose restart nginx                            # 换证书后重启（配置不变，不用重建容器）
+```
+
+数据库 / Redis（都不发布宿主机端口，见第 2 节）：
+
+```bash
+# 查表
+docker compose exec mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_code_db -e "show tables;"'
+# 键空间与内存
+docker compose exec redis sh -c 'redis-cli --no-auth-warning -a "$REDIS_PASSWORD" info keyspace'
+# 确认没有对外监听（两条都应是空输出）
+sudo ss -lntp | grep -E ':(3306|6379)\b' || echo "3306/6379 未对外监听（正确）"
+# 需要用 Navicat/DBeaver/RedisInsight 时走 SSH 隧道直连容器 IP（不开任何公网端口）：
+#   服务器：docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ai-code-mysql
+#   本地：  ssh -N -L 13306:<容器IP>:3306 -L 16379:<redis容器IP>:6379 <用户>@<服务器IP>
+#   工具连 127.0.0.1:13306 / 127.0.0.1:16379
 ```
 
 HTTPS / 证书自查：
@@ -254,3 +275,6 @@ docker compose exec mysql sh -c 'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" 
 | `http://wlbc.top` 打不开，但 `https://` 正常 | 80 端口没放行或被占用；`.env` 的 `NGINX_PORT`、云防火墙的 80 规则 |
 | `https://wlbc.top` 连接超时/被拒 | 443 没在云防火墙放行（腾讯云轻量：控制台 → 实例 → 防火墙）；`sudo ss -lntp \| grep 443` 看容器是否真在监听 |
 | 页面能开但封面图不显示 | `CODE_DEPLOY_HOST` 必须是 https（否则混合内容被拦）；容器内能否访问见第 4 节 |
+| Navicat / DBeaver 连不上 3306、RedisInsight 连不上 6379 | 这是**刻意不发布端口**（见第 2 节）；改用第 8 节的容器内命令或 SSH 隧道直连容器 IP。⚠️ 不要为了让工具连上就把 `ports` 加成 `0.0.0.0:3306:3306` —— 那等于把库放到公网 |
+| 想确认数据库/Redis 有没有被暴露 | 服务器上 `sudo ss -lntp \| grep -E ':(3306\|6379)\b'`：**没有任何输出**才是对的；再 `docker compose config \| grep -A2 published` 应只看到 80/443/8123 |
+| 改完 `ports` 或绑定地址后没生效 | 端口映射属于容器创建参数：必须 `docker compose up -d <服务>`（重建容器），`restart` 不生效 |
