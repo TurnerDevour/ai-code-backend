@@ -88,8 +88,9 @@ mybatis-flex:
   configuration:
     log-impl: ''
 
-# 应用部署地址前缀（生产统一入口 http://wlbc.top）：
-# 部署产物被复制到 temp/code_deploy/{deployKey}/，由 nginx 以 http://wlbc.top/dist/{deployKey}/ 对外提供；
-# 这个值同时用于返回给前端和后台截图，所以必须是"容器内也能访问到"的地址（详见 DOCKER.md）
+# 应用部署地址前缀（生产统一入口 https://wlbc.top，80 只做 301 跳转）：
+# 部署产物被复制到 temp/code_deploy/{deployKey}/，由 nginx 以 https://wlbc.top/dist/{deployKey}/ 对外提供；
+# 这个值同时用于返回给前端和后台截图，所以必须是"容器内也能访问到"的地址（详见 DOCKER.md），
+# 也必须是 https——前端页面是 https，给 http 地址会被浏览器当混合内容拦掉
 code:
-  deploy-host: ${CODE_DEPLOY_HOST:http://wlbc.top/dist}
+  deploy-host: ${CODE_DEPLOY_HOST:https://wlbc.top/dist}

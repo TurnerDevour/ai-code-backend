@@ -5,6 +5,7 @@ target/
 
 ### temp ###
 temp/
+/src/main/resources/ssl_nginx/
 
 ### STS ###
 .apt_generated

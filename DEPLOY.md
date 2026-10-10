@@ -1,6 +1,6 @@
 # 部署步骤详解
 
-**目标环境**：Ubuntu Server 24.04 LTS 64bit（x86_64）· 2 核 4G · 域名 `http://wlbc.top`
+**目标环境**：Ubuntu Server 24.04 LTS 64bit（x86_64）· 2 核 4G · 域名 `https://wlbc.top`
 （跑在容器里的系统是 Debian 12，与宿主发行版无关；本文按 Ubuntu 24.04 写命令）
 
 > 本文是**按顺序照抄即可**的操作手册；每一步都说明「在干什么 / 怎么验证 / 失败了怎么办」。
@@ -17,9 +17,9 @@
 | 5 | 构建后端镜像（只装运行时 + 换 jar） | 2~3 分钟 | 有 `ai-code-backend:1.0.0` 镜像 |
 | 6 | 只启动 MySQL + Redis | 1~2 分钟 | 库表已建好、健康 |
 | 7 | 启动 backend | 1~2 分钟 | 健康检查通过 |
-| 8 | 启动 nginx 并验证路由 | 10 秒 | `/api` 与 `/dist` 都通 |
-| 9 | 域名解析 + 云安全组放行 | 5 分钟 | 浏览器能打开 |
-| 10 | **打包前端并发布到 nginx** | 3~5 分钟 | `http://wlbc.top/` 打开是前端页面 |
+| 8 | 启动 nginx 并验证路由（含 https 证书） | 10 秒 | `/api` 与 `/dist` 都通，`nginx -t` 通过 |
+| 9 | 域名解析 + 云防火墙放行 80/443 + 证书检查 | 5 分钟 | 浏览器能打开 🔒 https |
+| 10 | **打包前端并发布到 nginx** | 3~5 分钟 | `https://wlbc.top/` 打开是前端页面 |
 | 11 | 业务冒烟（注册→提权→生成→部署→截图） | 10 分钟 | 全链路可用 |
 | 12 | 收尾（自启/日志/备份） | 5 分钟 | 可长期运行 |
 | 13 | 以后每次升级（后端 + 前端） | 每次 5~10 分钟 | — |
@@ -80,7 +80,7 @@ free -h
 1. **别用 `apt install docker.io`**：noble 仓库里是 24.0.x，还要自己另装 compose 插件；官方脚本一步到位。
 2. **不要启用 ufw**（Ubuntu Server 默认就是关闭状态，保持关闭即可）：Docker 发布端口时直接写
    iptables/nftables 的 `DOCKER` 链，**绕过 ufw 规则**，开了反而容易出现"规则看着对、端口其实还是通的"。
-   这台机器的门禁统一用**云安全组**（见第 9 步）。
+   这台机器的门禁统一用**云防火墙/安全组**（腾讯云轻量应用服务器叫"防火墙"，CVM 叫"安全组"，见第 9 步）。
 3. Ubuntu 24.04 默认就是 **cgroup v2**，compose 里的 `mem_limit` 直接生效，不用改 grub。
 
 **失败怎么办**：
@@ -97,12 +97,14 @@ free -h
 它只需要这些：
 
 ```
-app.jar                              ← 本地打好的可执行 jar（镜像里真正跑的东西）
-Dockerfile                           ← 怎么把 jar 装成镜像
-docker-compose.yml                   ← 四个服务的编排
-.dockerignore                        ← 让 temp/、frontend-dist/ 等不进构建上下文
-.env                                 ← 密钥/密码/域名
-docker/entrypoint.sh, nginx.conf     ← 启动脚本、nginx 配置
+app.jar                               ← 本地打好的可执行 jar（镜像里真正跑的东西）
+Dockerfile                            ← 怎么把 jar 装成镜像
+docker-compose.yaml                   ← 四个服务的编排
+.dockerignore                         ← 让 temp/、frontend-dist/ 等不进构建上下文
+.env                                  ← 密钥/密码/域名
+docker/entrypoint.sh, nginx.conf      ← 启动脚本、nginx 配置
+src/main/resources/ssl_nginx/         ← HTTPS 证书（wlbc.top_bundle.crt + wlbc.top.key）
+                                        nginx 是从宿主机挂载这个目录的，**不跟着传就起不来**
 src/main/resources/sql/ai_code_db.sql ← MySQL 首次启动建表用（compose 挂载的文件）
 ```
 
@@ -130,7 +132,8 @@ Get-ChildItem target\*.jar* | Select-Object Name, @{n='MB';e={[math]::Round($_.L
 Copy-Item target\ai-code-backend-1.0.0.jar app.jar -Force
 
 # 打包"服务器需要的东西"：注意不含 src/main/java、不含 pom.xml
-tar -czf deploy.tgz Dockerfile docker-compose.yml .dockerignore .env docker app.jar src/main/resources/sql/ai_code_db.sql
+# src/main/resources/ssl_nginx 是 HTTPS 证书，nginx 从宿主机挂载它，必须一起打包
+tar -czf deploy.tgz Dockerfile docker-compose.yaml .dockerignore .env docker app.jar src/main/resources/ssl_nginx src/main/resources/sql/ai_code_db.sql
 
 # 上传到服务器（实测包大小约 94 MB，jar 本身 103 MB）
 scp deploy.tgz <用户名>@<服务器IP>:/opt/
@@ -147,9 +150,10 @@ tar -xzf /opt/deploy.tgz && rm -f /opt/deploy.tgz
 
 ```bash
 ls -a
-# 期望：.dockerignore  .env  Dockerfile  app.jar  docker  docker-compose.yml  src
+# 期望：.dockerignore  .env  Dockerfile  app.jar  docker  docker-compose.yaml  src
 ls docker                        # entrypoint.sh  nginx.conf
 ls src/main/resources/sql        # ai_code_db.sql（MySQL 首次建表用，别删）
+ls src/main/resources/ssl_nginx  # wlbc.top_bundle.crt  wlbc.top.key（HTTPS 证书，缺了 nginx 起不来）
 ls -lh app.jar                   # 约 103MB —— 只有几十 KB 说明传成了 .jar.original
 
 # 更严格：确认清单里有 Spring Boot 启动类（unzip 没装就 apt install -y unzip）
@@ -191,10 +195,11 @@ vi .env
 | `MYSQL_ROOT_PASSWORD` | 自定义强密码 | 容器内 root 密码，只在**首次**初始化时生效 |
 | `MYSQL_PASSWORD` | 自定义强密码 | 应用连库用的密码，同样只在首次初始化生效 |
 | `REDIS_PASSWORD` | 自定义强密码 | Redis 密码 |
-| `CODE_DEPLOY_HOST` | `http://wlbc.top/dist` | 已填好；**必须容器内也能访问**（第 8 步会验证） |
+| `CODE_DEPLOY_HOST` | `https://wlbc.top/dist` | 已填好；**必须容器内也能访问**（第 8 步会验证），且必须是 **https**（前端页面是 https，给 http 地址会被浏览器当混合内容拦掉） |
 | `COS_*` | 腾讯云密钥 | 不填也能跑，但部署后没有封面图 |
 | `AI_BASE_URL / AI_WORKSPACE_ID / AI_API_KEY` | 阿里云百炼 | 不填则代码生成接口不可用 |
-| `NGINX_PORT` | `80` | wlbc.top 不带端口访问就是 80 |
+| `NGINX_PORT` | `80` | http 入口，只做 301 跳转到 https |
+| `NGINX_SSL_PORT` | `443` | https 入口，承载全部业务（443 要在云防火墙放行，见第 9 步） |
 | `DOCKER_SUBNET` | `10.201.0.0/24` | 容器自定义网络 `ai-code-net` 的网段，**刻意避开 Docker 默认池 172.17~172.31**；部署前先用 `ip -4 addr show \| grep inet` 核对本机/VPC 网段，撞了就换成 `10.202.0.0/24` 之类 |
 | `NPM_REGISTRY` | 已默认 `https://registry.npmmirror.com` | 用户工程构建时 `npm install` 用 |
 | `JAVA_OPTS` | 已按 2 核 4G 调好 | 堆 1G、Chrome 池 2 |
@@ -222,7 +227,7 @@ docker compose config | grep -c "ai-code-net"
 docker compose config | grep -A6 "^networks:"
 ```
 
-**预期**：打印 `配置 OK`，列出 `CODE_DEPLOY_HOST: http://wlbc.top/dist` 和各服务 `mem_limit`，
+**预期**：打印 `配置 OK`，列出 `CODE_DEPLOY_HOST: https://wlbc.top/dist` 和各服务 `mem_limit`，
 以及网络定义里的 `subnet: 10.201.0.0/24`。
 
 > **坑：shell 里的同名环境变量会覆盖 `.env`**
@@ -359,60 +364,78 @@ docker network inspect ai-code-net --format '{{range .IPAM.Config}}subnet={{.Sub
 
 **在干什么**：nginx 是唯一对外入口，一次配好三条规则 —— `/` 给前端站点、`/api/...` 反代到后端、
 `/dist/{deployKey}/` 提供用户部署的静态站点（前端产物到第 10 步才发布，所以这一步 `/` 先返回 404 是正常的）。
+80 端口只做 301 跳转，业务全在 **443（HTTPS）** 上；证书来自 `src/main/resources/ssl_nginx/`（见第 9 步的说明）。
 
 ```bash
 docker compose up -d nginx
 docker compose ps
+# 先确认容器里的证书与配置没问题（有问题这里就会报出来，不用等浏览器）
+docker compose exec nginx nginx -t
 ```
 
-**验证**（三条命令都要通）：
+**验证**（下面几条都要通；用 `--resolve` 指向本机，这样不依赖第 9 步的 DNS 解析）：
 
 ```bash
-# ① API 路由：应返回 200
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1/api/health
+# ① http 必须跳 https：期望 301，且 Location 是 https://wlbc.top/api/health
+curl -sI --resolve wlbc.top:80:127.0.0.1 http://wlbc.top/api/health | head -2
 
-# ② 健康探针
-curl -s http://127.0.0.1/nginx-health          # ok
+# ② https 的 API 路由：应返回 200（证书可信，不需要 -k）
+curl -s -o /dev/null -w '%{http_code}\n' --resolve wlbc.top:443:127.0.0.1 https://wlbc.top/api/health
 
-# ③ 部署目录路由：还没有任何部署，返回 403/404 都算正常，关键是不能是 502/连不上
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1/dist/
+# ③ 健康探针（80 与 443 各一个，都应输出 ok）
+curl -s http://127.0.0.1/nginx-health                                  # ok
+curl -s --resolve wlbc.top:443:127.0.0.1 https://wlbc.top/nginx-health  # ok
 
-# ④ 最关键的：后端容器内能不能访问到截图用的地址（域名回流）
-docker compose exec backend curl -sI http://wlbc.top/dist/ | head -1
+# ④ 部署目录路由：还没有任何部署，返回 403/404 都算正常，关键是不能是 502/连不上
+curl -s -o /dev/null -w '%{http_code}\n' --resolve wlbc.top:443:127.0.0.1 https://wlbc.top/dist/
+
+# ⑤ 证书信息（确认用的是 wlbc.top 这张、且有效期没读到过期的旧文件）
+echo | openssl s_client -connect 127.0.0.1:443 -servername wlbc.top 2>/dev/null \
+  | openssl x509 -noout -subject -dates
+
+# ⑥ 最关键的：后端容器内能不能访问到截图用的地址（域名回流）
+docker compose exec backend curl -sI https://wlbc.top/dist/ | head -1
 ```
 
-> 此时访问 `http://127.0.0.1/` 会是 **404**：根路径留给前端产物，而前端要到第 10 步才发布。
+> 此时访问 `https://wlbc.top/`（或 `http://127.0.0.1/`）会是 **404**：根路径留给前端产物，而前端要到第 10 步才发布。
 > 这不是故障，第 10 步发布完就正常了。
 
-**第 ④ 条的两种结果**：
-- 打印出 `HTTP/1.1 301` 或 `403`/`404` → ✅ 通，截图功能可用
+**第 ⑥ 条的两种结果**：
+- 打印出 `HTTP/1.1 403`/`404`（或部署过之后的 `200`）→ ✅ 通，截图功能可用
 - 报 `Couldn't connect to server` → 服务器上的 NAT 回流被禁或域名还没解析，先按下面兜底，再排查网络：
   ```bash
   # 临时改用宿主机地址，保证封面截图可用（改完执行 docker compose up -d backend）
+  # 这里刻意用 http：nginx 的 80 端口对非规范 Host 保留了 /dist 的直连（不跳转），
+  # 否则 host.docker.internal 会被跳到 https，而证书是按 wlbc.top 签发的，Chrome 会直接拒绝
   sed -i 's#^CODE_DEPLOY_HOST=.*#CODE_DEPLOY_HOST=http://host.docker.internal/dist#' .env
   docker compose up -d backend
   ```
 
 ---
 
-## 第 9 步：域名解析 + 云安全组 + 浏览器验收
+## 第 9 步：域名解析 + 云防火墙 + HTTPS 证书 + 浏览器验收
 
-**在干什么**：让 `http://wlbc.top` 真正指向这台服务器。
+**在干什么**：让 `https://wlbc.top` 真正指向这台服务器，并确认证书链没问题。
 
-1. **DNS**：在域名解析处加 A 记录，`wlbc.top` → 服务器公网 IP。验证：
+1. **DNS**：在域名解析处加 A 记录，`wlbc.top` → 服务器公网 IP（证书 SAN 里还有 `www.wlbc.top`，
+   想同时用 www 访问就再加一条）。验证：
    ```bash
    dig +short wlbc.top        # 应输出你的公网 IP（没装 dig 就 apt install -y dnsutils）
    ```
-2. **云安全组**：在云控制台的**安全组**里放行入方向 **TCP 80**（这是唯一必须放行的端口，也是真正的门禁）。
+2. **云防火墙/安全组**：放行入方向 **TCP 80 与 TCP 443**（443 承载业务，80 只做跳转）。
+   - 腾讯云**轻量应用服务器**：控制台 → 该实例 → **防火墙** → 添加规则 `TCP:443`（80 通常已默认放行）
+   - 腾讯云 CVM/其它云：在**安全组**里加同样的入方向规则
+   - 只放行 443 也能用，但用户手敲 http:// 时会直接连不上（没有跳转）
 
    > **Ubuntu 24.04 上请保持 ufw 关闭**（默认就是关闭的，不用动它）：
    > Docker 发布端口时直接写 iptables/nftables 的 `DOCKER` 链，**会绕过 ufw 规则** ——
-   > `ufw allow 80` 既不能真正放行、也拦不住已发布的容器端口，开了只会让网络排查变复杂。
+   > `ufw allow 443` 既不能真正放行、也拦不住已发布的容器端口，开了只会让网络排查变复杂。
    > 需要限制暴露面时，用编排里的绑定地址来做（见下表），比 ufw 可靠。
 
    | 端口 | 默认绑定 | 谁能访问 | 怎么收紧 |
    | --- | --- | --- | --- |
-   | 80（nginx） | 所有网卡 | 公网 | 必须开放；若要换端口改 `.env` 的 `NGINX_PORT` |
+   | 443（nginx，HTTPS） | 所有网卡 | 公网 | **必须开放**（真正承载业务）；要换端口改 `.env` 的 `NGINX_SSL_PORT` |
+   | 80（nginx，跳转） | 所有网卡 | 公网 | 建议开放（http 自动跳 https + 备用探活）；要换端口改 `.env` 的 `NGINX_PORT` |
    | 8123（后端） | `127.0.0.1` | 仅宿主机 | 已是安全默认；要外部直连才把 `SERVER_BIND` 改成 `0.0.0.0` |
    | `MYSQL_PORT` | `0.0.0.0` | 公网 | 用 Navicat 从本机连才需要；否则把 `MYSQL_BIND` 改成 `127.0.0.1` |
    | `REDIS_PORT` | `0.0.0.0` | 公网 | 同上，改 `REDIS_BIND` |
@@ -421,14 +444,36 @@ docker compose exec backend curl -sI http://wlbc.top/dist/ | head -1
    # 改完绑定地址后重建容器生效
    docker compose up -d
    # 核对实际监听情况（应只看到你允许的绑定）
-   sudo ss -lntp | grep -E ':(80|8123|3306|6379)\b'
+   sudo ss -lntp | grep -E ':(80|443|8123|3306|6379)\b'
    ```
 
-3. **浏览器验收**：
-   - 接口文档：`http://wlbc.top/api/doc.html`（默认 `admin` / `admin123`，**上线后请改掉**，见第 12 步）
-   - 健康检查：`http://wlbc.top/api/health`
+3. **HTTPS 证书**：仓库里已经带好了腾讯云免费 DV 证书（TrustAsia 签发），不用自己生成：
 
-**注意**：80 端口必须空闲。如果服务器上已有别的 nginx/apache 占用 80，先停掉它，或把 `.env` 的 `NGINX_PORT` 改成别的端口（那样地址就带端口了）。Ubuntu 上查占用：`sudo ss -lntp | grep :80`。
+   | 文件 | 作用 | nginx 里的位置 |
+   | --- | --- | --- |
+   | `src/main/resources/ssl_nginx/wlbc.top_bundle.crt` | 站点证书 + 中间证书（共 3 张，**顺序不能改**） | `ssl_certificate` |
+   | `src/main/resources/ssl_nginx/wlbc.top.key` | 私钥（与上面证书配对） | `ssl_certificate_key` |
+   | `src/main/resources/ssl_nginx/wlbc.top_bundle.pem` | 与 `.crt` 内容完全相同，仅备用 | 不用 |
+
+   compose 已把该目录只读挂到容器内的 `/etc/nginx/ssl`，所以换证书**不用改配置、不用重建镜像**：
+
+   ```bash
+   # 换新证书后（覆盖上面两个文件名即可）：
+   docker compose restart nginx
+   # 确认真的换上了：subject 应为 CN=wlbc.top，notAfter 是新日期
+   echo | openssl s_client -connect 127.0.0.1:443 -servername wlbc.top 2>/dev/null | openssl x509 -noout -subject -dates
+   ```
+
+   > ⚠️ **这是一个 90 天的免费证书，有效期 2026-10-10 ~ 2027-01-08**，到期前必须在腾讯云重新申请并替换，
+   > 否则站点直接打不开。因为 nginx 开了 HSTS，证书过期后浏览器不会再给"继续访问"的入口，
+   > **请提前一周换**。续期与回滚步骤见 [DOCKER.md](DOCKER.md) 的"HTTPS 与证书续期"。
+
+4. **浏览器验收**：
+   - 接口文档：`https://wlbc.top/api/doc.html`（默认 `admin` / `admin123`，**上线后请改掉**，见第 12 步）
+   - 健康检查：`https://wlbc.top/api/health`
+   - 地址栏应是 🔒（证书有效、无混合内容）；`curl -sI http://wlbc.top/ | head -1` 应返回 `301`
+
+**注意**：80 与 443 端口都必须空闲。如果服务器上已有别的 nginx/apache 占用，先停掉它，或把 `.env` 的 `NGINX_PORT` / `NGINX_SSL_PORT` 改成别的端口（那样地址就带端口了）。Ubuntu 上查占用：`sudo ss -lntp | grep -E ':(80|443)\b'`。
 
 ---
 
@@ -446,7 +491,7 @@ docker compose exec backend curl -sI http://wlbc.top/dist/ | head -1
 | `VITE_APP_PREVIEW_BASE_URL` | `/api/static` | 同上（生成产物的预览） |
 | `VITE_APP_DEPLOY_BASE_URL` | `/dist` | `location /dist/` 提供用户部署的站点 |
 
-> 三个地址都是相对路径，所以**前端必须和后端同域**（都在 `http://wlbc.top` 下）。
+> 三个地址都是相对路径，所以**前端必须和后端同域**（都在 `https://wlbc.top` 下）。
 > 前端 `src/utils/request.ts` 里是 `withCredentials: true`，Session Cookie 一旦跨站就会被浏览器的
 > SameSite 策略拦掉，表现为"登录成功但下一个请求就未登录"。所以不要把前端单独放到别的域名。
 
@@ -495,11 +540,11 @@ cp -r /opt/ai-code-frontend/dist/* /opt/ai-code-backend/frontend-dist/
 
 ```bash
 ls /opt/ai-code-backend/frontend-dist/                 # 应看到 index.html 和 assets/
-curl -s -o /dev/null -w '%{http_code}\n' http://wlbc.top/        # 期望 200
-curl -s -o /dev/null -w '%{http_code}\n' http://wlbc.top/xxx/yyy  # 深链接也期望 200（SPA 回退到 index.html）
+curl -s -o /dev/null -w '%{http_code}\n' https://wlbc.top/        # 期望 200
+curl -s -o /dev/null -w '%{http_code}\n' https://wlbc.top/xxx/yyy  # 深链接也期望 200（SPA 回退到 index.html）
 ```
 
-浏览器打开 `http://wlbc.top/`，能看到前端首页（此时还没登录）。
+浏览器打开 `https://wlbc.top/`，能看到前端首页（此时还没登录）。
 
 **注意**：
 - 如果 `docker compose up -d nginx` 时 `frontend-dist/` 还不存在，Docker 会把它建成 **root 所有**的空目录，
@@ -508,7 +553,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://wlbc.top/xxx/yyy  # 深链接也
 - 同理，**别用 `sudo docker compose ...`**：sudo 跑出来的容器会以 root 创建挂载目录，
   后面普通用户上传前端、看日志都会遇到权限问题。第 1 步把用户加进 docker 组就是为了避免这件事。
 - 前端路由是 history 模式，刷新 `/xxx/yyy` 这类深链接由 nginx 的 `try_files ... /index.html` 兜住。
-- 如果还没发布前端就访问 `http://wlbc.top/`，会是 404 —— 根路径只有前端产物，这是正常的。
+- 如果还没发布前端就访问 `https://wlbc.top/`，会是 404 —— 根路径只有前端产物，这是正常的。
 
 ---
 
@@ -519,7 +564,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://wlbc.top/xxx/yyy  # 深链接也
 **11.1 注册第一个账号**（账号 4~20 位、密码 6~20 位，这是接口的校验规则）
 
 ```bash
-curl -s -X POST http://wlbc.top/api/user/register \
+curl -s -X POST https://wlbc.top/api/user/register \
   -H 'Content-Type: application/json' \
   -d '{"userAccount":"admin","userPassword":"Admin2026","checkPassword":"Admin2026"}'
 ```
@@ -537,14 +582,14 @@ docker compose exec mysql mysql -uroot -p"$DB_ROOT_PWD" ai_code_db \
 
 | 操作 | 观察点 |
 | --- | --- |
-| 登录 | `http://wlbc.top/api/user/get/login` 返回当前用户 |
+| 登录 | `https://wlbc.top/api/user/get/login` 返回当前用户 |
 | 创建应用 + 输入需求，开始生成 | 后端日志出现模型调用；页面能看到流式输出（SSE） |
 | 生成结束后的预览 | 预览地址是 `/api/static/{部署目录}/`，由 Spring 直接提供 |
-| 点「部署」 | 日志出现 `[npm] ...`（这就是容器里在跑 npm install / build），随后 `Vue 项目构建成功`、`应用部署成功，appId: ..., 部署地址: http://wlbc.top/dist/xxxxxx/` |
-| 打开部署地址 | 浏览器访问 `http://wlbc.top/dist/{deployKey}/` 页面正常 |
+| 点「部署」 | 日志出现 `[npm] ...`（这就是容器里在跑 npm install / build），随后 `Vue 项目构建成功`、`应用部署成功，appId: ..., 部署地址: https://wlbc.top/dist/xxxxxx/` |
+| 打开部署地址 | 浏览器访问 `https://wlbc.top/dist/{deployKey}/` 页面正常 |
 | 封面图 | 日志出现 `网页截图上传成功，cosUrl: ...`（截图失败不影响部署成功，但封面会空） |
 
-**部署很慢是正常的**：2 核机器上一个 Vue 工程 `npm install` + `build` 通常 1~3 分钟；同时部署会排队，队列水位看 `http://wlbc.top/api/health/deploy-queue`。
+**部署很慢是正常的**：2 核机器上一个 Vue 工程 `npm install` + `build` 通常 1~3 分钟；同时部署会排队，队列水位看 `https://wlbc.top/api/health/deploy-queue`。
 
 ---
 
@@ -623,8 +668,10 @@ ls -l /opt/ai-code-backend/frontend-dist/index.html /opt/ai-code-backend/fronten
 
 | 现象 | 先看哪里 | 大概率原因 |
 | --- | --- | --- |
-| 浏览器打不开 `http://wlbc.top` | `dig +short wlbc.top`；`docker compose ps` | DNS 没生效 / 安全组没放行 80 / nginx 没起 |
-| 打开 `http://wlbc.top/` 是 404 | `ls /opt/ai-code-backend/frontend-dist/` | 前端还没发布（第 10 步），或 `dist` 多套了一层目录（应为 `frontend-dist/index.html`） |
+| 浏览器打不开 `https://wlbc.top` | `dig +short wlbc.top`；`docker compose ps`；`sudo ss -lntp \| grep -E ':(80\|443)\b'` | DNS 没生效 / 云防火墙没放行 443（80 只影响 http 跳转）/ nginx 没起 |
+| 浏览器提示证书无效 / 过期 | 见 [DOCKER.md](DOCKER.md) 第 5 节 | 证书文件缺失、私钥不配对、或 90 天免费证书过期（有效期见第 5 节） |
+| `http://wlbc.top` 不跳转或打不开 | `curl -sI http://wlbc.top/ \| head -2` | 80 没放行/被占用；`.env` 的 `NGINX_PORT`；正常应返回 301 到 https |
+| 打开 `https://wlbc.top/` 是 404 | `ls /opt/ai-code-backend/frontend-dist/` | 前端还没发布（第 10 步），或 `dist` 多套了一层目录（应为 `frontend-dist/index.html`） |
 | 前端页面能打开，但接口全 404 / 跨域报错 | 浏览器 F12 → Network 看请求地址 | 请求没打到同域 `/api`；正确做法见第 10 步的 `VITE_API_BASE_URL=/api` |
 | 登录提示成功，下一个请求却变未登录 | F12 → Application → Cookies 里有没有 `SESSION` | Cookie 跨站被 SameSite 拦掉：前端必须与后端同域，不要分两个域名 |
 | 发版后前端还是旧页面 | `frontend-dist/assets/` 里的文件名有没有变 | 浏览器缓存（`index.html` 已 no-cache，强刷一次即可） |
@@ -641,5 +688,66 @@ ls -l /opt/ai-code-backend/frontend-dist/index.html /opt/ai-code-backend/fronten
 | 部署成功但封面为空 | `docker compose logs backend \| grep -i -E "chrom\|截图"` | 容器内访问不到 `wlbc.top`（第 8 步第 ④ 条）；或 COS 密钥不对 |
 | 截图里中文是方块 | — | 镜像里的 `fonts-noto-cjk` 被删了，别动 Dockerfile 那一行 |
 | 容器反复重启 | `docker inspect ai-code-backend --format '{{.State.OOMKilled}}'` | 内存不够：先把 `DEPLOY_QUEUE_WORKERS` 降到 1，再把 `-Xmx1024m` 降到 `896m` |
-| 部署排队很久 | `http://wlbc.top/api/health/deploy-queue` | 2 核机器正常现象；`workers` 不要超过 2 |
+| 部署排队很久 | `https://wlbc.top/api/health/deploy-queue` | 2 核机器正常现象；`workers` 不要超过 2 |
 | 生成的站点页面白屏 | 访问地址是否形如 `/dist/{key}/` 且**结尾带斜杠** | 产物是相对路径（`base: './'`），少了斜杠资源就找不到 |
+
+---
+
+## 附加：把**已经在跑**的站点从 http 原地升级到 https
+
+上面第 1~14 步是全新部署。如果站点已经在 http 上跑着（本文的目标场景），按下面 6 步升级即可，
+**不用重建后端镜像、不用重新打包前端**（前端三个地址都是相对路径，会跟着页面协议走）。
+换 https 不需要额外备案，域名已备案即可。
+
+```bash
+# ---------- 本地（Windows）：把新文件传上去 ----------
+cd D:\JAVA\ai-code-backend
+scp docker\nginx.conf          <用户>@<服务器IP>:/opt/ai-code-backend/docker/
+scp docker-compose.yaml        <用户>@<服务器IP>:/opt/ai-code-backend/
+# 证书目录：nginx 是从宿主机挂载它的，服务器上没有这个目录 nginx 直接起不来
+ssh <用户>@<服务器IP> "mkdir -p /opt/ai-code-backend/src/main/resources"
+scp -r src\main\resources\ssl_nginx <用户>@<服务器IP>:/opt/ai-code-backend/src/main/resources/
+```
+
+```bash
+# ---------- 服务器：改 .env ----------
+cd /opt/ai-code-backend
+sed -i 's#^CODE_DEPLOY_HOST=.*#CODE_DEPLOY_HOST=https://wlbc.top/dist#' .env
+grep -q '^NGINX_SSL_PORT=' .env || echo 'NGINX_SSL_PORT=443' >> .env
+grep -E '^(CODE_DEPLOY_HOST|NGINX_PORT|NGINX_SSL_PORT)=' .env
+# 期望：CODE_DEPLOY_HOST=https://wlbc.top/dist / NGINX_PORT=80 / NGINX_SSL_PORT=443
+
+# ---------- 服务器：先确认证书文件在 ----------
+ls -l src/main/resources/ssl_nginx/    # wlbc.top_bundle.crt + wlbc.top.key 都要在
+
+# ---------- 云控制台：放行 443（这一步不做，外网验证一定超时）----------
+# 腾讯云轻量应用服务器：控制台 → 该实例 → 防火墙 → 添加规则 TCP:443
+```
+
+```bash
+# ---------- 服务器：起 nginx（先校验配置，配置错会在这里直接报出来）----------
+docker compose up -d nginx
+docker compose exec nginx nginx -t
+docker compose ps
+
+# ---------- 服务器：backend 必须重建（CODE_DEPLOY_HOST 是环境变量注入的）----------
+# 注意：restart 不会重读 .env，必须 up -d
+docker compose up -d backend
+
+# ---------- 验收 ----------
+curl -sI http://wlbc.top/ | head -2                                      # 期望 301 → https://wlbc.top/
+curl -s -o /dev/null -w '%{http_code}\n' https://wlbc.top/api/health      # 期望 200
+curl -s https://wlbc.top/nginx-health                                    # ok
+docker compose exec backend curl -sI https://wlbc.top/dist/ | head -1     # 截图用的地址（403/404 也算通）
+echo | openssl s_client -connect 127.0.0.1:443 -servername wlbc.top 2>/dev/null | openssl x509 -noout -subject -dates
+```
+
+**升级后的预期与注意事项**：
+
+- 浏览器第一次访问 `http://wlbc.top` 会拿到 301；被浏览器记过 http 的话 `Ctrl+F5` 强刷一次。
+- 已发出的部署链接不用改：同域名，`/dist/{key}/` 依旧可访问；页面里的封面/部署地址由
+  `CODE_DEPLOY_HOST` 生成，改完就是 https。
+- 前端不用重新构建（`VITE_API_BASE_URL=/api` 是相对路径，自动跟随页面协议）。
+- **回滚**：`.env` 里把 `CODE_DEPLOY_HOST` 改回 `http://wlbc.top/dist`，再用旧版 `docker/nginx.conf`
+  与 `docker-compose.yaml` 覆盖回去，`docker compose up -d` 即可（证书文件留着不影响）。
+- 证书 **2027-01-08 到期**（90 天免费证书），续期与排错见 [DOCKER.md](DOCKER.md) 第 5 节。
