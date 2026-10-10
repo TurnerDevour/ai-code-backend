@@ -468,7 +468,7 @@ docker compose exec backend curl -sI https://wlbc.top/dist/ | head -1
    docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ai-code-redis   # 例如 10.201.0.3
 
    # ② 本地（Windows PowerShell 自带 ssh）建立隧道：本机 13306/16379 → 容器 3306/6379
-   ssh -N -L 13306:10.201.0.2:3306 -L 16379:10.201.0.3:6379 <用户>@<服务器IP>
+   ssh -N -L 13306:10.201.0.3:3306 -L 16379:10.201.0.2:6379 ubuntu@43.163.77.64
 
    # ③ 图形工具连 127.0.0.1:13306（MySQL）/ 127.0.0.1:16379（Redis，密码就是 .env 的 REDIS_PASSWORD）
    #    注意隧道期间凭据仍会经过你的 SSH 连接，公网上没有任何新端口被打开
