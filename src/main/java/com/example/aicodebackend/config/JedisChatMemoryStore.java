@@ -6,12 +6,10 @@ import dev.langchain4j.data.message.ChatMessageSerializer;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
-import redis.clients.jedis.DefaultJedisClientConfig;
-import redis.clients.jedis.HostAndPort;
-import redis.clients.jedis.JedisClientConfig;
-import redis.clients.jedis.RedisClient;
+import redis.clients.jedis.*;
 import redis.clients.jedis.exceptions.JedisException;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -30,11 +28,11 @@ public class JedisChatMemoryStore implements ChatMemoryStore {
                                 int maxTotal, int maxIdle, int minIdle, long maxWaitMillis, int commandTimeoutMs) {
         this.ttlSeconds = ttlSeconds;
 
-        GenericObjectPoolConfig<redis.clients.jedis.Connection> poolConfig = new GenericObjectPoolConfig<>();
+        GenericObjectPoolConfig<Connection> poolConfig = new GenericObjectPoolConfig<>();
         poolConfig.setMaxTotal(maxTotal);
         poolConfig.setMaxIdle(maxIdle);
         poolConfig.setMinIdle(minIdle);
-        poolConfig.setMaxWait(java.time.Duration.ofMillis(maxWaitMillis));
+        poolConfig.setMaxWait(Duration.ofMillis(maxWaitMillis));
         poolConfig.setTestOnBorrow(true);
 
         JedisClientConfig clientConfig = DefaultJedisClientConfig.builder()
