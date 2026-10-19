@@ -10,9 +10,7 @@ import java.io.Serializable;
 @Schema(description = "应用部署请求体")
 public class AppDeployRequest implements Serializable {
 
-    /**
-     * 应用 id
-     */
+    /** 应用 id */
     @Schema(description = "应用 id", requiredMode = Schema.RequiredMode.REQUIRED)
     private Long appId;
 

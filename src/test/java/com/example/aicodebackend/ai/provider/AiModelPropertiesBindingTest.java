@@ -16,12 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@code ai.models} 配置绑定测试
- * <p>
- * 锁住一个很容易踩、又完全没有报错的坑：模型名里带 {@code .}（deepseek-v4.1-flash / qwen3.8-max /
- * qwen3.8-flash）时，key 必须写成 {@code "[deepseek-v4.1-flash]"}。Spring 的宽松绑定会把未转义的
- * {@code .} 当层级分隔符，直接写 {@code deepseek-v4.1-flash:} 会被解析成
- * {@code ai.models.deepseek-v4} → {@code 1-flash}，而且因为"未知字段默认忽略"，绑定不会报错，
- * 最后表现为"模型没配置"。
+ * 锁住一个很容易踩、又完全没有报错的坑：模型名里带 {@code .}（deepseek-v4.1-flash / qwen3.8-max /……
  */
 class AiModelPropertiesBindingTest {
 
@@ -149,7 +144,6 @@ class AiModelPropertiesBindingTest {
 
     /**
      * {@code ai.model-defaults} 里的共用配置会补到每个模型上，模型自己写过的值优先
-     * <p>
      * 这正是"base-url / api-key 不必在每个模型里抄一遍"的实现：只填空、不覆盖。
      */
     @Test

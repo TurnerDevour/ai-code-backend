@@ -7,9 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * 文本工具测试：落库兜底截断 + 进入模型上下文前压缩代码块
- */
+/** 文本工具测试：落库兜底截断 + 进入模型上下文前压缩代码块 */
 class TextUtilsTest {
 
     @Test
@@ -67,9 +65,7 @@ class TextUtilsTest {
 
     /**
      * 历史里的工具调用记录必须被改写成中性描述
-     * <p>
-     * 背景（实测事故）：这些记录会随历史回到模型记忆里，模型学会照抄这个文本格式——
-     * 它开始用文本"假装"调用工具：整轮 0 次真实工具执行、0 个文件落盘，对话里却全是"工具调用"。
+     * 背景（实测事故）：这些记录会随历史回到模型记忆里，模型学会照抄这个文本格式——……
      */
     @Test
     @DisplayName("工具调用记录改写为中性描述，并丢掉巨型入参")

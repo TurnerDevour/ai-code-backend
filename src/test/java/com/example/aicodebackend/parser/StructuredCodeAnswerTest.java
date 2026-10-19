@@ -6,9 +6,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * 模型「结构化输出（JSON）」答案的提取测试
- * <p>
- * 用例取自真实输出：模型按 LangChain4j 为 POJO 返回类型追加的 JSON 格式要求回答，
- * 而且这一轮输出把代码里的行内空格全吞掉了（换行 \n 与缩进仍在）。
+ * 用例取自真实输出：模型按 LangChain4j 为 POJO 返回类型追加的 JSON 格式要求回答……
  */
 class StructuredCodeAnswerTest {
 

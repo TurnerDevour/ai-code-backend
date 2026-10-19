@@ -2,20 +2,24 @@
 # ai-code-backend 一键部署编排
 #
 # 服务构成：
-#   mysql   —— 业务库，首次启动自动执行 src/main/resources/sql/ai_code_db.sql（**不发布端口**，见该服务注释）
-#   redis   —— Spring Session + 对话记忆（JedisChatMemoryStore）存储（**不发布端口**）
-#   backend —— 本项目（Dockerfile 构建）：AI 代码生成 + Vue 工程构建 + Selenium 截图
-#   nginx   —— 生产统一入口 https://wlbc.top（80 只做 301 跳转，业务在 443）
+#   mysql    —— 业务库，首次启动自动执行 src/main/resources/sql/ai_code_db.sql（**不发布端口**，见该服务注释）
+#   redis    —— Spring Session + 对话记忆（JedisChatMemoryStore）存储（**不发布端口**）
+#   rabbitmq —— 部署构建任务队列（deploy.queue / deploy.dlq，**不发布端口**，见该服务注释）
+#   backend  —— 本项目（Dockerfile 构建）：AI 代码生成 + Vue 工程构建 + Selenium 截图
+#   nginx    —— 生产统一入口 https://wlbc.top（80 只做 301 跳转，业务在 443）
 #                /api/...            -> 反代 backend:8123
 #                /dist/{deployKey}/  -> 用户生成并部署的静态站点
 #                /                   -> 前端站点（frontend-dist 目录）
 #
-# 对外只发布 nginx 的 80/443 与 backend 的 127.0.0.1:8123：
-#   mysql / redis 只在本编排网络内可达（服务名解析），宿主机与公网都连不到，
-#   需要图形工具时走 SSH 隧道直连容器 IP（见这两个服务的注释）。
+# 资源前提：**4 核 8G**（2026-10 由 2 核 4G 扩容而来）。各服务 mem_limit 之和约 7.7G，
+# 留约 0.5G 给宿主机与 dockerd；单机不要跑其它重负载服务。
 #
-# 网络：四个服务都接在自定义 bridge 网络 ai-code-net 上（见文件末尾 networks:），
-#      服务之间用服务名互相解析（backend -> mysql:3306 / redis:6379）。
+# 对外只发布 nginx 的 80/443 与 backend 的 127.0.0.1:8123：
+#   mysql / redis / rabbitmq 只在本编排网络内可达（服务名解析），宿主机与公网都连不到，
+#   需要图形工具时走 SSH 隧道直连容器 IP（见这几个服务的注释）。
+#
+# 网络：五个服务都接在自定义 bridge 网络 ai-code-net 上（见文件末尾 networks:），
+#      服务之间用服务名互相解析（backend -> mysql:3306 / redis:6379 / rabbitmq:5672）。
 #
 # 使用：
 #   1. cp .env.example .env 并填好密钥（首次部署可复制 application-prod.yaml 里的值）
@@ -41,9 +45,9 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_general_ci
       - --default-time-zone=+08:00
-      # 2核4G 小机器：限制缓冲池与连接数、关掉 performance_schema（省 150MB+）
-      - --innodb-buffer-pool-size=128M
-      - --max-connections=100
+      # 4核8G：缓冲池 512M（首次部署后可按实际数据量再调）、连接数按需放宽，仍关掉 performance_schema（省 150MB+）
+      - --innodb-buffer-pool-size=512M
+      - --max-connections=200
       - --performance-schema=OFF
     volumes:
       - mysql-data:/var/lib/mysql
@@ -70,8 +74,8 @@ services:
     # expose 只是声明"本网络内提供这个端口"，不会发布到宿主机
     expose:
       - "3306"
-    # 内存上限：小机器上必须给每个容器设限，避免某个容器把宿主机吃光后被内核随机 OOM
-    mem_limit: 800m
+    # 内存上限：4核8G 上给 1.5G（缓冲池 512M + 每连接开销 + 排序/临时表）
+    mem_limit: 1536m
     networks:
       - ai-code-net
     healthcheck:
@@ -101,7 +105,7 @@ services:
       # 内存兜底：Redis 存 Session + 对话记忆，超过上限按 LRU 淘汰，
       # 比撑爆容器被内核 OOM 杀掉（所有会话一起丢）要温和
       - --maxmemory
-      - 256mb
+      - 512mb
       - --maxmemory-policy
       - allkeys-lru
     volumes:
@@ -121,7 +125,7 @@ services:
     #     - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     expose:
       - "6379"
-    mem_limit: 320m
+    mem_limit: 768m
     networks:
       - ai-code-net
     healthcheck:
@@ -130,6 +134,46 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
+
+  # ------------------------------------------------------------- RabbitMQ ----
+  rabbitmq:
+    # 4.3 是当前发布线（4.2 的社区支持已于 2026-07 结束）；带 -management 后缀才有管理台
+    image: rabbitmq:${RABBITMQ_IMAGE_TAG:-4.3-management}
+    container_name: ai-code-rabbitmq
+    restart: unless-stopped
+    # 固定 hostname：RabbitMQ 的节点名与数据目录绑定，hostname 变了会拒绝复用旧数据
+    hostname: ai-code-rabbitmq
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # 只在**首次启动**（数据目录为空）时创建用户；之后改 .env 不会改密码，
+      # 需要用 rabbitmqctl 或管理台改（见 DOCKER.md）
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-ai_code}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?请在 .env 中设置 RABBITMQ_PASSWORD}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    # 同 MySQL / Redis：**不发布端口**。5672 是 AMQP 协议口，15672 是管理台，
+    # 两者都只在本编排网络内可达（backend 用 rabbitmq:5672 连）。
+    #
+    # 需要看管理台（队列深度、消费者、死信）时走 SSH 隧道到容器 IP，不要暴露到公网：
+    #   docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ai-code-rabbitmq
+    #   ssh -L 15672:10.201.0.4:15672 <用户>@<服务器IP>     # 本地浏览器打开 http://127.0.0.1:15672
+    #
+    # 命令行查看队列（不需要管理台）：
+    #   docker compose exec rabbitmq rabbitmqctl list_queues name messages messages_ready messages_unacknowledged consumers
+    expose:
+      - "5672"
+      - "15672"
+    mem_limit: 640m
+    networks:
+      - ai-code-net
+    healthcheck:
+      # rabbitmq-diagnostics ping 比 nc/curl 可靠：它真的会等节点应用起来
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   # -------------------------------------------------------------- backend ----
   backend:
@@ -151,6 +195,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       # 容器内使用 docker 专用 profile（database/redis 走服务名），不加载 prod 配置
@@ -160,13 +206,35 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+      # RabbitMQ：部署构建任务队列（服务名解析，端口不对外发布）
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: ${RABBITMQ_USER:-ai_code}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
       # 生产地址前缀：部署站点 https://wlbc.top/dist/{deployKey}/ 由 nginx 提供；
       # 该地址同时用于返回给前端和后台截图，因此容器内也必须能访问到（详见 DOCKER.md）。
       # 必须是 https：前端页面是 https，混用 http 会被浏览器当混合内容拦掉
       CODE_DEPLOY_HOST: ${CODE_DEPLOY_HOST:-https://wlbc.top/dist}
-      # 并发构建队列：2 核机器建议 2（每个 Vue 工程会跑一次 npm install，很吃 CPU 与内存）
-      DEPLOY_QUEUE_WORKERS: ${DEPLOY_QUEUE_WORKERS:-2}
+      # 部署构建队列（RabbitMQ）：
+      #   workers      = 每实例并发构建数（消费者 concurrency），每个 Vue 构建吃 1 核 + 0.4~0.8G
+      #   max-size     = 队列容量（x-max-length），满了由 broker 拒绝并提示"队列已满"
+      #   sync-permits = 同步部署接口的独立额度（该接口要当场返回地址，不能进 MQ 排队）
+      #   sync-max-waiters / sync-wait-timeout-ms = 同步接口的有界短排队：
+      #       额度占满时最多这么多个请求等待，且每个只等这么短；超出即失败并提示改用 /app/deploy/async
+      # 4 核机器 workers 给 3（留 1 核给 Web/AI 请求）；注意总并发还会额外 +sync-permits
+      DEPLOY_QUEUE_WORKERS: ${DEPLOY_QUEUE_WORKERS:-3}
       DEPLOY_QUEUE_MAX_SIZE: ${DEPLOY_QUEUE_MAX_SIZE:-32}
+      DEPLOY_QUEUE_SYNC_PERMITS: ${DEPLOY_QUEUE_SYNC_PERMITS:-1}
+      DEPLOY_QUEUE_SYNC_MAX_WAITERS: ${DEPLOY_QUEUE_SYNC_MAX_WAITERS:-10}
+      DEPLOY_QUEUE_SYNC_WAIT_TIMEOUT_MS: ${DEPLOY_QUEUE_SYNC_WAIT_TIMEOUT_MS:-5000}
+      # 部署任务恢复：构建心跳 + 扫描（同步请求崩溃/数据库抖动导致 queued/deploying 卡死时自动收敛）
+      DEPLOY_RECOVERY_ENABLED: ${DEPLOY_RECOVERY_ENABLED:-true}
+      DEPLOY_RECOVERY_INTERVAL_SECONDS: ${DEPLOY_RECOVERY_INTERVAL_SECONDS:-60}
+      DEPLOY_RECOVERY_DEPLOYING_TIMEOUT_SECONDS: ${DEPLOY_RECOVERY_DEPLOYING_TIMEOUT_SECONDS:-300}
+      DEPLOY_RECOVERY_QUEUED_TIMEOUT_SECONDS: ${DEPLOY_RECOVERY_QUEUED_TIMEOUT_SECONDS:-900}
+      DEPLOY_RECOVERY_HEARTBEAT_INTERVAL_SECONDS: ${DEPLOY_RECOVERY_HEARTBEAT_INTERVAL_SECONDS:-30}
+      DEPLOY_RECOVERY_BATCH_SIZE: ${DEPLOY_RECOVERY_BATCH_SIZE:-50}
       # npm registry：国内服务器建议改成 https://registry.npmmirror.com
       NPM_CONFIG_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
       # 腾讯云 COS（封面截图上传）
@@ -179,15 +247,15 @@ services:
       AI_BASE_URL: ${AI_BASE_URL:-}
       AI_WORKSPACE_ID: ${AI_WORKSPACE_ID:-}
       AI_API_KEY: ${AI_API_KEY:-}
-      # 数据库/Redis 连接池（2核4G 机器够用即可，池子过大会把内存和数据库连接吃光）
-      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-20}
-      DB_POOL_MIN_IDLE: ${DB_POOL_MIN_IDLE:-5}
-      REDIS_POOL_MAX_ACTIVE: ${REDIS_POOL_MAX_ACTIVE:-32}
-      REDIS_POOL_MAX_IDLE: ${REDIS_POOL_MAX_IDLE:-16}
-      REDIS_POOL_MIN_IDLE: ${REDIS_POOL_MIN_IDLE:-4}
-      # 堆内存显式固定（不用 MaxRAMPercentage：宿主机没设 cgroup 限制时会按整机内存算，容易吃满 4G）
-      # 截图浏览器池 2 个（每个 Chrome 约 200~400MB）
-      JAVA_OPTS: ${JAVA_OPTS:--Xms256m -Xmx1024m -XX:MaxMetaspaceSize=256m -XX:+ExitOnOutOfMemoryError -Djava.awt.headless=true -Duser.timezone=Asia/Shanghai -Dscreenshot.max-drivers=2 -Dscreenshot.borrow-timeout-seconds=300}
+      # 数据库/Redis 连接池（4核8G：池子可以比 2 核时放宽，但仍受 MySQL max-connections=200 约束）
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-32}
+      DB_POOL_MIN_IDLE: ${DB_POOL_MIN_IDLE:-8}
+      REDIS_POOL_MAX_ACTIVE: ${REDIS_POOL_MAX_ACTIVE:-48}
+      REDIS_POOL_MAX_IDLE: ${REDIS_POOL_MAX_IDLE:-24}
+      REDIS_POOL_MIN_IDLE: ${REDIS_POOL_MIN_IDLE:-8}
+      # 堆内存显式固定（不用 MaxRAMPercentage：宿主机没设 cgroup 限制时会按整机内存算，容易吃满机器）
+      # 截图浏览器池 2 个（每个 Chrome 约 200~400MB）；构建并发由 DEPLOY_QUEUE_WORKERS 控制
+      JAVA_OPTS: ${JAVA_OPTS:--Xms512m -Xmx2048m -XX:MaxMetaspaceSize=384m -XX:+ExitOnOutOfMemoryError -Djava.awt.headless=true -Duser.timezone=Asia/Shanghai -Dscreenshot.max-drivers=2 -Dscreenshot.borrow-timeout-seconds=300}
     volumes:
       # 生成源码 / 部署产物 / 截图临时文件，同时被 nginx 以只读方式挂载
       - app-temp:/app/temp
@@ -196,8 +264,8 @@ services:
       # 要从外部直连调试（http://wlbc.top:8123/api）时，把 SERVER_BIND 改成 0.0.0.0（并放行安全组）。
       # 宿主机上的 curl http://127.0.0.1:8123/api/health 仍然可用。
       - "${SERVER_BIND:-127.0.0.1}:${SERVER_PORT:-8123}:8123"
-    # 容器内存上限（2核4G 预算见 DOCKER.md）：JVM 堆 1G + Chrome 2×0.3G + 单个 npm 构建 0.4~0.8G
-    mem_limit: 2600m
+    # 容器内存上限（4核8G 预算见 DOCKER.md）：JVM 堆 2G + Chrome 2×0.3G + 并发 npm 构建 3×0.4~0.8G
+    mem_limit: 4600m
     # Chrome 渲染需要共享内存；/dev/shm 也算在容器内存里，代码里已带 --disable-dev-shm-usage，给 256m 足够
     shm_size: "256m"
     extra_hosts:
@@ -232,21 +300,22 @@ services:
       # 443 承载全部业务。注意：除了服务器本机防火墙（ufw），
       # 还要在【腾讯云轻量应用服务器控制台 → 防火墙】放行 443，否则外网访问不到
       - "${NGINX_SSL_PORT:-443}:443"
-    mem_limit: 64m
+    mem_limit: 128m
     networks:
       - ai-code-net
 
 volumes:
   mysql-data:
   redis-data:
+  rabbitmq-data:
   app-temp:
 
 networks:
   # 自定义网络，替代 compose 默认创建的 <项目名>_default：
   #   - name 固定为 ai-code-net：不随 compose 项目名/目录名变化，其它容器或临时排查容器
   #     可以直接 `docker run --rm -it --network ai-code-net ...` 接进来（默认网络名会变，脚本里不好写）
-  #   - 四个服务都接在同一张用户自定义 bridge 上：容器之间直接用服务名互相解析
-  #     （backend 连的就是 mysql:3306 / redis:6379，连不上会直接起不来）
+  #   - 五个服务都接在同一张用户自定义 bridge 上：容器之间直接用服务名互相解析
+  #     （backend 连的就是 mysql:3306 / redis:6379 / rabbitmq:5672，连不上会直接起不来）
   #   - 用户自定义网络自带 DNS，且比默认 bridge 隔离性更好（只有同网络内容器能互访）
   #   - 显式指定网段：跳过 Docker 的默认可分配池（172.17.0.0/16 ~ 172.31.0.0/16），
   #     避免与宿主机自身的内网/VPC 网段撞车（撞了的表现：容器连内网或公网时超时、TLS 握手卡住）

@@ -75,6 +75,10 @@ alter table app
 alter table app
     add column deploy_operator_id bigint null comment '最近一次部署发起人 id' after deploy_error;
 alter table app
+    add column deploy_task_id varchar(64) null comment '当前部署任务 id（MQ 重投/幂等）' after deploy_operator_id;
+alter table app
+    add column deploy_heartbeat datetime null comment '部署任务心跳（恢复扫描用）' after deploy_task_id;
+alter table app
     add index idx_deploy_status (deploy_status);
 -- 历史数据归一化：已有部署标识的视为部署完成，其余为空闲
 update app set deploy_status = 'ready' where (deploy_status is null or deploy_status = '') and deploy_key is not null;

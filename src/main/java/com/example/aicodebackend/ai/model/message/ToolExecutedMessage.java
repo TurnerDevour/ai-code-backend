@@ -7,12 +7,8 @@ import lombok.NoArgsConstructor;
 
 /**
  * 工具执行结果消息
- * <p>
  * 注意 {@code failed}：LangChain4j 对"工具执行被终止"的情况（参数不是合法 JSON、工具名不存在、
- * 工具内部抛异常）<b>同样会回调 onToolExecuted</b>（源码注释：Emit the "after" notification for
- * every terminated execution - success OR failure）。也就是说：<b>工具没执行成功也会产生一条
- * 「工具调用」消息</b>。如果不把失败标记透出去，前端与对话历史里"写了文件"和"根本没写"
- * 会长得一模一样——用户看到 AI 说改好了，页面却没变（实测问题）。
+ * 工具内部抛异常）同样会回调 onToolExecuted（源码注释：Emit the "after" notification for……
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
@@ -27,17 +23,13 @@ public class ToolExecutedMessage extends StreamMessage {
 
     private String result;
 
-    /**
-     * 工具是否执行失败（参数不合法 / 工具名不存在 / 工具内部异常）
-     */
+    /** 工具是否执行失败（参数不合法 / 工具名不存在 / 工具内部异常） */
     private boolean failed;
 
     /**
      * 展示文本（形如 {@code [🔧 工具调用] 修改文件内容 xx.vue} + 修改前后代码块）
-     * <p>
      * 由后端按工具自己声明的展示逻辑生成，见 {@code ToolMessageRenderer}。
-     * 前端不要按工具名猜参数结构：{@code modifyFile} 没有 content 字段，
-     * 猜成 writeToFile 会渲染出一个空代码块（实测问题：写文件输出空白）。
+     * 前端不要按工具名猜参数结构：{@code modifyFile} 没有 content 字段……
      */
     private String display;
 

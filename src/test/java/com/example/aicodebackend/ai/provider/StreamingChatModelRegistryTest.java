@@ -20,9 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 模型注册表测试
- * <p>
- * 重点是"配置错一个不影响其它"这条容错线：模型注册发生在应用启动期，
- * 一个平台的 key 没配好不应该让整个服务起不来，但被选中时必须给出能照着排查的报错。
+ * 重点是"配置错一个不影响其它"这条容错线：模型注册发生在应用启动期……
  */
 class StreamingChatModelRegistryTest {
 

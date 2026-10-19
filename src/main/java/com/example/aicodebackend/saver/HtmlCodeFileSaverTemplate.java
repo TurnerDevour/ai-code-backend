@@ -5,10 +5,9 @@ import com.example.aicodebackend.ai.model.HTMLCodeResult;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
+import com.example.aicodebackend.model.enums.GeneratedFileEnum;
 
-/**
- * HTML 代码文件保存器模板类
- */
+/** HTML 代码文件保存器模板类 */
 public class HtmlCodeFileSaverTemplate extends CodeFileSaverTemplate<HTMLCodeResult> {
     @Override
     protected CodeGenTypeEnum getCodeType() {
@@ -17,7 +16,7 @@ public class HtmlCodeFileSaverTemplate extends CodeFileSaverTemplate<HTMLCodeRes
 
     @Override
     protected void saveFiles(HTMLCodeResult result, String baseDirPath) {
-        writeToFile(baseDirPath, "index.html", result.getHtmlCode());
+        writeToFile(baseDirPath, GeneratedFileEnum.HTML.getFileName(), result.getHtmlCode());
     }
 
     @Override

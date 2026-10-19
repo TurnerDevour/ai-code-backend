@@ -28,6 +28,22 @@ spring:
           min-idle: 8
           max-wait: 10s
           time-between-eviction-runs: 30s
+
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:admin}
+    password: ${RABBITMQ_PASSWORD:admin123}
+    virtual-host: ${RABBITMQ_VHOST:/}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 1
+        default-requeue-rejected: false
   threads:
     virtual:
       enabled: true
@@ -44,8 +60,31 @@ mybatis-flex:
 
 deploy:
   queue:
-    workers: 4
+    workers: 3
     max-queue-size: 32
+    sync-permits: 1
+    # 同步部署的等待者上限（每实例）：额度被占满时，最多允许多少个请求短时间排队（超出直接提示改用异步接口）
+    sync-max-waiters: 10
+    # 同步部署的等待窗口（毫秒）：故意很短，只接住"刚好有构建结束"的情况，避免占住 Web 线程
+    sync-wait-timeout-ms: 5000
+    # 死信队列容量上限：不设上限时消费端长时间失败会把磁盘吃满；满了丢最老的（排查先看最近的）
+    max-dead-letter-size: 1000
+    # 后台巡检与告警：只在"正常 → 告警 / 告警 → 恢复"时打一条日志，不做周期刷屏
+    monitor:
+      enabled: true
+      interval-seconds: 60
+      # 等待队列深度阈值（默认 max-queue-size 的 3/4）
+      waiting-threshold: 24
+      # 死信阈值：正常应长期为 0，出现 1 条就该有人看
+      dead-letter-threshold: 1
+  # 部署任务恢复扫描：心跳过期落 failed、queued 超时重投（解决同步崩溃/数据库抖动卡死）
+  recovery:
+    enabled: true
+    interval-seconds: 60
+    deploying-timeout-seconds: 300
+    queued-timeout-seconds: 900
+    heartbeat-interval-seconds: 30
+    batch-size: 50
 
 logging:
   file:

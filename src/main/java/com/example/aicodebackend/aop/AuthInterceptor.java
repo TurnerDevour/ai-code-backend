@@ -23,16 +23,7 @@ public class AuthInterceptor {
     @Resource
     private UserService userService;
 
-    /**
-     * 拦截带有 @AuthCheck 注解的方法，进行权限校验
-     *
-     * @param joinPoint 连接点
-     * @param authCheck 认证检查注解
-     *
-     * @return 方法执行结果
-     *
-     * @throws Throwable 异常
-     */
+    /** 拦截带有 @AuthCheck 注解的方法，进行权限校验 */
     @Around("@annotation(authCheck)")
     public Object doInterceptor(ProceedingJoinPoint joinPoint, AuthCheck authCheck) throws Throwable {
         // 获取当前请求的 HttpServletRequest 对象

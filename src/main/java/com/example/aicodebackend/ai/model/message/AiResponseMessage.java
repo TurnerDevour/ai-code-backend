@@ -4,9 +4,7 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
-/**
- * AI 响应消息
- */
+/** AI 响应消息 */
 @EqualsAndHashCode(callSuper = true)
 @Data
 @NoArgsConstructor

@@ -7,9 +7,9 @@ import com.example.aicodebackend.ai.model.message.ErrorMessage;
 import com.example.aicodebackend.annotation.AuthCheck;
 import com.example.aicodebackend.common.BaseResponse;
 import com.example.aicodebackend.common.DeleteRequest;
+import com.example.aicodebackend.common.PageUtils;
 import com.example.aicodebackend.common.ResultUtils;
 import com.example.aicodebackend.constant.AppConstant;
-import com.example.aicodebackend.constant.UserConstant;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.exception.ThrowUtils;
@@ -18,6 +18,7 @@ import com.example.aicodebackend.model.entity.App;
 import com.example.aicodebackend.model.entity.User;
 import com.example.aicodebackend.model.enums.AIModelTypeEnum;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
+import com.example.aicodebackend.model.enums.UserRoleEnum;
 import com.example.aicodebackend.core.generation.GenerationTaskRegistry;
 import com.example.aicodebackend.model.vo.AppVO;
 import com.example.aicodebackend.model.vo.DeployStatusVO;
@@ -25,6 +26,7 @@ import com.example.aicodebackend.model.vo.GenerationStatusVO;
 import com.example.aicodebackend.service.AppService;
 import com.example.aicodebackend.service.ProjectDownloadService;
 import com.example.aicodebackend.service.UserService;
+import com.example.aicodebackend.utils.AppPathUtils;
 import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
 import jakarta.annotation.Resource;
@@ -39,7 +41,6 @@ import reactor.core.publisher.Mono;
 
 import java.io.File;
 import java.time.LocalDateTime;
-import java.util.List;
 
 @Slf4j
 @RestController
@@ -55,24 +56,22 @@ public class AppController {
     @Resource
     private ProjectDownloadService projectDownloadService;
 
-    /**
-     * 用户创建应用（只需填写初始化 prompt，应用名称和代码生成类型由系统自动生成）
-     */
+    /** 用户创建应用（只需填写初始化 prompt，应用名称和代码生成类型由系统自动生成） */
     @PostMapping("/add")
     public BaseResponse<Long> addApp(@RequestBody AppAddRequest appAddRequest, HttpServletRequest request) {
-        // 1. 校验参数
+
         ThrowUtils.throwIf(appAddRequest == null, ErrorCode.PARAMS_ERROR);
         String initPrompt = appAddRequest.getInitPrompt();
         ThrowUtils.throwIf(StrUtil.isBlank(initPrompt), ErrorCode.PARAMS_ERROR, "初始化 prompt 不能为空");
-        // 2. 获取当前登录用户
+
         User loginUser = userService.getLoginUser(request);
-        // 3. 校验代码生成类型（用户可不传，默认使用原生多文件模式）
+
         CodeGenTypeEnum codeGenTypeEnum = CodeGenTypeEnum.getEnumByValue(appAddRequest.getCodeGenType());
         ThrowUtils.throwIf(codeGenTypeEnum == null, ErrorCode.PARAMS_ERROR, "不支持的代码生成类型");
-        // 4. 校验 AI 模型类型（用户可不传，默认使用 deepseek-v4.1-flash）
+
         AIModelTypeEnum aiModelTypeEnum = AIModelTypeEnum.getEnumByValue(appAddRequest.getAiModelType());
         ThrowUtils.throwIf(aiModelTypeEnum == null, ErrorCode.PARAMS_ERROR, "不支持的 AI 模型类型");
-        // 5. 复制属性，并补全默认值
+
         App app = new App();
         BeanUtil.copyProperties(appAddRequest, app);
         app.setUserId(loginUser.getId());
@@ -81,42 +80,34 @@ public class AppController {
         // 代码生成类型与 AI 模型类型由用户指定（未指定时已在请求体中回落到默认值）
         app.setCodeGenType(codeGenTypeEnum.getValue());
         app.setAiModelType(aiModelTypeEnum.getValue());
-        // 6. 调用服务创建应用
+
         boolean result = appService.save(app);
         ThrowUtils.throwIf(!result, ErrorCode.SYSTEM_ERROR, "创建应用失败");
         return ResultUtils.success(app.getId());
     }
 
-    /**
-     * 根据初始化提示词自动生成应用名称（取前 12 位）
-     *
-     * @param initPrompt 初始化提示词
-     *
-     * @return 应用名称
-     */
+    /** 根据初始化提示词自动生成应用名称（取前 12 位） */
     private String generateAppName(String initPrompt) {
         String trimmedPrompt = initPrompt.replaceAll("\\s+", " ").trim();
         return StrUtil.sub(trimmedPrompt, 0, AppConstant.APP_NAME_MAX_LENGTH);
     }
 
-    /**
-     * 用户修改自己的应用（目前只支持修改应用名称）
-     */
+    /** 用户修改自己的应用（目前只支持修改应用名称） */
     @PostMapping("/update")
     public BaseResponse<Boolean> updateApp(@RequestBody AppUpdateRequest appUpdateRequest, HttpServletRequest request) {
-        // 1. 校验参数
+
         ThrowUtils.throwIf(appUpdateRequest == null, ErrorCode.PARAMS_ERROR);
         Long id = appUpdateRequest.getId();
-        ThrowUtils.throwIf(id == null || id <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+        ThrowUtils.throwIfInvalidId(id, "应用ID");
         ThrowUtils.throwIf(StrUtil.isBlank(appUpdateRequest.getAppName()), ErrorCode.PARAMS_ERROR, "应用名称不能为空");
-        // 2. 获取当前登录用户
+
         User loginUser = userService.getLoginUser(request);
-        // 3. 校验应用是否存在
+
         App oldApp = appService.getById(id);
         ThrowUtils.throwIf(oldApp == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
-        // 4. 校验应用归属，只能修改自己的应用
+
         ThrowUtils.throwIf(!oldApp.getUserId().equals(loginUser.getId()), ErrorCode.NO_AUTH_ERROR, "无权限修改该应用");
-        // 5. 调用服务更新应用
+
         App app = new App();
         app.setId(id);
         app.setAppName(appUpdateRequest.getAppName());
@@ -126,122 +117,98 @@ public class AppController {
         return ResultUtils.success(true);
     }
 
-    /**
-     * 用户删除自己的应用
-     */
+    /** 用户删除自己的应用 */
     @PostMapping("/delete")
     public BaseResponse<Boolean> deleteApp(@RequestBody DeleteRequest deleteRequest, HttpServletRequest request) {
-        // 1. 校验参数
+
         ThrowUtils.throwIf(deleteRequest == null || deleteRequest.getId() == null, ErrorCode.PARAMS_ERROR);
         Long id = deleteRequest.getId();
-        // 2. 获取当前登录用户
+
         User loginUser = userService.getLoginUser(request);
-        // 3. 校验应用是否存在
+
         App oldApp = appService.getById(id);
         ThrowUtils.throwIf(oldApp == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
-        // 4. 校验应用归属，只有本人或者管理员才能删除的应用
-        ThrowUtils.throwIf(!oldApp.getUserId().equals(loginUser.getId()) && !UserConstant.ADMIN_ROLE.equals(loginUser.getUserRole()), ErrorCode.NO_AUTH_ERROR, "无权限删除该应用");
-        // 5. 调用服务删除应用（逻辑删除，同时关联删除该应用的对话历史）
+
+        ThrowUtils.throwIf(!oldApp.getUserId().equals(loginUser.getId())
+                        && !UserRoleEnum.isAdmin(loginUser.getUserRole()),
+                ErrorCode.NO_AUTH_ERROR, "无权限删除该应用");
+
         boolean result = appService.deleteApp(id);
         ThrowUtils.throwIf(!result, ErrorCode.SYSTEM_ERROR, "删除应用失败");
         return ResultUtils.success(true);
     }
 
-    /**
-     * 根据ID获取应用详情VO
-     */
+    /** 根据ID获取应用详情VO */
     @GetMapping("/get/vo")
     public BaseResponse<AppVO> getAppVOById(@RequestParam Long id) {
-        // 1. 校验参数
-        ThrowUtils.throwIf(id == null || id <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
-        // 2. 调用服务获取应用信息
+
+        ThrowUtils.throwIfInvalidId(id, "应用ID");
+
         App app = appService.getById(id);
         ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
-        // 3. 转换为应用信息VO
+
         AppVO appVO = appService.getAppVO(app);
         return ResultUtils.success(appVO);
     }
 
-    /**
-     * 分页获取当前用户自己的应用列表（支持根据名称查询，每页最多 20 个）
-     */
+    /** 分页获取当前用户自己的应用列表（支持根据名称查询，每页最多 20 个） */
     @PostMapping("/my/list/page/vo")
     public BaseResponse<Page<AppVO>> listMyAppVOByPage(@RequestBody AppQueryRequest appQueryRequest, HttpServletRequest request) {
-        // 1. 校验参数
+
         ThrowUtils.throwIf(appQueryRequest == null, ErrorCode.PARAMS_ERROR, "查询参数为空");
-        // 2. 取出分页参数并限制每页最多 20 个
+
         long pageNum = appQueryRequest.getPageNum();
         long pageSize = appQueryRequest.getPageSize();
-        ThrowUtils.throwIf(pageNum <= 0, ErrorCode.PARAMS_ERROR, "页码不合法");
-        ThrowUtils.throwIf(pageSize <= 0 || pageSize > 20, ErrorCode.PARAMS_ERROR, "每页最多查询 20 个应用");
-        // 3. 获取当前登录用户，只查询自己的应用
+        PageUtils.validate(pageNum, pageSize, PageUtils.DEFAULT_MAX_PAGE_SIZE, "每页最多查询 20 个应用");
         User loginUser = userService.getLoginUser(request);
         appQueryRequest.setUserId(loginUser.getId());
-        // 4. 调用服务获取分页应用信息
         QueryWrapper queryWrapper = appService.getQueryWrapper(appQueryRequest);
         Page<App> appPage = appService.page(Page.of(pageNum, pageSize), queryWrapper);
-        // 5. 转换为分页响应对象
-        Page<AppVO> appVOPage = new Page<>(pageNum, pageSize, appPage.getTotalRow());
-        List<AppVO> appVOList = appService.getAppVOList(appPage.getRecords());
-        appVOPage.setRecords(appVOList);
-        return ResultUtils.success(appVOPage);
+        return ResultUtils.success(PageUtils.toVoPage(appPage, pageNum, pageSize, appService::getAppVOList));
     }
 
-    /**
-     * 分页获取精选应用列表（支持根据名称查询，每页最多 20 个）
-     */
+    /** 分页获取精选应用列表（支持根据名称查询，每页最多 20 个） */
     @PostMapping("/good/list/page/vo")
     public BaseResponse<Page<AppVO>> listGoodAppVOByPage(@RequestBody AppQueryRequest appQueryRequest) {
-        // 1. 校验参数
+
         ThrowUtils.throwIf(appQueryRequest == null, ErrorCode.PARAMS_ERROR, "查询参数为空");
-        // 2. 取出分页参数并限制每页最多 20 个
+
         long pageNum = appQueryRequest.getPageNum();
         long pageSize = appQueryRequest.getPageSize();
-        ThrowUtils.throwIf(pageNum <= 0, ErrorCode.PARAMS_ERROR, "页码不合法");
-        ThrowUtils.throwIf(pageSize <= 0 || pageSize > 20, ErrorCode.PARAMS_ERROR, "每页最多查询 20 个应用");
-        // 3. 只查询精选的应用
+        PageUtils.validate(pageNum, pageSize, PageUtils.DEFAULT_MAX_PAGE_SIZE, "每页最多查询 20 个应用");
         appQueryRequest.setPriority(AppConstant.GOOD_APP_PRIORITY);
-        // 4. 调用服务获取分页应用信息
         QueryWrapper queryWrapper = appService.getQueryWrapper(appQueryRequest);
         Page<App> appPage = appService.page(Page.of(pageNum, pageSize), queryWrapper);
-        // 5. 转换为分页响应对象
-        Page<AppVO> appVOPage = new Page<>(pageNum, pageSize, appPage.getTotalRow());
-        List<AppVO> appVOList = appService.getAppVOList(appPage.getRecords());
-        appVOPage.setRecords(appVOList);
-        return ResultUtils.success(appVOPage);
+        return ResultUtils.success(PageUtils.toVoPage(appPage, pageNum, pageSize, appService::getAppVOList));
     }
 
-    /**
-     * 根据ID删除任意应用（仅管理员可用）
-     */
+    /** 根据ID删除任意应用（仅管理员可用） */
     @PostMapping("/admin/delete")
-    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    @AuthCheck(mustRole = UserRoleEnum.ADMIN_VALUE)
     public BaseResponse<Boolean> deleteAppByAdmin(@RequestBody DeleteRequest deleteRequest) {
-        // 1. 校验参数
+
         ThrowUtils.throwIf(deleteRequest == null || deleteRequest.getId() == null, ErrorCode.PARAMS_ERROR);
         Long id = deleteRequest.getId();
-        // 2. 校验应用是否存在
+
         App oldApp = appService.getById(id);
         ThrowUtils.throwIf(oldApp == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
-        // 3. 调用服务删除应用（逻辑删除，同时关联删除该应用的对话历史）
+
         appService.deleteApp(id);
         return ResultUtils.success(true);
     }
 
-    /**
-     * 根据ID更新任意应用（仅管理员可用，支持更新应用名称、应用封面、优先级）
-     */
+    /** 根据ID更新任意应用（仅管理员可用，支持更新应用名称、应用封面、优先级） */
     @PostMapping("/admin/update")
-    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    @AuthCheck(mustRole = UserRoleEnum.ADMIN_VALUE)
     public BaseResponse<Boolean> updateAppByAdmin(@RequestBody AppAdminUpdateRequest appAdminUpdateRequest) {
-        // 1. 校验参数
+
         ThrowUtils.throwIf(appAdminUpdateRequest == null, ErrorCode.PARAMS_ERROR);
         Long id = appAdminUpdateRequest.getId();
-        ThrowUtils.throwIf(id == null || id <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
-        // 2. 校验应用是否存在
+        ThrowUtils.throwIfInvalidId(id, "应用ID");
+
         App oldApp = appService.getById(id);
         ThrowUtils.throwIf(oldApp == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
-        // 3. 复制属性并更新应用
+
         App app = new App();
         BeanUtil.copyProperties(appAdminUpdateRequest, app);
         app.setEditTime(LocalDateTime.now());
@@ -250,69 +217,50 @@ public class AppController {
         return ResultUtils.success(true);
     }
 
-    /**
-     * 分页获取应用信息列表（仅管理员可用，支持根据除时间外的任何字段查询，每页数量不限）
-     */
+    /** 分页获取应用信息列表（仅管理员可用，支持根据除时间外的任何字段查询，每页数量不限） */
     @PostMapping("/admin/list/page/vo")
-    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    @AuthCheck(mustRole = UserRoleEnum.ADMIN_VALUE)
     public BaseResponse<Page<AppVO>> listAppVOByPageByAdmin(@RequestBody AppQueryRequest appQueryRequest) {
-        // 1. 校验参数
+
         ThrowUtils.throwIf(appQueryRequest == null, ErrorCode.PARAMS_ERROR, "查询参数为空");
-        // 2. 取出分页参数
+
         long pageNum = appQueryRequest.getPageNum();
         long pageSize = appQueryRequest.getPageSize();
-        ThrowUtils.throwIf(pageNum <= 0, ErrorCode.PARAMS_ERROR, "页码不合法");
-        ThrowUtils.throwIf(pageSize <= 0, ErrorCode.PARAMS_ERROR, "每页条数不合法");
-        // 3. 调用服务获取分页应用信息
+        PageUtils.validate(pageNum, pageSize);
         QueryWrapper queryWrapper = appService.getQueryWrapper(appQueryRequest);
         Page<App> appPage = appService.page(Page.of(pageNum, pageSize), queryWrapper);
-        // 4. 转换为分页响应对象
-        Page<AppVO> appVOPage = new Page<>(pageNum, pageSize, appPage.getTotalRow());
-        List<AppVO> appVOList = appService.getAppVOList(appPage.getRecords());
-        appVOPage.setRecords(appVOList);
-        return ResultUtils.success(appVOPage);
+        return ResultUtils.success(PageUtils.toVoPage(appPage, pageNum, pageSize, appService::getAppVOList));
     }
 
-    /**
-     * 根据ID获取任意应用详情VO（仅管理员可用）
-     */
+    /** 根据ID获取任意应用详情VO（仅管理员可用） */
     @GetMapping("/admin/get/vo")
-    @AuthCheck(mustRole = UserConstant.ADMIN_ROLE)
+    @AuthCheck(mustRole = UserRoleEnum.ADMIN_VALUE)
     public BaseResponse<AppVO> getAppVOByIdByAdmin(@RequestParam Long id) {
-        // 1. 校验参数
-        ThrowUtils.throwIf(id == null || id <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
-        // 2. 调用服务获取应用信息
+
+        ThrowUtils.throwIfInvalidId(id, "应用ID");
+
         App app = appService.getById(id);
         ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
-        // 3. 转换为应用信息VO
+
         AppVO appVO = appService.getAppVO(app);
         return ResultUtils.success(appVO);
     }
 
     /**
      * 根据应用ID和用户输入的 prompt，调用服务生成代码，并通过 SSE 流式返回生成的代码块
-     * <p>
-     * 接口契约：本接口<b>始终</b>以 SSE（text/event-stream）形式响应，任何失败都以 type=error 的数据帧下发，
-     * 不使用 HTTP 错误码或 JSON 错误体。这样做的原因是：SSE 响应一旦按 text/event-stream 协商，
-     * 异常逃逸到 Servlet 层后 @RestControllerAdvice 无法再回写 JSON 结构的错误体，
-     * 只能抛出 HttpMessageNotWritableException 并引发连锁异常（且前端拿不到任何错误信息）。
-     *
-     * @param appId   应用ID
-     * @param prompt  用户输入的 prompt
-     * @param request HTTP 请求对象
-     *
-     * @return SSE 流式返回生成的代码块
+     * 接口契约：本接口始终以 SSE（text/event-stream）形式响应，任何失败都以 type=error 的数据帧下发，
+     * 不使用 HTTP 错误码或 JSON 错误体。这样做的原因是：SSE 响应一旦按 text/event-stream 协商……
      */
     @GetMapping(value = "/chat/gen/code", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> chatToGenCode(@RequestParam Long appId, @RequestParam String prompt, HttpServletRequest request) {
         Flux<GenerationTaskRegistry.SequencedFrame> chatToGenCodeFlux;
         try {
-            // 1. 校验参数
-            ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+
+            ThrowUtils.throwIfInvalidId(appId, "应用ID");
             ThrowUtils.throwIf(StrUtil.isBlank(prompt), ErrorCode.PARAMS_ERROR, "prompt不能为空");
-            // 2. 获取当前登录用户
+
             User loginUser = userService.getLoginUser(request);
-            // 3. 调用服务生成代码（这一步的准备工作是同步执行的，可能直接抛异常）
+
             chatToGenCodeFlux = appService.chatToGenCode(appId, prompt, loginUser);
         } catch (BusinessException e) {
             // 参数校验、鉴权、应用不存在等业务失败：直接以 error 数据帧结束，不抛出异常。
@@ -329,27 +277,14 @@ public class AppController {
 
     /**
      * 续订当前应用的生成流（用于浏览器刷新/返回后重新接上正在进行的生成）
-     * <p>
      * 方案 C 的配套接口：生成任务在服务端独立运行，客户端断开不影响它。续订有两种定位方式：
-     * <ul>
-     *     <li>{@code fromSeq}：客户端已经收到的最后一帧序号（SSE 的 {@code id:} 字段）。<b>推荐</b>，
-     *     精确补发且不会重复；</li>
-     *     <li>{@code subId} + 不传 {@code fromSeq}：用首次连接的订阅标识，由服务端记住"发到哪了"。
-     *     适合客户端没记录序号的场景。</li>
-     * </ul>
-     *
-     * @param appId   应用ID
-     * @param fromSeq 已收到的最后一帧序号（不传时按 0 处理）
-     * @param subId   首次连接的订阅标识（可选，用于服务端侧记录进度）
-     * @param request HTTP 请求对象
-     *
-     * @return SSE 流
+     * 精确补发且不会重复；</li>……
      */
     @GetMapping(value = "/chat/gen/resume", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> resumeGenCode(@RequestParam Long appId, @RequestParam(required = false) Long fromSeq, @RequestParam(required = false) String subId, HttpServletRequest request) {
         Flux<GenerationTaskRegistry.SequencedFrame> flux;
         try {
-            ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+            ThrowUtils.throwIfInvalidId(appId, "应用ID");
             User loginUser = userService.getLoginUser(request);
             flux = appService.resumeGenCode(appId, fromSeq == null ? -1L : fromSeq, StrUtil.nullToEmpty(subId), loginUser);
         } catch (BusinessException e) {
@@ -362,35 +297,18 @@ public class AppController {
         return toSseFlux(flux, appId);
     }
 
-    /**
-     * 查询当前生成任务状态（前端轮询/判断是否还能续订）
-     *
-     * @param appId   应用ID
-     * @param request HTTP 请求对象
-     *
-     * @return 生成状态
-     */
+    /** 查询当前生成任务状态（前端轮询/判断是否还能续订） */
     @GetMapping("/chat/gen/status")
     public BaseResponse<GenerationStatusVO> getGenStatus(@RequestParam Long appId, HttpServletRequest request) {
-        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+        ThrowUtils.throwIfInvalidId(appId, "应用ID");
         User loginUser = userService.getLoginUser(request);
         return ResultUtils.success(appService.getGenStatus(appId, loginUser));
     }
 
     /**
      * 把"带序号的文本数据流"包装成 SSE 响应：每条数据一个 data 帧（带 id 序号），最后补一个 done 事件
-     * <p>
      * 注意：这里必须直接下发 chunk 字符串本身，交给前端统一解析。
-     * 不要把 chunk 再包一层 JSON 字符串：ServerSentEvent 的 data 是 String 时，
-     * Spring 会按 JSON 序列化该字符串，导致内容被二次转义（{"d":"{\"type\":...}"}），
-     * 前端的 JSON.parse 只能拿到被转义的字符串，无法按 type 分发消息。
-     * <p>
-     * {@code id} 是帧序号：客户端续订时回传它（{@code fromSeq}），服务端据此精确补发缺失的帧。
-     *
-     * @param flux  数据流
-     * @param appId 应用ID（仅用于日志）
-     *
-     * @return SSE 流
+     * 不要把 chunk 再包一层 JSON 字符串：ServerSentEvent 的 data 是 String 时……
      */
     private Flux<ServerSentEvent<String>> toSseFlux(Flux<GenerationTaskRegistry.SequencedFrame> flux, Long appId) {
         return flux
@@ -408,9 +326,7 @@ public class AppController {
                 });
     }
 
-    /**
-     * 构建流式响应的结束事件（前端据此结束本次生成）
-     */
+    /** 构建流式响应的结束事件（前端据此结束本次生成） */
     private static ServerSentEvent<String> buildDoneEvent() {
         // 发送一个特殊的事件，表示流结束
         return ServerSentEvent.<String>builder()
@@ -421,11 +337,8 @@ public class AppController {
 
     /**
      * 构建流式响应的错误数据帧
-     * <p>
      * 与正常消息保持一致，仍然以 data 帧下发（type=error），不使用 SSE 具名的 error 事件，
      * 避免与 EventSource 自身的连接错误事件混淆，前端按 type 分发即可。
-     *
-     * @param errorMessage 面向用户的错误提示（内部异常细节只记录日志，不对外暴露）
      */
     private static ServerSentEvent<String> buildErrorEvent(String errorMessage) {
         return ServerSentEvent.<String>builder()
@@ -435,74 +348,67 @@ public class AppController {
 
     /**
      * 部署应用（同步：一次请求内完成构建与发布，返回部署地址）
-     * <p>
      * 保留该接口是为了兼容现有前端；构建耗时较长时（Vue 工程要跑 npm install + build）
-     * 建议改用 {@link #submitDeployApp} + {@link #getDeployStatus} 的异步方式。
+     * 建议改用 {@link #submitDeployApp} + {@link #getDeployStatus} 的异步方式……
      */
     @PostMapping("/deploy")
     public BaseResponse<String> deployApp(@RequestBody AppDeployRequest deployRequest, HttpServletRequest request) {
-        // 1. 校验参数
+
         ThrowUtils.throwIf(deployRequest == null, ErrorCode.PARAMS_ERROR, "请求参数为空");
         Long appId = deployRequest.getAppId();
-        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
-        // 2. 获取当前登录用户
+        ThrowUtils.throwIfInvalidId(appId, "应用ID");
+
         User loginUser = userService.getLoginUser(request);
-        // 3. 调用服务部署应用
+
         String deployUrl = appService.deployApp(appId, loginUser);
         return ResultUtils.success(deployUrl);
     }
 
     /**
      * 提交异步部署任务（立即返回，后台构建与发布）
-     * <p>
      * 与同步接口的差异：HTTP 请求不再阻塞在 npm 构建上，提交后通过
-     * {@link #getDeployStatus} 轮询进度；同一个应用同时只有一个部署任务（CAS 抢占），
-     * 重复提交只会返回当前状态，不会重复构建。
+     * {@link #getDeployStatus} 轮询进度；同一个应用同时只有一个部署任务（CAS 抢占）……
      */
     @PostMapping("/deploy/async")
     public BaseResponse<DeployStatusVO> submitDeployApp(@RequestBody AppDeployRequest deployRequest, HttpServletRequest request) {
         ThrowUtils.throwIf(deployRequest == null, ErrorCode.PARAMS_ERROR, "请求参数为空");
         Long appId = deployRequest.getAppId();
-        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+        ThrowUtils.throwIfInvalidId(appId, "应用ID");
         User loginUser = userService.getLoginUser(request);
         return ResultUtils.success(appService.submitDeploy(appId, loginUser));
     }
 
     /**
      * 查询部署状态（异步部署轮询接口）
-     * <p>
      * status 取值：idle（未部署）/ deploying（部署中）/ ready（已完成，deployUrl 可用）/ failed（失败，errorMessage 为原因）。
      */
     @GetMapping("/deploy/status")
     public BaseResponse<DeployStatusVO> getDeployStatus(@RequestParam Long appId, HttpServletRequest request) {
-        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
+        ThrowUtils.throwIfInvalidId(appId, "应用ID");
         User loginUser = userService.getLoginUser(request);
         return ResultUtils.success(appService.getDeployStatus(appId, loginUser));
     }
 
-    /**
-     * 下载应用（将应用打包为zip文件下载到本地）
-     */
+    /** 下载应用（将应用打包为zip文件下载到本地） */
     @GetMapping("/download/{appId}")
     public void downloadApp(@PathVariable Long appId, HttpServletRequest request, HttpServletResponse response) {
-        // 1. 校验参数
-        ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
-        // 2. 查询应用信息
+
+        ThrowUtils.throwIfInvalidId(appId, "应用ID");
+
         App app = appService.getById(appId);
         ThrowUtils.throwIf(app == null, ErrorCode.NOT_FOUND_ERROR, "应用不存在");
-        // 3. 获取当前登录用户
+
         User loginUser = userService.getLoginUser(request);
-        // 4. 校验应用归属，只有应用的创建者才能下载的应用
+
         ThrowUtils.throwIf(!app.getUserId().equals(loginUser.getId()), ErrorCode.NO_AUTH_ERROR, "无权限下载该应用");
-        // 5. 构建应用代码目录路径并检查代码目录是否存在
+
         String codeGenType = app.getCodeGenType();
-        String sourceDirName = codeGenType + "_" + appId;
-        String sourceDirPath = AppConstant.CODE_OUTPUT_ROOT_DIR + File.separator + sourceDirName;
+        String sourceDirPath = AppPathUtils.projectDirPath(codeGenType, appId);
         File sourceDir = new File(sourceDirPath);
         ThrowUtils.throwIf(!sourceDir.exists() || !sourceDir.isDirectory(), ErrorCode.NOT_FOUND_ERROR, "应用代码目录不存在");
-        // 6.生成下载文件名
+
         String downloadFilename = String.valueOf(appId);
-        // 7. 调用服务将应用代码目录打包为zip文件并下载
+
         projectDownloadService.downloadProjectAsZip(sourceDirPath, downloadFilename, response);
     }
 }

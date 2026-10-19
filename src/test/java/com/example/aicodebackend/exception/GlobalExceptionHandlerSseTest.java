@@ -19,9 +19,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * SSE 接口异常收口回归测试
- * <p>
- * 流式接口（text/event-stream）出错时不能再以 JSON 结构回写错误体，
- * 否则会抛出 HttpMessageNotWritableException，并触发异常处理器的二次调用与 Tomcat 错误页渲染。
+ * 流式接口（text/event-stream）出错时不能再以 JSON 结构回写错误体……
  */
 class GlobalExceptionHandlerSseTest {
 

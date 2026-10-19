@@ -23,9 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 工具调用消息处理的回归测试
- * <p>
- * 推送给前端和落库的内容都必须保持完整，保证用户「查看对话」时能看到完整历史；
- * 控制模型上下文的压缩发生在加载对话记忆时（见 TextUtilsTest）。
+ * 推送给前端和落库的内容都必须保持完整，保证用户「查看对话」时能看到完整历史……
  */
 class JsonMessageStreamHandlerTest {
 
@@ -109,10 +107,7 @@ class JsonMessageStreamHandlerTest {
 
     /**
      * HTML / 多文件模式：思考过程原样下发给前端，同时单独落库到 {@code chat_history.thinking}
-     * <p>
-     * 回归背景（实测）：这两个模式以前用 {@code Flux<String>} 接模型输出，思考内容在 langchain4j 的
-     * Reactor 适配层就被丢掉了；改成 TokenStream + 消息流之后，必须保证：
-     * 思考走 {@code ai_thinking} 消息下发（前端才有思考面板），正文里不含推理内容，且思考单独一列落库。
+     * 回归背景（实测）：这两个模式以前用 {@code Flux<String>} 接模型输出，思考内容在 langchain4j 的……
      */
     @Test
     @DisplayName("HTML/多文件：思考过程单列落库，正文与思考互不污染")
@@ -141,9 +136,7 @@ class JsonMessageStreamHandlerTest {
 
     /**
      * 构建被测处理器，并按 ToolMessageRenderer 的职责注入它需要的工具实例
-     * <p>
-     * 工具实例在容器外无法自动装配，这里手动设置 ToolManager 的注入字段，
-     * 再把它交给 ToolMessageRenderer（工具展示文案统一由它生成）。
+     * 工具实例在容器外无法自动装配，这里手动设置 ToolManager 的注入字段……
      */
     private JsonMessageStreamHandler createHandler() {
         ToolManager toolManager = new ToolManager();
@@ -157,10 +150,7 @@ class JsonMessageStreamHandlerTest {
 
     /**
      * 手写 ChatHistoryService 桩对象，仅捕获落库的消息内容
-     * <p>
      * 这里用 JDK 动态代理而不是 Mockito —— 当前运行环境下 byte-buddy 无法初始化 MockMaker。
-     *
-     * @param persistedMessages 用于收集落库消息的列表
      */
     private ChatHistoryService stubChatHistoryService(List<String> persistedMessages) {
         return stubChatHistoryService(persistedMessages, null);
@@ -168,12 +158,7 @@ class JsonMessageStreamHandlerTest {
 
     /**
      * 手写 ChatHistoryService 桩对象，捕获落库的正文与思考过程
-     * <p>
-     * 思考过程走 {@link ChatHistoryService#addAiChatMessage} 单独一列，正文走
-     * {@link ChatHistoryService#addChatMessage}（无思考时）。
-     *
-     * @param persistedMessages 用于收集落库消息（正文）的列表
-     * @param persistedThinking 用于收集思考过程的列表，为 null 时不关心
+     * 思考过程走 {@link ChatHistoryService#addAiChatMessage} 单独一列，正文走……
      */
     private ChatHistoryService stubChatHistoryService(List<String> persistedMessages, List<String> persistedThinking) {
         return (ChatHistoryService) Proxy.newProxyInstance(

@@ -16,13 +16,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 用<b>真实模型输出</b>做回归：{@code temp/probe-*.txt} 是探测脚本抓下来的原始流内容。
- * <p>
- * 这些文件记录了实测现象：模型会吞掉"标签名与属性之间的空格"（{@code <!DOCTYPEhtml>}、
- * {@code <linkrel="stylesheet"href="style.css">}），导致 CSS / JavaScript 引用失效，
- * 用户看到的就是"生成的网站没有样式、没有交互"。
- * <p>
- * 文件不存在时跳过（它们只是排查用的样本，不进版本库）。
+ * 用真实模型输出做回归：{@code temp/probe-*.txt} 是探测脚本抓下来的原始流内容。
+ * 这些文件记录了实测现象：模型会吞掉"标签名与属性之间的空格"（{@code <!DOCTYPEhtml>}、……
  */
 class RealModelOutputRegressionTest {
 
@@ -72,12 +67,8 @@ class RealModelOutputRegressionTest {
     }
 
     /**
-     * 记录一个重要的实测事实：deepseek-v4.1-flash 在多文件模式下<b>经常只输出 HTML 代码块</b>
-     * （{@code index.html} 里却已经写好了 {@code <link href="style.css">} 与 {@code <script src="script.js">}）。
-     * <p>
-     * 解析层在这里只能如实返回"CSS / JS 缺失"，真正的补齐由
-     * {@code AiCodeGeneratorFacade#completeMissingFiles} 负责（见 AiCodeGeneratorFacadeCompletionTest）。
-     * 这个用例保证"缺失检测"没有被后续改动悄悄优化掉。
+     * 记录一个重要的实测事实：deepseek-v4.1-flash 在多文件模式下经常只输出 HTML 代码块
+     * （{@code index.html} 里却已经写好了 {@code <link href="style.css">} 与 {@code <script src="script.js">}）……
      */
     @Test
     void multiFileProbeWithoutCssBlocksShouldReportMissing() throws IOException {
@@ -93,9 +84,7 @@ class RealModelOutputRegressionTest {
         assertNull(result.getJsCode(), "模型没输出 js 代码块时，解析结果必须为空（由门面层补全）");
     }
 
-    /**
-     * 找出第一处粘连片段，便于断言失败时定位
-     */
+    /** 找出第一处粘连片段，便于断言失败时定位 */
     private static String firstGlued(String html) {
         for (String snippet : new String[]{"<!DOCTYPEh", "<htmll", "<metac", "<linkr", "<headerc", "<divc", "<scriptc"}) {
             int index = html.indexOf(snippet);
@@ -106,9 +95,7 @@ class RealModelOutputRegressionTest {
         return "未定位到";
     }
 
-    /**
-     * 样本目录本身应可读（避免路径写错导致上面的用例静默跳过）
-     */
+    /** 样本目录本身应可读（避免路径写错导致上面的用例静默跳过） */
     @Test
     void tempDirectoryShouldBeReadable() throws IOException {
         assertTrue(Files.isDirectory(TEMP_DIR), "样本目录应存在: " + TEMP_DIR);

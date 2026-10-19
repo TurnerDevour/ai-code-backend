@@ -1,36 +1,25 @@
 package com.example.aicodebackend.ai.tools;
 
 import cn.hutool.json.JSONObject;
-import com.example.aicodebackend.constant.AppConstant;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolMemoryId;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 
-/**
- * 文件修改工具
- * 支持 AI 通过工具调用的方式修改文件内容
- */
 @Slf4j
 @Component
-public class FileModifyTool extends BaseTool {
+public class FileModifyTool extends AbstractFileTool {
 
     @Tool("修改文件内容，用新内容替换指定的旧内容")
-    public String modifyFile(@P("文件的相对路径") String relativeFilePath, @P("要替换的旧内容") String oldContent, @P("替换后的新内容") String newContent, @ToolMemoryId Long appId) {
+    public String modifyFile(@P("文件的相对路径") String relativeFilePath, @P("要替换的旧内容") String oldContent,
+                             @P("替换后的新内容") String newContent, @ToolMemoryId Long appId) {
         try {
-            Path path = Paths.get(relativeFilePath);
-            if (!path.isAbsolute()) {
-                String projectDirName = "vue_project_" + appId;
-                Path projectRoot = Paths.get(AppConstant.CODE_OUTPUT_ROOT_DIR, projectDirName);
-                path = projectRoot.resolve(relativeFilePath);
-            }
+            Path path = resolveProjectPath(relativeFilePath, appId);
             if (!Files.exists(path) || !Files.isRegularFile(path)) {
                 return "错误：文件不存在或不是文件 - " + relativeFilePath;
             }
@@ -45,7 +34,9 @@ public class FileModifyTool extends BaseTool {
             Files.writeString(path, modifiedContent, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
             log.info("成功修改文件: {}", path.toAbsolutePath());
             return "文件修改成功: " + relativeFilePath;
-        } catch (IOException e) {
+        } catch (PathOutsideProjectException e) {
+            return "错误：路径不在项目目录内 - " + relativeFilePath;
+        } catch (Exception e) {
             String errorMessage = "修改文件失败: " + relativeFilePath + ", 错误: " + e.getMessage();
             log.error(errorMessage, e);
             return errorMessage;
@@ -64,11 +55,8 @@ public class FileModifyTool extends BaseTool {
 
     @Override
     public String generateToolExecutedResult(JSONObject arguments) {
-        String relativeFilePath = arguments.getStr("relativeFilePath");
-        String oldContent = arguments.getStr("oldContent");
-        String newContent = arguments.getStr("newContent");
         return String.format("""
-                [🔧 工具调用] %s %s
+                %s
                 
                 修改前内容:
                 ```
@@ -78,6 +66,7 @@ public class FileModifyTool extends BaseTool {
                 ```
                 %s
                 ```
-                """, getDisplayName(), relativeFilePath, oldContent, newContent);
+                """, toolCallHeader(arguments.getStr("relativeFilePath")),
+                arguments.getStr("oldContent"), arguments.getStr("newContent"));
     }
 }

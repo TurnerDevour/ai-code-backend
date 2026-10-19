@@ -18,9 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 截图临时目录自动清理的单元测试
- * <p>
- * 关注的语义：过期的截图目录要被回收，正在使用（未过期）的产物绝不能被误删，
- * 并且清理范围只限于截图目录本身（生成的应用源码目录不归它管）。
+ * 关注的语义：过期的截图目录要被回收，正在使用（未过期）的产物绝不能被误删……
  */
 class ScreenshotTempCleanerTest {
 

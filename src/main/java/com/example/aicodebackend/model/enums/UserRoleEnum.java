@@ -9,6 +9,11 @@ public enum UserRoleEnum {
     USER("用户", "user"),
     ADMIN("管理员", "admin");
 
+    /** 注解参数需要编译期常量 */
+    public static final String USER_VALUE = "user";
+
+    public static final String ADMIN_VALUE = "admin";
+
     private final String text;
 
     private final String value;
@@ -18,12 +23,12 @@ public enum UserRoleEnum {
         this.value = value;
     }
 
-    /**
-     * 根据 value 获取枚举
-     *
-     * @param value 枚举值的value
-     * @return 枚举值
-     */
+    /** 是否管理员角色 */
+    public static boolean isAdmin(String role) {
+        return ADMIN.value.equals(role);
+    }
+
+    /** 根据 value 获取枚举 */
     public static UserRoleEnum getEnumByValue(String value) {
         if (ObjUtil.isEmpty(value)) {
             return null;

@@ -13,10 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Chromium / ChromeDriver 定位与兼容性检查的回归测试
- * <p>
- * 锁住线上故障的那一种情况：驱动 155、浏览器 154，Selenium 报
- * {@code session not created: This version of ChromeDriver only supports Chrome version 155}，
- * 所有截图（应用封面）整体失败。这里保证"这种组合一定被判为不兼容"，且失败原因能直接指导修复。
+ * 锁住线上故障的那一种情况：驱动 155、浏览器 154，Selenium 报……
  */
 class ChromeInstallationTest {
 

@@ -13,14 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 流式消息 -> 对话历史内容的转换规则
- * <p>
- * 背景（实测问题）：LangChain4j 对"工具执行被终止"的情况同样会回调 onToolExecuted
- * （参数不是合法 JSON、工具名不存在、工具内部抛异常），此时<b>文件并没有写入</b>。
- * 如果历史里不做区分，"写了文件"和"根本没写"会长得一模一样：
- * 用户看到的是 AI 说改好了，页面却没有任何变化，而且完全无从排查。
- * <p>
- * 另一条规则：AI 思考过程（{@code type=ai_thinking}）<b>不属于正文</b>，
- * 它由 {@code chat_history.thinking} 单独落库并在对话页顶部单独展示。
+ * 背景（实测问题）：LangChain4j 对"工具执行被终止"的情况同样会回调 onToolExecuted……
  */
 class AppServiceImplHistoryContentTest {
 
@@ -75,9 +68,7 @@ class AppServiceImplHistoryContentTest {
 
     /**
      * 思考过程不能混进正文
-     * <p>
-     * VUE_PROJECT 用推理模型，一轮里思考内容的体量常常远超正文。混进正文的后果：
-     * 对话历史里"模型怎么想的"和"给用户看的结果"糊成一团，模型上下文也被推理内容挤爆。
+     * VUE_PROJECT 用推理模型，一轮里思考内容的体量常常远超正文。混进正文的后果……
      */
     @Test
     @DisplayName("AI 思考过程不进入对话正文")

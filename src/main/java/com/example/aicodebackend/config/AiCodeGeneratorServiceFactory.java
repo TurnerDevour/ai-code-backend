@@ -1,17 +1,24 @@
 package com.example.aicodebackend.config;
 
+import cn.hutool.core.util.StrUtil;
 import com.example.aicodebackend.ai.AiCodeGeneratorService;
 import com.example.aicodebackend.ai.provider.StreamingChatModelRegistry;
 import com.example.aicodebackend.ai.tools.*;
 import com.example.aicodebackend.constant.ChatHistoryConstant;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
+import com.example.aicodebackend.model.entity.ChatHistory;
 import com.example.aicodebackend.model.enums.AIModelTypeEnum;
+import com.example.aicodebackend.model.enums.ChatMessageTypeEnum;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
 import com.example.aicodebackend.service.ChatHistoryService;
+import com.example.aicodebackend.utils.TextUtils;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.service.AiServices;
@@ -24,6 +31,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
 
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 @Data
@@ -33,17 +41,13 @@ public class AiCodeGeneratorServiceFactory {
 
     /**
      * Vue 工程模式下允许的最大工具轮次（LLM ↔ 工具 往返次数）
-     * <p>
      * LangChain4j 的默认值是 100，而一次往返包含一次完整的模型调用（推理模型通常几秒到几十秒），
-     * 一旦模型陷入"反复重写同一批文件"，100 轮在用户看来就是"死循环"。
-     * 正常 Vue 工程（系统提示词要求文件数 < 30，每个文件 1 轮）远达不到这个上限，
-     * 因此收敛在这个值上：超限立刻失败并给出可读提示，而不是继续空转烧 token。
+     * 一旦模型陷入"反复重写同一批文件"，100 轮在用户看来就是"死循环"……
      */
     private static final int VUE_MAX_TOOL_CALL_ROUND_TRIPS = 60;
 
     /**
      * 按 AI 模型类型取流式模型的注册表，见 {@link StreamingChatModelRegistry}。
-     * <p>
      * 这里只依赖注册表、不再逐个注入模型 Bean：容器里可能存在多个 {@link StreamingChatModel}
      * （含 starter 自动装配的那个），逐个 @Qualifier 注入既容易歧义，也让"新增一个模型"必须改本类构造函数。
      */
@@ -81,31 +85,19 @@ public class AiCodeGeneratorServiceFactory {
             })
             .build();
 
-    /**
-     * 根据 appId 获取服务（带缓存）这个方法是为了兼容历史逻辑
-     */
+    /** 根据 appId 获取服务（带缓存）这个方法是为了兼容历史逻辑 */
     public AiCodeGeneratorService getAiCodeGeneratorService(long appId) {
-        return getAiCodeGeneratorService(appId, CodeGenTypeEnum.HTML, AIModelTypeEnum.DEEPSEEK_V4_1_FLASH);
+        return getAiCodeGeneratorService(appId, CodeGenTypeEnum.HTML, AIModelTypeEnum.DEFAULT_MODEL);
     }
 
-    /**
-     * 根据 appId 和代码生成类型获取服务（带缓存），使用默认模型 deepseek-v4.1-flash
-     */
+    /** 根据 appId 和代码生成类型获取服务（带缓存） */
     public AiCodeGeneratorService getAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenType) {
-        return getAiCodeGeneratorService(appId, codeGenType, AIModelTypeEnum.DEEPSEEK_V4_1_FLASH);
+        return getAiCodeGeneratorService(appId, codeGenType, AIModelTypeEnum.DEFAULT_MODEL);
     }
 
-    /**
-     * 根据 appId、代码生成类型和 AI 模型类型获取服务（带缓存）
-     *
-     * @param appId       应用 id
-     * @param codeGenType 代码生成类型
-     * @param aiModelType AI 模型类型，为空时回落到 deepseek-v4.1-flash
-     *
-     * @return AI 代码生成服务
-     */
+    /** 根据 appId、代码生成类型和 AI 模型类型获取服务（带缓存） */
     public AiCodeGeneratorService getAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenType, AIModelTypeEnum aiModelType) {
-        AIModelTypeEnum modelType = aiModelType == null ? AIModelTypeEnum.DEEPSEEK_V4_1_FLASH : aiModelType;
+        AIModelTypeEnum modelType = aiModelType == null ? AIModelTypeEnum.DEFAULT_MODEL : aiModelType;
         // 新一轮生成开始前的记忆自愈：把"上一轮异常中断留下的不完整工具上下文"清掉。
         // 必须在这里（而不是记忆读取路径）做，原因见 ChatMemorySanitizer#repairStoredMessages 的说明。
         repairStoredMemory(appId);
@@ -115,10 +107,7 @@ public class AiCodeGeneratorServiceFactory {
 
     /**
      * 修复存储里的不完整工具上下文（新一轮开始时调用一次）
-     * <p>
      * 修复失败不影响本轮生成：脏数据最多让这一轮被接口拒绝，用户重试时会再修一次。
-     *
-     * @param appId 应用 id（小于等于 0 表示不关联具体应用的默认实例，无需修复）
      */
     private void repairStoredMemory(long appId) {
         if (appId <= 0) {
@@ -136,15 +125,8 @@ public class AiCodeGeneratorServiceFactory {
 
     /**
      * 失效某个应用缓存的生成服务
-     * <p>
      * 使用场景：一次生成因为"assistant 消息带 tool_calls 却没有工具结果"这类记忆损坏而失败时，
-     * 已经缓存的 {@link AiCodeGeneratorService} 内部持有损坏的记忆快照，不清掉它，
-     * 该应用之后每次请求都会命中同一个坏实例（实测会一直失败到进程重启）。
-     * 清掉缓存后，下一次请求会重新创建实例并从对话记忆重新加载（此时记忆已在读取时被清洗）。
-     *
-     * @param appId 应用 id
-     *
-     * @return 被失效的缓存项数量
+     * 已经缓存的 {@link AiCodeGeneratorService} 内部持有损坏的记忆快照，不清掉它……
      */
     public synchronized int invalidateAiCodeGeneratorService(long appId) {
         String prefix = appId + "_";
@@ -159,16 +141,64 @@ public class AiCodeGeneratorServiceFactory {
     }
 
     /**
+     * 把数据库里最近的对话装进记忆（窗口裁剪语义与改造前一致）
+     * 为什么要"清空后重建"：数据库是对话历史的唯一事实源，记忆存储（Redis）里可能残留
+     * 上一轮异常中断留下的副本（例如带 tool_calls 却没有结果的消息）。每次创建实例都按 DB 重建……
+     */
+    protected void loadHistoryIntoMemory(long appId, MessageWindowChatMemory chatMemory) {
+        List<ChatHistory> histories = chatHistoryService.loadRecentChatHistory(appId,
+                ChatHistoryConstant.MEMORY_MAX_MESSAGES);
+        if (histories == null || histories.isEmpty()) {
+            // 与改造前保持一致：没有历史时不清空记忆（这时 Redis 里的内容就是唯一上下文）
+            return;
+        }
+        try {
+            chatMemory.clear();
+            int loaded = 0;
+            for (ChatHistory history : histories) {
+                ChatMessage message = toChatMessage(history);
+                if (message == null) {
+                    continue;
+                }
+                chatMemory.add(message);
+                loaded++;
+            }
+            log.info("加载对话历史到记忆成功，appId: {}, 加载条数: {}", appId, loaded);
+        } catch (Exception e) {
+            // 记忆存储（Redis）不可用时按"没有历史"继续：历史装载失败不应该让整轮生成失败
+            // （这条容错是从改造前 ChatHistoryServiceImpl 里原样保留下来的）
+            log.error("加载对话历史到记忆失败（按无历史继续），appId: {}", appId, e);
+        }
+    }
+
+    /**
+     * 数据库记录转换成模型上下文消息
+     * 用户消息就是真实指令，原样进入上下文；AI 消息先改写工具调用记录、再压缩代码块、最后兜底截断
+     * （完整源码只留在数据库里供用户查看历史，不参与多轮上下文，否则会撑爆上下文与费用）……
+     */
+    protected static ChatMessage toChatMessage(ChatHistory history) {
+        String type = history.getMessageType();
+        String text = history.getMessage();
+        if (ChatMessageTypeEnum.USER.getValue().equals(type)) {
+            return StrUtil.isBlank(text) ? null : UserMessage.from(text);
+        }
+        if (ChatMessageTypeEnum.AI.getValue().equals(type)) {
+            String context = TextUtils.truncate(
+                    // 先改写工具调用记录（否则模型会照抄这个文本格式"假装"调用工具，实测导致 0 次真实调用），
+                    // 再压缩代码块、最后兜底截断：改写放在最前面，能顺手丢掉巨型入参，省下大量 token。
+                    TextUtils.compressCodeBlocks(
+                            TextUtils.neutralizeToolCallRecords(text),
+                            ChatHistoryConstant.MEMORY_CODE_BLOCK_MAX_LENGTH),
+                    ChatHistoryConstant.MEMORY_MESSAGE_MAX_LENGTH);
+            return StrUtil.isBlank(context) ? null : AiMessage.from(context);
+        }
+        return null;
+    }
+
+    /**
      * 实际创建服务实例（缓存未命中时调用）
-     * <p>
      * 单独抽成 protected 方法是为了让单测可以子类化替换成桩服务：验证"缺少 CSS/JS 时的补全"
      * 不应该真的去调用模型。
-     *
-     * @param appId           应用 id
-     * @param codeGenTypeEnum 代码生成类型
-     * @param aiModelTypeEnum AI 模型类型
-     *
-     * @return AI 代码生成服务
      */
     protected AiCodeGeneratorService createAiCodeGeneratorService(long appId, CodeGenTypeEnum codeGenTypeEnum, AIModelTypeEnum aiModelTypeEnum) {
         log.info("Creating new AiCodeGeneratorService instance for appId: {}, codeGenType: {}, aiModelType: {}",
@@ -184,7 +214,7 @@ public class AiCodeGeneratorServiceFactory {
         // 对话记忆初始化时，从数据库中加载该应用的历史对话，保证 AI 能记住之前的上下文
         // appId 为 0 表示不关联具体应用的默认实例，无需加载历史
         if (appId > 0) {
-            chatHistoryService.loadChatHistoryToMemory(appId, chatMemory, ChatHistoryConstant.MEMORY_MAX_MESSAGES);
+            loadHistoryIntoMemory(appId, chatMemory);
         }
 
         // 按应用所选的 AI 模型类型取流式模型（未配置或初始化失败时抛出带排查指引的业务异常）
@@ -228,11 +258,8 @@ public class AiCodeGeneratorServiceFactory {
 
     /**
      * 默认生成服务（兼容历史注入点，当前业务代码走 {@link #getAiCodeGeneratorService}）
-     * <p>
      * 必须 {@code @Lazy}：它默认用 deepseek-v4.1-flash，而模型注册表对"配置缺失的模型"是"标记不可用、
-     * 选中时才报错"（目的是让某个平台的 Key / 环境变量没配好时应用仍能启动、其它模型仍可用）。
-     * 一旦这个 Bean 在启动期被急切创建，缺少 ALI_AI_API_KEY 的机器就会整个起不来，
-     * 容错设计当场失效。改成懒加载后，只有真的有人注入它才会去取默认模型。
+     * 选中时才报错"（目的是让某个平台的 Key / 环境变量没配好时应用仍能启动、其它模型仍可用）……
      */
     @Lazy
     @Bean
@@ -240,15 +267,7 @@ public class AiCodeGeneratorServiceFactory {
         return getAiCodeGeneratorService(0L);
     }
 
-    /**
-     * 构建缓存键
-     *
-     * @param appId       应用的唯一标识
-     * @param codeGenType 代码生成类型枚举
-     * @param aiModelType AI 模型类型枚举
-     *
-     * @return 缓存键
-     */
+    /** 构建缓存键 */
     private String buildCacheKey(long appId, CodeGenTypeEnum codeGenType, AIModelTypeEnum aiModelType) {
         return appId + "_" + codeGenType.getValue() + "_" + aiModelType.getValue();
     }

@@ -10,25 +10,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 标签空格修复的「改动边界」测试
- * <p>
- * 背景（实测事故，qwen3.7-plus 生成的时钟页）：脚本里同时含有 {@code i < 60} 与 {@code (num, index) =>}，
- * 这两个符号恰好凑成一对 {@code <} … {@code >}，被标签扫描器当成了一个"标签"，
- * 于是按"属性名=属性值"重排了这段 JavaScript 的空格：
- * <pre>
- * 原始：const mark = document.createElement('div');
- * 落盘：const mark= document.createElement( ' div ' );
- * </pre>
- * {@code createElement(' div ')} 会抛 {@code InvalidCharacterError}，整段脚本中断——
- * 页面"能看但不能用"（时钟停在 00:00:00）。同一处伪标签还会被
- * {@link GeneratedCodeRepair#countGluedTags} 算成"粘连"，让 HTML 本来完好的文档白跑一次修复调用。
- * <p>
- * 这组用例锁住修复范围：只修真正的标记，注释 / {@code <script>} / {@code <style>} 的内容一个字符都不能动。
+ * 背景（实测事故，qwen3.7-plus 生成的时钟页）：脚本里同时含有 {@code i < 60} 与 {@code (num, index) =>}……
  */
 class GeneratedCodeRepairTest {
 
-    /**
-     * 真实失败样本：外层 HTML 确实有标签粘连，脚本本身是好的（已按模型原始输出还原）
-     */
+    /** 真实失败样本：外层 HTML 确实有标签粘连，脚本本身是好的（已按模型原始输出还原） */
     private static final String GLUED_HTML_WITH_CLOCK_SCRIPT = """
             <!DOCTYPE html>
             <htmllang="zh-CN">
@@ -64,13 +50,7 @@ class GeneratedCodeRepairTest {
             </html>
             """;
 
-    /**
-     * 取出 {@code <script>…</script>} 这一段（含标签本身）
-     *
-     * @param html HTML 文本
-     *
-     * @return 脚本片段
-     */
+    /** 取出 {@code <script>…</script>} 这一段（含标签本身） */
     private static String scriptBlock(String html) {
         int start = html.indexOf("<script>");
         int end = html.indexOf("</script>");

@@ -15,27 +15,8 @@ import java.util.Set;
 
 /**
  * 对话记忆的工具消息清洗
- * <p>
  * 解决的问题（实测复现）：模型在流式输出里先发出工具调用（assistant 消息带 {@code tool_calls}），
- * 随后流发生异常/被中断（例如 {@code AI回复失败: null}），这次调用的结果就永远没有机会写进记忆。
- * 于是 Redis 里留下了一条"有 tool_calls、没有对应 tool 结果"的 assistant 消息：
- * <pre>
- * An assistant message with 'tool_calls' must be followed by tool messages responding to each
- * 'tool_call_id'. (insufficient tool messages following tool_calls message)
- * </pre>
- * 更糟的是它会<b>持续生效</b>——之后每次请求都会带上这条记忆，该应用的对话就永久失败
- * （实测 appId 465089248937918464 连续三轮都是这个错误）。
- * <p>
- * 处理方式：读取记忆时做一次一致性校验，把"没有完整工具结果"的 assistant 消息
- * （以及它残留的结果消息）去掉。丢失的只是那一次未完成的工具调用上下文，
- * 相比"整个应用再也不能对话"，这是明显更好的取舍。
- * <p>
- * 同时按 {@code MessageWindowChatMemory} 的规则做窗口裁剪，保证写回的结果不会超过窗口上限
- * （否则下次加载还要再裁一次，且会与我们自己的 evict 语义不一致）。
- * <p>
- * <b>调用时机是这份工具的关键</b>：只能在"新一轮对话开始之前"调用（{@link #repairStoredMessages}），
- * 绝不能在记忆读取路径上调用——否则会把正在进行的工具轮次误删，导致模型反复重写同样的文件、
- * 生成永不收敛（Vue 工程模式的死循环就是这么来的）。
+ * 随后流发生异常/被中断（例如 {@code AI回复失败: null}），这次调用的结果就永远没有机会写进记忆……
  */
 @Slf4j
 public final class ChatMemorySanitizer {
@@ -43,24 +24,12 @@ public final class ChatMemorySanitizer {
     private ChatMemorySanitizer() {
     }
 
-    /**
-     * 判断消息是否含有工具调用请求
-     *
-     * @param message 对话消息
-     *
-     * @return true 表示这是一条带 tool_calls 的 assistant 消息
-     */
+    /** 判断消息是否含有工具调用请求 */
     private static boolean hasToolRequests(ChatMessage message) {
         return message instanceof AiMessage aiMessage && aiMessage.hasToolExecutionRequests();
     }
 
-    /**
-     * 清洗工具消息配对：删除"带 tool_calls 但没有完整结果"的 assistant 消息，以及孤立的工具结果
-     *
-     * @param messages 原始消息列表
-     *
-     * @return 清洗后的新列表（无需清洗时返回等价的列表副本）
-     */
+    /** 清洗工具消息配对：删除"带 tool_calls 但没有完整结果"的 assistant 消息，以及孤立的工具结果 */
     public static List<ChatMessage> sanitizeToolMessages(List<ChatMessage> messages) {
         if (messages == null || messages.isEmpty()) {
             return new ArrayList<>();
@@ -116,14 +85,7 @@ public final class ChatMemorySanitizer {
         return result;
     }
 
-    /**
-     * 校验 assistant 的工具调用是否都有对应结果（id 一一匹配）
-     *
-     * @param aiMessage 带 tool_calls 的 assistant 消息
-     * @param results   紧随其后的工具结果
-     *
-     * @return true 表示配对完整
-     */
+    /** 校验 assistant 的工具调用是否都有对应结果（id 一一匹配） */
     private static boolean isComplete(AiMessage aiMessage, List<ToolExecutionResultMessage> results) {
         List<ToolExecutionRequest> requests = aiMessage.toolExecutionRequests();
         if (results.size() != requests.size()) {
@@ -141,20 +103,8 @@ public final class ChatMemorySanitizer {
 
     /**
      * 在"新一轮对话开始之前"修复存储里的不完整工具上下文
-     * <p>
-     * <b>为什么只能在轮次边界调用</b>：LangChain4j 的工具循环是"先把 assistant(tool_calls) 写进记忆，
-     * 执行完工具再把结果写进去"，中间那一瞬间读到的记忆天然就是"有请求、没有结果"。
-     * 如果把 {@link #sanitizeToolMessages} 放进读取路径，正在进行的工具轮次会被当成脏数据删掉，
-     * 模型永远看不到工具结果，于是反复重写同样的文件、生成永不收敛（实测：Vue 工程模式死循环）。
-     * 只有在"新的一轮开始"这个时刻，"不完整"才等价于"上一轮异常中断留下的残留"，清理才是安全的。
-     * <p>
-     * 调用方：{@code AiCodeGeneratorServiceFactory#getAiCodeGeneratorService}（每个生成请求开始处，
-     * 此时该应用正在进行的工具轮次一定已经结束——同应用的生成由信号量串行化）。
-     *
-     * @param store     记忆存储
-     * @param memoryId  记忆 id（本项目中为 appId）
-     *
-     * @return 被清理掉的消息条数（0 表示记忆本来就是干净的）
+     * 为什么只能在轮次边界调用：LangChain4j 的工具循环是"先把 assistant(tool_calls) 写进记忆，
+     * 执行完工具再把结果写进去"，中间那一瞬间读到的记忆天然就是"有请求、没有结果"……
      */
     public static int repairStoredMessages(ChatMemoryStore store, Object memoryId) {
         if (store == null || memoryId == null) {
@@ -175,14 +125,8 @@ public final class ChatMemorySanitizer {
 
     /**
      * 按 {@code MessageWindowChatMemory} 的规则裁剪窗口
-     * <p>
      * 规则与 langchain4j 保持一致：{@link SystemMessage} 固定在首位不被淘汰；
      * 淘汰 assistant 消息时，其后的工具结果一并淘汰。
-     *
-     * @param messages    消息列表
-     * @param maxMessages 窗口上限
-     *
-     * @return 裁剪后的列表（未超限时原样返回）
      */
     public static List<ChatMessage> trimToWindow(List<ChatMessage> messages, int maxMessages) {
         if (messages == null || messages.size() <= maxMessages) {

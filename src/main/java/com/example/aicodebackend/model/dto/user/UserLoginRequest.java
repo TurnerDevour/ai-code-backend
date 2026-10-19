@@ -10,15 +10,11 @@ import java.io.Serializable;
 @Schema(description = "用户登录请求体")
 public class UserLoginRequest implements Serializable {
 
-    /**
-     * 账号
-     */
+    /** 账号 */
     @Schema(description = "账号", requiredMode = Schema.RequiredMode.REQUIRED)
     private String userAccount;
 
-    /**
-     * 密码
-     */
+    /** 密码 */
     @Schema(description = "密码", requiredMode = Schema.RequiredMode.REQUIRED)
     private String userPassword;
 

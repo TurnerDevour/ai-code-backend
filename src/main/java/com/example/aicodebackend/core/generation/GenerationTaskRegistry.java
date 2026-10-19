@@ -3,13 +3,11 @@ package com.example.aicodebackend.core.generation;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
 import com.example.aicodebackend.ai.model.message.AiResponseMessage;
-import com.example.aicodebackend.constant.AppConstant;
-import com.example.aicodebackend.constant.ChatHistoryConstant;
 import com.example.aicodebackend.core.builder.VueProjectBuilder;
 import com.example.aicodebackend.model.entity.User;
-import com.example.aicodebackend.model.enums.ChatMessageTypeEnum;
 import com.example.aicodebackend.service.AppCodeStateService;
 import com.example.aicodebackend.service.ChatHistoryService;
+import com.example.aicodebackend.utils.AppPathUtils;
 import jakarta.annotation.PreDestroy;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
@@ -27,46 +25,26 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 生成任务注册表（方案 C 的原型，当前只接 VUE_PROJECT）
- * <p>
  * 要解决的问题：原来的生成流与"下发 SSE 的流"是同一条链，客户端断开（用户点返回/关页面）会取消整条链，
- * 于是"模型继续生成的内容"进不了对话历史——实测断开那刻历史里只有 122 字符，而磁盘上的产物有 963 字符。
- * <p>
- * 这里把一条生成拆成两个独立的订阅方：
- * <ul>
- *     <li><b>appId 订阅（累积 + 落库）</b>：内部订阅上游生成流，负责把消息解析成可展示文本累积起来，
- *     并在<b>生成真正结束</b>时写入对话历史。它不对外暴露、也不会被客户端影响，因此历史里拿到的是完整内容；</li>
- *     <li><b>subId 订阅（下发 SSE）</b>：每个 HTTP 请求（或浏览器重连）用不同的 subId 订阅同一份广播，
- *     客户端断开只取消自己的 subId 订阅，不影响 appId 订阅与上游生成。</li>
- * </ul>
- * 同一应用重复提交会复用正在运行的任务；已结束的任务可以被读取（内容与状态）。
- * <p>
- * 为什么用"手动投递"而不是 Reactor 的 Sinks：sink 的订阅是异步建立的，对同步源（单测里的 Flux.just）
- * 与"客户端尚未完成订阅"的时序都很敏感，实测会出现丢头部分片/重复投递；
- * 这里直接持有一个 subscriber 列表，subId 订阅在 {@code doOnSubscribe} 时同步登记，语义确定。
+ * 于是"模型继续生成的内容"进不了对话历史——实测断开那刻历史里只有 122 字符，而磁盘上的产物有 963 字符……
  */
 @Slf4j
 @Component
 public class GenerationTaskRegistry {
 
-    /**
-     * 单条 SSE 数据（sseChunk 已在控制器层做过 JSON 序列化，保持"下发一次、记录一次"的一致性）
-     */
+    /** 单条 SSE 数据（sseChunk 已在控制器层做过 JSON 序列化，保持"下发一次、记录一次"的一致性） */
     public record SseFrame(long seq, String sseChunk) {
     }
 
     /**
      * 带序号的输出帧：控制器把它转成 SSE 的 {@code id:}，客户端续订时回传该序号，
      * 从而精确补发"客户端没收到的那部分"。
-     * <p>
-     * 为什么需要它：服务端的"已产出序号"与"客户端实际收到的序号"会不一致
-     * （生成器继续产出、HTTP 层还有缓冲），只用服务端序号续订会把客户端已经收到的帧再发一遍。
+     * 为什么需要它：服务端的"已产出序号"与"客户端实际收到的序号"会不一致……
      */
     public record SequencedFrame(long seq, String data) {
     }
 
-    /**
-     * 生成任务
-     */
+    /** 生成任务 */
     @Data
     public static class GenerationTask {
         /** 应用ID（一个应用同时只有一条生成任务） */
@@ -79,7 +57,6 @@ public class GenerationTaskRegistry {
         private volatile StringBuilder content = new StringBuilder();
         /**
          * 累积的思考过程（推理模型的 reasoning_content）
-         * <p>
          * 与 {@link #content} 分开累积、分开放：思考过程单独落库到 {@code chat_history.thinking}，
          * 不参与正文（否则历史里正文与推理混在一起，用户读起来也是一团）。
          */
@@ -98,10 +75,8 @@ public class GenerationTaskRegistry {
         private volatile long finishedAt = 0;
         /**
          * 生成结束后的构建状态（Vue 工程用）
-         * <p>
          * 前端在收到 done 之后需要知道 dist 是否已经产出：生成结束到 dist 落地之间有
-         * 一次 npm install + vite build（十几秒到一分钟），这段时间里刷新预览只会看到 404 或旧产物，
-         * 所以这里把构建状态暴露给前端轮询，构建完成后再刷新预览。
+         * 一次 npm install + vite build（十几秒到一分钟），这段时间里刷新预览只会看到 404 或旧产物……
          */
         private volatile BuildStatus buildStatus = BuildStatus.IDLE;
         /** 构建失败原因（buildStatus=FAILED 时） */
@@ -113,7 +88,6 @@ public class GenerationTaskRegistry {
         private volatile Disposable upstream;
         /**
          * 真实工具执行次数（用于识别"模型把工具调用写成文本"的假调用）
-         * <p>
          * 假调用不会执行任何工具：文件一个都不会变，但对话里看起来与真实调用一模一样。
          */
         private final java.util.concurrent.atomic.AtomicInteger realToolRecords =
@@ -136,9 +110,7 @@ public class GenerationTaskRegistry {
         }
     }
 
-    /**
-     * 生成状态
-     */
+    /** 生成状态 */
     public enum GenerationStatus {
         /** 生成中 */
         RUNNING("running"),
@@ -158,9 +130,7 @@ public class GenerationTaskRegistry {
         }
     }
 
-    /**
-     * 生成结束后的构建状态（仅 Vue 工程会进入 RUNNING/FINISHED/FAILED，其它类型恒为 IDLE）
-     */
+    /** 生成结束后的构建状态（仅 Vue 工程会进入 RUNNING/FINISHED/FAILED，其它类型恒为 IDLE） */
     public enum BuildStatus {
         /** 尚未触发构建（非 Vue 工程，或还没走到收尾） */
         IDLE("idle"),
@@ -184,19 +154,12 @@ public class GenerationTaskRegistry {
 
     /**
      * 一条上游产出：下发帧 + 正文累积 + 思考过程累积
-     * <p>
      * 三个通道刻意分开：{@code sseChunk} 原样下发给客户端（前端按 type 分发），
-     * {@code historyChunk} 与 {@code thinkingChunk} 分别累积落库——思考过程不能混进正文，
-     * 否则对话历史与模型上下文里会夹着大段推理内容。
+     * {@code historyChunk} 与 {@code thinkingChunk} 分别累积落库——思考过程不能混进正文……
      */
     public record GenerationEmit(String sseChunk, String historyChunk, String thinkingChunk) {
 
-        /**
-         * 只产出"下发帧 + 正文"时的便捷构造（思考过程为空）
-         *
-         * @param sseChunk     下发帧
-         * @param historyChunk 正文累积内容
-         */
+        /** 只产出"下发帧 + 正文"时的便捷构造（思考过程为空） */
         public GenerationEmit(String sseChunk, String historyChunk) {
             this(sseChunk, historyChunk, "");
         }
@@ -208,9 +171,7 @@ public class GenerationTaskRegistry {
 
     private final VueProjectBuilder vueProjectBuilder;
 
-    /**
-     * 代码状态服务：生成结束后刷新 edit_time，让"改完代码可重新部署"能被识别
-     */
+    /** 代码状态服务：生成结束后刷新 edit_time，让"改完代码可重新部署"能被识别 */
     private final AppCodeStateService appCodeStateService;
 
     public GenerationTaskRegistry(ChatHistoryService chatHistoryService,
@@ -221,15 +182,7 @@ public class GenerationTaskRegistry {
         this.appCodeStateService = appCodeStateService;
     }
 
-    /**
-     * 提交（或复用）生成任务
-     *
-     * @param appId           应用ID
-     * @param loginUser       登录用户
-     * @param upstreamFactory 上游生成流工厂：只有真正需要跑新任务时才会被调用
-     *
-     * @return 任务（调用方随后用 {@link #subscribe} 消费）
-     */
+    /** 提交（或复用）生成任务 */
     public GenerationTask submitOrGet(Long appId, User loginUser,
                                       java.util.function.Supplier<Flux<GenerationEmit>> upstreamFactory) {
         GenerationTask running = tasks.get(appId);
@@ -246,15 +199,7 @@ public class GenerationTaskRegistry {
         return task;
     }
 
-    /**
-     * 用 subId 订阅任务的输出（每个 HTTP 请求一个 subId；客户端断开只影响自己）
-     *
-     * @param task    任务
-     * @param subId   订阅标识（建议用请求 id）
-     * @param fromSeq 从该序号之后开始补发（0 表示从头，即当前累积的全部内容）
-     *
-     * @return 下发给该订阅者的 SSE 流
-     */
+    /** 用 subId 订阅任务的输出（每个 HTTP 请求一个 subId；客户端断开只影响自己） */
     public Flux<SequencedFrame> subscribe(GenerationTask task, String subId, long fromSeq) {
         return Flux.<SequencedFrame>create(sink -> {
             // 1) 先补发历史帧（重连时把用户离开期间的内容补齐）
@@ -289,14 +234,7 @@ public class GenerationTaskRegistry {
         }, FluxSink.OverflowStrategy.BUFFER);
     }
 
-    /**
-     * 查询某个订阅者最后收到的帧序号（断开后用于续订；未知返回 0）
-     *
-     * @param task  任务
-     * @param subId 订阅标识
-     *
-     * @return 已下发到的最新帧序号
-     */
+    /** 查询某个订阅者最后收到的帧序号（断开后用于续订；未知返回 0） */
     public long lastSentSeq(GenerationTask task, String subId) {
         Subscriber subscriber = task.subscribers.get(subId);
         if (subscriber != null) {
@@ -305,24 +243,11 @@ public class GenerationTaskRegistry {
         return task.lastSentSeqBySub.getOrDefault(subId, 0L);
     }
 
-    /**
-     * 订阅者：持有 sink 与"已下发到哪一帧"，便于断开时记录进度
-     *
-     * @param subId       订阅标识
-     * @param sink        下发通道
-     * @param lastSentSeq 已下发帧序号（单元素数组，便于 lambda 内推进）
-     */
+    /** 订阅者：持有 sink 与"已下发到哪一帧"，便于断开时记录进度 */
     private record Subscriber(String subId, FluxSink<SequencedFrame> sink, long[] lastSentSeq) {
     }
 
-    /**
-     * 等待某个应用的任务结束（测试/内部使用）
-     *
-     * @param appId     应用ID
-     * @param timeoutMs 超时时间（毫秒）
-     *
-     * @return 是否在超时前结束
-     */
+    /** 等待某个应用的任务结束（测试/内部使用） */
     public boolean awaitFinished(Long appId, long timeoutMs) {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
@@ -340,16 +265,12 @@ public class GenerationTaskRegistry {
         return false;
     }
 
-    /**
-     * 查询任务（可能为 null）
-     */
+    /** 查询任务（可能为 null） */
     public Optional<GenerationTask> find(Long appId) {
         return Optional.ofNullable(tasks.get(appId));
     }
 
-    /**
-     * 启动任务：独立订阅上游，累积 + 落库 + 广播
-     */
+    /** 启动任务：独立订阅上游，累积 + 落库 + 广播 */
     private void startTask(GenerationTask task, Flux<GenerationEmit> upstream) {
         Disposable disposable = upstream.subscribe(
                 emit -> {
@@ -377,14 +298,8 @@ public class GenerationTaskRegistry {
 
     /**
      * 该段累积内容是不是"工具真的执行了"的记录
-     * <p>
      * 真实的工具执行由 {@code AppServiceImpl#extractHistoryContent} 生成，形如
-     * {@code "\n[工具调用] name {args}\n"} 或 {@code "\n⚠️ [工具调用失败] name {args}\n"}；
-     * 而模型自己"用文本假装调用工具"时，这些字样是混在它的正文里的，不会以换行开头。
-     *
-     * @param historyChunk 累积内容片段
-     *
-     * @return true 表示这是一次真实工具执行的记录
+     * {@code "\n[工具调用] name {args}\n"} 或 {@code "\n⚠️ [工具调用失败] name {args}\n"}……
      */
     private static boolean isRealToolRecord(String historyChunk) {
         String trimmed = StrUtil.nullToEmpty(historyChunk).stripLeading();
@@ -393,23 +308,15 @@ public class GenerationTaskRegistry {
 
     /**
      * 检测"模型把工具调用写成了文本"的假调用数量
-     * <p>
      * 假调用不会执行任何工具：文件一个都不会变，但对话里看起来跟真实调用一模一样，
      * 用户会以为已经改好了（实测：整轮 0 次工具执行、0 个文件落盘，界面却全是"工具调用"）。
-     *
-     * @param content          本轮累积内容
-     * @param realToolRecords  真实工具执行次数
-     *
-     * @return 假调用处数（至少 0）
      */
     private static int countFakeToolCalls(String content, int realToolRecords) {
         int mentions = StrUtil.count(content, "[工具调用]") + StrUtil.count(content, "[工具调用失败]");
         return Math.max(0, mentions - realToolRecords);
     }
 
-    /**
-     * 广播一帧：记录序号后投递给所有订阅者，并推进每个订阅者的"已下发序号"
-     */
+    /** 广播一帧：记录序号后投递给所有订阅者，并推进每个订阅者的"已下发序号" */
     private void emit(GenerationTask task, String sseChunk) {
         List<Subscriber> targets;
         long seq;
@@ -430,13 +337,7 @@ public class GenerationTaskRegistry {
         });
     }
 
-    /**
-     * 生成真正结束时的收尾：落库完整内容 + 结束所有订阅者 + 触发构建（只执行一次）
-     *
-     * @param task       任务
-     * @param status     结束状态
-     * @param errorMsg   失败原因
-     */
+    /** 生成真正结束时的收尾：落库完整内容 + 结束所有订阅者 + 触发构建（只执行一次） */
     private void finish(GenerationTask task, GenerationStatus status, String errorMsg) {
         synchronized (task) {
             if (!task.isRunning()) {
@@ -511,12 +412,11 @@ public class GenerationTaskRegistry {
 
     /**
      * 触发 Vue 工程异步构建（在独立线程上，避免阻塞收尾）
-     * <p>
      * 构建状态写回任务对象：前端在生成结束后轮询 {@code /app/chat/gen/status}，
      * 等 buildStatus 变成 finished/failed 再刷新预览，避免刷新到"还没有 dist"的空白页。
      */
     private void triggerBuild(Long appId) {
-        String projectPath = AppConstant.CODE_OUTPUT_ROOT_DIR + "/vue_project_" + appId;
+        String projectPath = AppPathUtils.vueProjectDir(appId).toString();
         // 找不到任务（理论上不会发生）时也要构图，避免空指针
         GenerationTask task = tasks.get(appId);
         if (task != null) {
@@ -551,9 +451,7 @@ public class GenerationTaskRegistry {
         });
     }
 
-    /**
-     * 统计该应用已有的 AI 消息条数
-     */
+    /** 统计该应用已有的 AI 消息条数 */
     private int countAiMessages(Long appId) {
         try {
             return chatHistoryService.countAiMessages(appId);
@@ -563,16 +461,7 @@ public class GenerationTaskRegistry {
         }
     }
 
-    /**
-     * 中断标记（保留给需要区分"中断"语义的调用方）
-     */
-    public static String interruptedContent(String content) {
-        return ChatHistoryConstant.INTERRUPTED_MARKER + StrUtil.nullToEmpty(content);
-    }
-
-    /**
-     * 应用关闭：中断所有生成任务，避免线程悬挂
-     */
+    /** 应用关闭：中断所有生成任务，避免线程悬挂 */
     @PreDestroy
     public void shutdown() {
         log.info("关闭生成任务注册表，进行中的任务数: {}", tasks.values().stream().filter(GenerationTask::isRunning).count());
@@ -586,9 +475,7 @@ public class GenerationTaskRegistry {
         });
     }
 
-    /**
-     * 是否处于"生成中"（对外的简洁判断）
-     */
+    /** 是否处于"生成中"（对外的简洁判断） */
     public boolean isRunning(Long appId) {
         GenerationTask task = tasks.get(appId);
         return task != null && task.isRunning();

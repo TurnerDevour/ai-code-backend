@@ -3,9 +3,7 @@ package com.example.aicodebackend.model.enums;
 import cn.hutool.core.util.ObjUtil;
 import lombok.Getter;
 
-/**
- * 对话消息类型枚举
- */
+/** 对话消息类型枚举 */
 @Getter
 public enum ChatMessageTypeEnum {
 
@@ -22,13 +20,7 @@ public enum ChatMessageTypeEnum {
         this.value = value;
     }
 
-    /**
-     * 根据 value 获取枚举
-     *
-     * @param value 枚举值的value
-     *
-     * @return 枚举值
-     */
+    /** 根据 value 获取枚举 */
     public static ChatMessageTypeEnum getEnumByValue(String value) {
         if (ObjUtil.isEmpty(value)) {
             return null;

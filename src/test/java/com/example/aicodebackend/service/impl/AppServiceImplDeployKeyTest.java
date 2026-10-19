@@ -26,20 +26,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 部署 deployKey 抢占（CAS）的并发回归测试
- * <p>
- * 回归背景：旧实现是"先读 deploy_key，为空就生成一个，最后无条件 updateById"，
- * 同一个应用的并发部署会各自生成一个 key、各写一份部署目录，后写覆盖先写——
- * 前端拿到的部署地址失效，磁盘上留下孤儿目录。
- * <p>
- * 修复后：抢占走条件更新 {@code UPDATE ... WHERE id=? AND deploy_key IS NULL}，
- * 只有一行会命中；抢不到的请求复用数据库里的值。
- * 这里用真实并发（多线程同时调用私有方法）验证：无论多少线程并发，只有一个 key 会被写入。
+ * 回归背景：旧实现是"先读 deploy_key，为空就生成一个，最后无条件 updateById"……
  */
 class AppServiceImplDeployKeyTest {
 
-    /**
-     * 模拟 app 表：只保存 deploy_key，且 updateByCondition 严格按"条件是否命中"返回影响行数
-     */
+    /** 模拟 app 表：只保存 deploy_key，且 updateByCondition 严格按"条件是否命中"返回影响行数 */
     private static final class FakeAppTable {
 
         private final AtomicReference<String> deployKey = new AtomicReference<>(null);
@@ -48,9 +39,7 @@ class AppServiceImplDeployKeyTest {
 
         private final Set<String> attemptedKeys = Collections.synchronizedSet(new HashSet<>());
 
-        /**
-         * 模拟 MyBatis-Flex 的条件更新：只有条件命中（deploy_key 仍为 NULL）才写入并返回 1
-         */
+        /** 模拟 MyBatis-Flex 的条件更新：只有条件命中（deploy_key 仍为 NULL）才写入并返回 1 */
         int updateByCondition(App entity, QueryCondition condition) {
             updateCalls.incrementAndGet();
             String candidate = entity == null ? null : entity.getDeployKey();
@@ -115,7 +104,6 @@ class AppServiceImplDeployKeyTest {
         }
         pool.shutdownNow();
 
-        // 1. 所有请求必须拿到同一个 deployKey
         Set<String> distinctKeys = new HashSet<>();
         for (AtomicReference<String> result : results) {
             assertNotNull(result.get(), "抢占结果不应为空");
@@ -123,12 +111,10 @@ class AppServiceImplDeployKeyTest {
         }
         assertEquals(1, distinctKeys.size(), "并发抢占产生了多个 deployKey: " + distinctKeys);
 
-        // 2. 数据库里最终只有一个 key，且与返回值一致
         String saved = table.getDeployKey();
         assertNotNull(saved, "deployKey 未能落库");
         assertEquals(saved, distinctKeys.iterator().next(), "返回值与落库值不一致");
 
-        // 3. 候选项（生成了但没抢到的 key）不应超过尝试次数，且落库 key 一定在候选中
         assertTrue(table.attemptedKeys.contains(saved), "落库的 key 不在生成的候选集中");
         assertTrue(table.updateCalls.get() >= 1, "未发生条件更新");
     }
@@ -160,9 +146,7 @@ class AppServiceImplDeployKeyTest {
 
     /**
      * 构造一个注入了假 AppMapper 的 AppServiceImpl
-     * <p>
-     * AppServiceImpl 是 ServiceImpl 的子类，Mapper 由 MyBatis-Flex 注入；
-     * 测试里用 JDK 动态代理伪造 updateByCondition / selectOneById 的数据库语义。
+     * AppServiceImpl 是 ServiceImpl 的子类，Mapper 由 MyBatis-Flex 注入……
      */
     private AppServiceImpl newAppService(FakeAppTable table) {
         AppServiceImpl appService = new AppServiceImpl();

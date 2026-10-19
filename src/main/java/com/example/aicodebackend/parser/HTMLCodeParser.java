@@ -1,100 +1,27 @@
 package com.example.aicodebackend.parser;
 
+import cn.hutool.core.util.StrUtil;
 import com.example.aicodebackend.ai.model.HTMLCodeResult;
-import lombok.extern.slf4j.Slf4j;
 
-import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
-/**
- * HTML 代码解析器
- * <p>
- * 容错点（本次修复）：
- * <ol>
- *     <li>代码块围栏允许 {@code ```html} 之外的空格、大小写、以及未闭合（模型截断）；</li>
- *     <li>代码块缺失时回退到"整段内容"，并从文本里定位 {@code <!DOCTYPE} / {@code <html} 起点，
- *     丢掉模型在代码块之外写的解释文字；</li>
- *     <li>修复标签名与属性之间空格被吞掉的问题（见 {@link GeneratedCodeRepair}）——
- *     否则内联的 CSS / JavaScript 会因为标签解析失败而完全不生效。</li>
- * </ol>
- */
-@Slf4j
+/** HTML 单文件解析器：兼容 Markdown 代码块、结构化 JSON 与整段 HTML */
 public class HTMLCodeParser implements CodeParser<HTMLCodeResult> {
-
-    /**
-     * 兜底提取：整段内容里没有代码块时，从第一个 HTML 起始标记开始截取
-     * <p>
-     * {@code \s*} 而不是 {@code \s+}：模型丢空格时 doctype 会被粘成 {@code <!DOCTYPEhtml>}
-     */
-    private static final Pattern HTML_START_PATTERN =
-            Pattern.compile("<!doctype\\s*html|<html[\\s>]", Pattern.CASE_INSENSITIVE);
 
     @Override
     public HTMLCodeResult parserCode(String codeContent) {
         HTMLCodeResult result = new HTMLCodeResult();
-        String content = codeContent == null ? "" : codeContent;
-        String htmlCode = extractHtmlCode(content);
-        if (htmlCode == null || htmlCode.isBlank()) {
-            // 结构化输出（LangChain4j 给 POJO 返回类型追加的 JSON 格式要求）：
-            // 模型可能直接回 {"htmlCode":"…","description":"…"}，而不是 ```html 代码块
+        String content = StrUtil.nullToEmpty(codeContent);
+        String htmlCode = GeneratedCodeRepair.extractHtmlCode(content);
+        if (StrUtil.isBlank(htmlCode)) {
             StructuredCodeAnswer answer = StructuredCodeAnswer.parse(content);
             htmlCode = answer.htmlCode();
             if (answer.isEmpty() && content.indexOf('<') >= 0) {
-                // 没有代码块、也没有结构化字段，但内容里确实有标签：
-                // 回退到整段内容（尽量从 HTML 起始标记开始，丢掉解释文字）；
-                // 完全不回退的话，模型把 JSON 原文铺出来时又会被整段当成 HTML 落盘
-                htmlCode = fallbackToWholeContent(content);
+                String fromDocumentStart = GeneratedCodeRepair.htmlFromDocumentStart(content);
+                htmlCode = fromDocumentStart == null ? content : fromDocumentStart;
             }
         }
-        if (htmlCode != null && !htmlCode.isBlank()) {
-            String trimmed = htmlCode.trim();
-            if (GeneratedCodeRepair.hasGluedTags(trimmed)) {
-                log.warn("检测到 HTML 标签与属性粘连（模型输出空格丢失），已自动修复");
-                trimmed = GeneratedCodeRepair.repairHtml(trimmed);
-            }
-            result.setHtmlCode(trimmed);
+        if (StrUtil.isNotBlank(htmlCode)) {
+            result.setHtmlCode(GeneratedCodeRepair.normalizeHtml(htmlCode));
         }
         return result;
-    }
-
-    /**
-     * 提取 HTML 代码内容
-     *
-     * @param content 原始内容
-     *
-     * @return HTML 代码，未找到返回 null
-     */
-    private static String extractHtmlCode(String content) {
-        Map<String, String> blocks = GeneratedCodeRepair.extractCodeBlocks(content);
-        for (String alias : new String[]{"html", "htm", "xhtml"}) {
-            String block = blocks.get(alias);
-            if (block != null && !block.isBlank()) {
-                return block;
-            }
-        }
-        // 模型偶尔会用 text / xml 标注 HTML 代码块
-        for (String alias : new String[]{"text", "xml", "plaintext"}) {
-            String block = blocks.get(alias);
-            if (block != null && block.contains("<") && !block.isBlank()) {
-                return block;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * 兜底：没有可识别的代码块时，从 HTML 起始标记截取到结尾
-     *
-     * @param content 原始内容
-     *
-     * @return 截取后的内容（找不到起始标记时返回原文）
-     */
-    private static String fallbackToWholeContent(String content) {
-        Matcher matcher = HTML_START_PATTERN.matcher(content);
-        if (matcher.find()) {
-            return content.substring(matcher.start());
-        }
-        return content;
     }
 }

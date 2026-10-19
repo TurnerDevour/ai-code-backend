@@ -7,10 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 百炼接口地址解析测试
- * <p>
- * 这一层最容易出错也最难排查：地址拼错的表现是 404 / 401，而官方文档里同时存在
- * "OpenAI SDK 用的 base_url"和"HTTP 直接调用用的 endpoint"两种写法，业务空间 ID 又嵌在域名里。
- * 用例覆盖真实会遇到的几种配置形态。
+ * 这一层最容易出错也最难排查：地址拼错的表现是 404 / 401，而官方文档里同时存在……
  */
 class BailianEndpointResolverTest {
 

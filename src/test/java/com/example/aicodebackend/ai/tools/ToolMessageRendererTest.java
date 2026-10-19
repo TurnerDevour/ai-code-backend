@@ -10,22 +10,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 工具展示文本生成的回归测试
- * <p>
- * 背景（实测问题）：实时 SSE 只下发 {@code name / arguments / result} 三个原始字段，
- * 前端只能自己"猜"每个工具的参数结构，于是把 {@code modifyFile} 也当成 {@code writeToFile} 渲染：
- * 界面显示「写入文件 src/pages/HomePage.vue」配一个<b>空代码块</b>（modifyFile 的参数是
- * oldContent / newContent，根本没有 content），用户看到的就是"AI 调用工具写文件输出空白"，
- * 而文件其实已经被正确修改（预览正常）。
- * <p>
- * 现在展示文本由工具自己声明、随消息下发，这里锁住每个工具的展示形态。
+ * 背景（实测问题）：实时 SSE 只下发 {@code name / arguments / result} 三个原始字段……
  */
 class ToolMessageRendererTest {
 
     private final ToolMessageRenderer renderer = createRenderer();
 
-    /**
-     * 容器外手工装配工具管理器（工具本身是无状态的，直接 new 即可）
-     */
+    /** 容器外手工装配工具管理器（工具本身是无状态的，直接 new 即可） */
     private static ToolMessageRenderer createRenderer() {
         ToolManager toolManager = new ToolManager();
         ReflectionTestUtils.setField(toolManager, "tools", new BaseTool[]{
@@ -37,7 +28,6 @@ class ToolMessageRendererTest {
 
     /**
      * 修改文件：必须给出"修改前 / 修改后"的内容
-     * <p>
      * 这正是本次修复的线上问题：按 writeToFile 渲染会得到一个空代码块。
      */
     @Test
@@ -75,7 +65,6 @@ class ToolMessageRendererTest {
 
     /**
      * "选择工具"阶段也要用工具自己的中文名
-     * <p>
      * 原来是前端硬编码的「[🔧 选择工具] 写入文件」：调 modifyFile / deleteFile 时文案全是错的。
      */
     @Test

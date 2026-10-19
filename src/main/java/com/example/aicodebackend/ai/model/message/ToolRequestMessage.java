@@ -5,9 +5,7 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
 
-/**
- * 工具调用消息
- */
+/** 工具调用消息 */
 @Data
 @EqualsAndHashCode(callSuper = true)
 @NoArgsConstructor
@@ -21,7 +19,6 @@ public class ToolRequestMessage extends StreamMessage {
 
     /**
      * 展示文本（形如 {@code [🔧 选择工具] 修改文件内容}）
-     * <p>
      * 由后端按工具自己声明的展示文案生成，见 {@code ToolMessageRenderer}：
      * 前端不要按工具名猜文案，否则调 {@code modifyFile} 也会显示成"写入文件"。
      */

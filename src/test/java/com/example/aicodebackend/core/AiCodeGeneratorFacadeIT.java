@@ -16,20 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 代码生成链路的真机联调（需要外网 + 真实 API Key + MySQL/Redis）
- * <p>
- * 它起的是完整 Spring 上下文，并且真的让模型生成一份代码，因此按仓库惯例用 {@code *IT} 命名，
- * 不随 {@code mvn test} 执行——否则没配 Key 的机器和 CI 上必然是红的。
- * <p>
- * 手动验证（环境变量需已配置，取值见 application-dev.yaml）：
- * <pre>
- * mvn -o test "-Dtest=AiCodeGeneratorFacadeIT"
- * </pre>
- * 这里验证的是"配置齐全时整条链路能跑通"：模型构建 → 流式生成 → 落盘 → 记忆写入；
- * 解析、修复、补齐等细粒度逻辑由同包的单元测试覆盖，不需要真调用。
- * <p>
- * 另外它锁住一条只有真调用才能确认的行为：HTML / 多文件模式也要下发思考过程
- * （{@code type=ai_thinking}）。这两个模式曾经因为用 {@code Flux<String>} 接模型输出，
- * 思考内容被 langchain4j 的 Reactor 适配器直接丢掉，前端「AI 思考过程」面板永远是空的。
+ * 它起的是完整 Spring 上下文，并且真的让模型生成一份代码，因此按仓库惯例用 {@code *IT} 命名……
  */
 @SpringBootTest
 @EnabledIfEnvironmentVariable(named = "ALI_AI_API_KEY", matches = ".+")

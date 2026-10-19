@@ -28,14 +28,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * 流式生成链路必须真的能通过 LangChain4j 调起来
- * <p>
- * 背景（实测事故）：本应用的 {@code AiServices} 只配置了 {@link StreamingChatModel}（没有阻塞式
- * {@code ChatModel}），而 LangChain4j 对<b>非流式</b>返回类型会去用阻塞模型，直接抛
- * {@code IllegalArgumentException: chatModel cannot be null}。因此接口里的方法必须全部是流式的，
- * 否则「自动修复」在生产里每次都会静默失败（只留下一条日志），坏代码照样落盘。
- * <p>
- * 这里用一个假流式模型把整条链路（AiServices 代理 → 系统提示词资源 → 流式聚合 → 解析 → 落盘）跑通，
- * 不依赖真实模型与 API Key。
+ * 背景（实测事故）：本应用的 {@code AiServices} 只配置了 {@link StreamingChatModel}（没有阻塞式……
  */
 class AiCodeGeneratorFacadeRepairModelTest {
 
@@ -80,9 +73,7 @@ class AiCodeGeneratorFacadeRepairModelTest {
 
     /**
      * 用假流式模型构建 AiServices 代理
-     * <p>
-     * 必须配 ChatMemoryProvider：接口里 {@code generateVueProjectCodeStream} 带 {@code @MemoryId}，
-     * 不配的话 AiServices 在 build 阶段就会报 IllegalConfiguration。
+     * 必须配 ChatMemoryProvider：接口里 {@code generateVueProjectCodeStream} 带 {@code @MemoryId}……
      */
     private static AiCodeGeneratorService serviceWith(String... replies) {
         return AiServices.builder(AiCodeGeneratorService.class)
@@ -91,9 +82,7 @@ class AiCodeGeneratorFacadeRepairModelTest {
                 .build();
     }
 
-    /**
-     * 直接用 AiServices 代理验证：流式修复方法在"只有流式模型"的配置下可以正常返回内容
-     */
+    /** 直接用 AiServices 代理验证：流式修复方法在"只有流式模型"的配置下可以正常返回内容 */
     @Test
     void repairMethodShouldWorkThroughAiServicesWithStreamingModelOnly() {
         AiCodeGeneratorService service = serviceWith("```css\nbody { margin: 0; }\n```\n");
@@ -242,9 +231,7 @@ class AiCodeGeneratorFacadeRepairModelTest {
         }
     }
 
-    /**
-     * 记录每次请求上下文的假流式模型（用于验证"多轮流式调用共享对话记忆"）
-     */
+    /** 记录每次请求上下文的假流式模型（用于验证"多轮流式调用共享对话记忆"） */
     private static class RecordingStreamingChatModel implements StreamingChatModel {
 
         private final List<ChatRequest> requests = new ArrayList<>();
@@ -265,9 +252,7 @@ class AiCodeGeneratorFacadeRepairModelTest {
 
     /**
      * 流式接口也要共享对话记忆：第二轮请求必须带上第一轮的用户消息与模型回复
-     * <p>
-     * 这条链只配置了 {@code StreamingChatModel}，因此记忆的累积与回放必须通过流式方法验证
-     * （非流式方法在本应用里根本调不通：{@code chatModel cannot be null}）。
+     * 这条链只配置了 {@code StreamingChatModel}，因此记忆的累积与回放必须通过流式方法验证……
      */
     @Test
     void streamingCallsShouldShareChatMemory() {
@@ -300,10 +285,6 @@ class AiCodeGeneratorFacadeRepairModelTest {
     /**
      * 把一次 TokenStream 调用收成"正文增量列表"（HTML / 多文件模式的返回类型是 TokenStream，
      * 这样才能同时拿到正文与思考两条增量，见 {@code AiCodeGeneratorService}）
-     *
-     * @param tokenStream 模型的流式输出
-     *
-     * @return 正文增量列表
      */
     private static List<String> collect(dev.langchain4j.service.TokenStream tokenStream) {
         List<String> chunks = new ArrayList<>();

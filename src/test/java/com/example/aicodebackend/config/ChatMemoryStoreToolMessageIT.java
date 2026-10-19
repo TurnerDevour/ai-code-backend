@@ -22,20 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 真实存储（Redis）上的工具消息行为集成测试
- * <p>
- * 需要本机 Redis，因此按仓库惯例用 {@code *IT} 命名（不随 {@code mvn test} 跑）；
- * 手动验证：{@code mvn -o test "-Dtest=ChatMemoryStoreToolMessageIT"}。
- * <p>
- * 两个关键约定：
- * <ol>
- *     <li><b>读取路径必须原样返回</b>：LangChain4j 的工具循环是"先写 assistant(tool_calls)，
- *     执行完工具再写结果"，而每次写记忆前都会先读一遍存储。读取时若把"有 tool_calls、没有结果"
- *     当成脏数据清掉，正在进行的工具轮次会连同结果一起消失，模型永远看不到工具结果、
- *     反复重写同一批文件（Vue 工程模式的死循环就是这么来的）；</li>
- *     <li><b>脏数据只在轮次边界清理</b>：上一轮异常中断留下的残留由
- *     {@link ChatMemorySanitizer#repairStoredMessages} 在新一轮开始前清掉，
- *     否则该应用之后每次请求都会被接口拒绝（insufficient tool messages following tool_calls message）。</li>
- * </ol>
+ * 需要本机 Redis，因此按仓库惯例用 {@code *IT} 命名（不随 {@code mvn test} 跑）……
  */
 @SpringBootTest
 class ChatMemoryStoreToolMessageIT {

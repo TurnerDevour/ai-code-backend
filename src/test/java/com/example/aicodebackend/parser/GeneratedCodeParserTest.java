@@ -10,11 +10,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * 生成代码解析与修复的单元测试
- * <p>
- * 用例取自真实模型输出（deepseek-v4.1-flash / deepseek-v4-pro 实测）：
- * 1) 标签名与属性之间的空格被吞掉（{@code <linkrel="stylesheet"href="style.css">}）；
- * 2) 多文件模式只输出 HTML 代码块，CSS / JavaScript 代码块整个缺失；
- * 3) 代码块围栏缺少换行 / 语言标记大小写不一致。
+ * 用例取自真实模型输出（deepseek-v4.1-flash / deepseek-v4-pro 实测）……
  */
 class GeneratedCodeParserTest {
 
@@ -63,9 +59,7 @@ class GeneratedCodeParserTest {
         assertTrue(GeneratedCodeRepair.hasGluedTags(GLUED_HTML));
     }
 
-    /**
-     * 边界用例：单字母标签、自闭合标签、布尔属性、自定义元素都不能被改坏
-     */
+    /** 边界用例：单字母标签、自闭合标签、布尔属性、自定义元素都不能被改坏 */
     @Test
     void repairHtmlShouldHandleEdgeCases() {
         // 单字母标签与属性粘连
@@ -176,8 +170,7 @@ class GeneratedCodeParserTest {
 
     /**
      * 模型有时会把示例代码里的围栏也写进 HTML 代码块，导致 scanner 认为 HTML 块"没有闭合"，
-     * 后面的真正 CSS / JS 代码块被一起吞进 HTML 块。此时应在 HTML 块内部再次扫描，
-     * 尽量把 CSS / JS 捞回来（这是"有损但可用"的兜底，远好于整站没有样式）。
+     * 后面的真正 CSS / JS 代码块被一起吞进 HTML 块。此时应在 HTML 块内部再次扫描……
      */
     @Test
     void multiFileParserShouldRecoverBlocksNestedInsideHtmlBlock() {
@@ -199,9 +192,7 @@ class GeneratedCodeParserTest {
 
     /**
      * 嵌套围栏的边界情形（记录当前的有损行为，避免以后误以为它一定精确）：
-     * 上例中闭围栏出现的时机让顶层 scanner 认为 HTML 块尚未结束，真正的 CSS 块被吞进 HTML 块，
-     * 此时只能从 HTML 块内部捞回示例里的 CSS——可用但不是最优。
-     * 这里断言"至少捞到了 CSS"，同时把它标记为已知损失。
+     * 上例中闭围栏出现的时机让顶层 scanner 认为 HTML 块尚未结束，真正的 CSS 块被吞进 HTML 块……
      */
     @Test
     void multiFileParserShouldAtLeastReturnSomeCssWhenFencesAreAmbiguous() {
@@ -224,9 +215,7 @@ class GeneratedCodeParserTest {
 
     /**
      * JSON 转义文本不能被"标签修复"改坏
-     * <p>
-     * 实测事故：把结构化 JSON 原文当成 HTML 交给修复逻辑，{@code lang=\"zh-CN\"} 里的反斜杠与引号
-     * 被当成了"新属性名"，于是补出一个空格，变成 {@code lang=\ " zh-CN\ "}（产物目录里出现过 700 多处）。
+     * 实测事故：把结构化 JSON 原文当成 HTML 交给修复逻辑，{@code lang=\"zh-CN\"} 里的反斜杠与引号……
      */
     @Test
     void repairHtmlShouldNotMangleJsonEscapedQuotes() {
@@ -241,8 +230,7 @@ class GeneratedCodeParserTest {
 
     /**
      * 真实样本：模型按 LangChain4j 的 JSON 格式要求回答（而不是 Markdown 代码块），
-     * 并且这一轮把代码里的行内空格全吞掉了——必须能按字段拆出三个文件，
-     * 而不是把 JSON 原文（连 "cssCode" 字段名一起）写进 index.html。
+     * 并且这一轮把代码里的行内空格全吞掉了——必须能按字段拆出三个文件……
      */
     @Test
     void multiFileParserShouldUnderstandStructuredJsonAnswer() {
@@ -286,9 +274,7 @@ class GeneratedCodeParserTest {
         assertFalse(html.contains("description"), "解释性字段不应混进 HTML: " + html);
     }
 
-    /**
-     * 结构化字段存在但内容不像一个页面时，不能把 JSON / 散文当成 index.html 落盘
-     */
+    /** 结构化字段存在但内容不像一个页面时，不能把 JSON / 散文当成 index.html 落盘 */
     @Test
     void multiFileParserShouldNotFallbackToJsonTextAsHtml() {
         String json = "{\"cssCode\":\"body{margin:0}\",\"description\":\"只给了样式\"}";

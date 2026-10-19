@@ -10,14 +10,8 @@ import org.springframework.util.StringUtils;
 
 /**
  * 对话记忆存储配置
- * <p>
  * 100 并发压测暴露的问题：Spring Session（Spring Data Redis/Jedis）与 langchain4j 社区版的
- * {@code RedisChatMemoryStore} 各自用默认的小连接池 + 2s 命令超时，并发下大量出现
- * {@code RedisConnectionFailureException: SocketTimeoutException: Read timed out}，
- * 表现为 SSE 接口返回 HTTP 500。
- * <p>
- * 这里换成自研的 {@link JedisChatMemoryStore}，连接池与命令超时全部可配置，
- * 并复用 Spring 的 {@code spring.data.redis.jedis.pool.*} 配置项，做到"一处配置、两处生效"。
+ * {@code RedisChatMemoryStore} 各自用默认的小连接池 + 2s 命令超时，并发下大量出现……
  */
 @Slf4j
 @Configuration
@@ -61,13 +55,7 @@ public class RedisChatMemoryStoreConfig {
 
     /**
      * 把 Spring 风格的时间字符串（如 10s / 500ms）解析成毫秒
-     * <p>
      * 解析失败时回落到默认值，避免一个配置写法错误导致应用无法启动。
-     *
-     * @param value        配置值
-     * @param defaultValue 默认毫秒数
-     *
-     * @return 毫秒数
      */
     private long parseDurationMillis(String value, long defaultValue) {
         try {

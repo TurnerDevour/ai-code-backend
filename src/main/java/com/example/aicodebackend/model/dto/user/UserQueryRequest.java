@@ -11,29 +11,19 @@ import java.io.Serializable;
 @Data
 public class UserQueryRequest extends PageRequest implements Serializable {
 
-    /**
-     * id
-     */
+    /** id */
     private Long id;
 
-    /**
-     * 用户昵称
-     */
+    /** 用户昵称 */
     private String username;
 
-    /**
-     * 账号
-     */
+    /** 账号 */
     private String userAccount;
 
-    /**
-     * 简介
-     */
+    /** 简介 */
     private String userProfile;
 
-    /**
-     * 用户角色：user/admin/ban
-     */
+    /** 用户角色：user/admin/ban */
     private String userRole;
 
     @Serial

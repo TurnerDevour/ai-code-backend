@@ -11,9 +11,7 @@ import java.io.Serializable;
 @Schema(description = "删除请求")
 public class DeleteRequest implements Serializable {
 
-    /**
-     * id
-     */
+    /** id */
     @NotNull(message = "id不能为空")
     @Schema(description = "id", requiredMode = Schema.RequiredMode.REQUIRED)
     private Long id;

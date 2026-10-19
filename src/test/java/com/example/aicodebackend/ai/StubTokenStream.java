@@ -17,16 +17,7 @@ import java.util.function.Consumer;
 
 /**
  * 测试用的 {@link TokenStream} 桩
- * <p>
- * HTML / 多文件 / Vue 工程三个模式都通过 {@code TokenStream} 取模型输出（这样才能同时拿到
- * 正文与思考两条增量，见 {@code AiCodeGeneratorService}），因此单测里的假服务也要能产出 TokenStream。
- * {@link TokenStream} 的 {@code onPartialThinking} 等方法没有可用的默认实现（默认实现会抛
- * {@code UnsupportedOperationException}），所以必须显式实现，不能只实现 {@code onPartialResponse}。
- * <p>
- * 同时实现带上下文的 {@code onPartialThinkingWithContext}：生产代码靠它拿到 {@link StreamingHandle}
- * 来取消跑飞的模型调用，桩对象必须一起实现，否则测不到"跑飞时真的取消了"。
- * <p>
- * 语义与真实 TokenStream 一致：先注册回调，{@code start()} 时才按顺序回调。
+ * HTML / 多文件 / Vue 工程三个模式都通过 {@code TokenStream} 取模型输出（这样才能同时拿到……
  */
 public class StubTokenStream implements TokenStream {
 
@@ -52,29 +43,18 @@ public class StubTokenStream implements TokenStream {
     private Consumer<Throwable> errorConsumer = throwable -> {
     };
 
-    /**
-     * 只产出正文增量的桩
-     *
-     * @param responseChunks 正文增量（按给定顺序回调）
-     */
+    /** 只产出正文增量的桩 */
     public StubTokenStream(List<String> responseChunks) {
         this(responseChunks, List.of());
     }
 
-    /**
-     * 同时产出思考增量的桩
-     *
-     * @param responseChunks 正文增量
-     * @param thinkingChunks 思考增量（在正文之前回调，与真实模型一致）
-     */
+    /** 同时产出思考增量的桩 */
     public StubTokenStream(List<String> responseChunks, List<String> thinkingChunks) {
         this.responseChunks = new ArrayList<>(responseChunks);
         this.thinkingChunks = new ArrayList<>(thinkingChunks);
     }
 
-    /**
-     * 模型调用是否已被取消（跑飞中止的断言点）
-     */
+    /** 模型调用是否已被取消（跑飞中止的断言点） */
     public boolean isCancelled() {
         return cancelled.get();
     }

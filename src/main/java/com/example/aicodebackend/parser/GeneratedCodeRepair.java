@@ -1,6 +1,7 @@
 package com.example.aicodebackend.parser;
 
 import cn.hutool.core.util.StrUtil;
+import com.example.aicodebackend.model.enums.GeneratedFileEnum;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -13,62 +14,22 @@ import java.util.regex.Pattern;
 
 /**
  * 生成代码的容错修复与代码块扫描
- * <p>
  * 背景（实测结论）：即使系统提示词明确要求"输出三个代码块"，模型仍会输出被破坏的 HTML——
- * 标签名与属性之间的空格会被吞掉，例如：
- * <pre>
- * &lt;!DOCTYPEhtml&gt;
- * &lt;metacharset="UTF-8"&gt;
- * &lt;linkrel="stylesheet"href="style.css"&gt;
- * </pre>
- * 这种 HTML 在浏览器里根本不是有效标签，{@code href} / {@code src} 都不会生效，
- * 表现就是"生成出来的网站没有样式、没有交互"，即使 style.css / script.js 已经正确落盘。
- * <p>
- * 这里做的是<b>纯语法层</b>的修复：只在明确能判定为"标签名/属性粘连"的位置补空格，
- * 不猜测、不重写内容，避免把正确的代码改坏。
- * <p>
- * 修复范围严格限定在"真正的标记"上：注释、{@code <script>}、{@code <style>} 的内容整段跳过
- * （见 {@link #PROTECTED_REGION_PATTERN}）——脚本与样式里的 {@code <} / {@code >} 是代码的一部分，
- * 按标签去"修空格"会把 JavaScript 改坏。
+ * 标签名与属性之间的空格会被吞掉，例如……
  */
 public final class GeneratedCodeRepair {
 
     /**
      * 整个标签：从 {@code <} 到最近的 {@code >}
-     * <p>
      * 所有修补都只在单个标签内部进行，这样既不会碰到正文文本，也不会把
-     * {@code charset="UTF-8"><meta name="viewport"} 这种"跨标签"的内容误判成粘连
-     * （实测这是最大的误报来源）。
-     * <p>
-     * <b>它只在"非保护区"（见 {@link #PROTECTED_REGION_PATTERN}）内使用</b>：
-     * 该正则在正文里没问题，但脚本里的 {@code i < 60} 与 {@code (num, index) =>} 恰好构成
-     * 一对 {@code <} … {@code >}，会被当成一个"标签"。
+     * {@code charset="UTF-8"><meta name="viewport"} 这种"跨标签"的内容误判成粘连……
      */
     private static final Pattern TAG_PATTERN = Pattern.compile("<[^<>]{0,2000}?>", Pattern.DOTALL);
 
     /**
      * 不参与标签修复的区域：注释、{@code <script>}、{@code <style>}
-     * <p>
      * 背景（实测事故）：这个修复只应该改"HTML 标记"，但脚本里天然存在 {@code <} 与 {@code >}。
-     * qwen3.7-plus 生成的一个时钟页里：
-     * <pre>
-     * for (let i = 0; i &lt; 60; i++) {          // &lt; 是"小于号"
-     *     const mark = document.createElement('div');
-     *     numbers.forEach((num, index) =&gt; {    // &gt; 是箭头函数
-     * </pre>
-     * 从 {@code i < 60} 的 {@code <} 到 {@code =>} 的 {@code >} 被 {@link #TAG_PATTERN} 匹配成了
-     * 一个"标签"，{@link #repairTag} 于是按"属性名=属性值"重排这段 JavaScript 的空格：
-     * <pre>
-     * 原始：const mark = document.createElement('div');
-     * 落盘：const mark= document.createElement( ' div ' );
-     * </pre>
-     * {@code createElement(' div ')} 会抛 {@code InvalidCharacterError}，整段脚本中断——
-     * 页面"能看但不能用"。更糟的是 {@link #countGluedTags} 也会把这个伪标签算成"粘连"，
-     * 于是"HTML 明明没有粘连"的文档也会被触发一次无用的修复。
-     * <p>
-     * 因此凡是浏览器<b>也不会当成标记解析</b>的区域（注释、脚本、样式）都必须整段跳过：
-     * 只在该区域之外做标签修复。未闭合的 {@code <script>} / {@code <style>} 不构成保护区
-     * （模型截断时输出本身已不可用），此时行为与修复前一致。
+     * qwen3.7-plus 生成的一个时钟页里……
      */
     private static final Pattern PROTECTED_REGION_PATTERN = Pattern.compile(
             "<!--.*?-->"
@@ -78,10 +39,8 @@ public final class GeneratedCodeRepair {
 
     /**
      * 已知 HTML 标签名：用于消解"标签名与属性名粘连"的歧义（见 {@link #splitKnownTagName}）。
-     * <p>
      * 必须包含常见的单字母标签（{@code a} / {@code b} / {@code i} / {@code p} / {@code s} / {@code u}），
-     * 否则 {@code <ahref="x">} 这类无法修复；但也因为存在单字母标签，
-     * 拆名必须优先匹配"最长的已知标签名"，否则 {@code <scriptsrc="x">} 会被拆成 {@code <s criptsrc="x">}。
+     * 否则 {@code <ahref="x">} 这类无法修复；但也因为存在单字母标签……
      */
     private static final Set<String> KNOWN_TAG_NAMES = Set.of(
             "html", "head", "body", "meta", "link", "title", "style", "script", "base", "noscript",
@@ -95,62 +54,71 @@ public final class GeneratedCodeRepair {
             "param", "del", "ins", "q", "cite", "dfn", "kbd", "samp", "var", "sub", "sup", "ruby", "rt", "rp",
             "wbr", "bdi", "bdo", "data", "address", "center", "font", "big", "strike", "tt", "marquee");
 
-    /**
-     * 三个文件的键名（解析结果、修复指令、日志统一用它，避免各处硬编码字符串）
-     */
-    public static final String FILE_HTML = "html";
-    public static final String FILE_CSS = "css";
-    public static final String FILE_JS = "js";
+    /** 三个文件的键名（解析结果、修复指令、日志统一用它） */
+    public static final String FILE_HTML = GeneratedFileEnum.HTML.getKey();
+    public static final String FILE_CSS = GeneratedFileEnum.CSS.getKey();
+    public static final String FILE_JS = GeneratedFileEnum.JS.getKey();
 
-    /**
-     * 代码块语言别名：HTML
-     */
-    public static final String[] HTML_BLOCK_ALIASES = {"html", "htm", "xhtml"};
+    /** 代码块语言别名 */
+    public static final String[] HTML_BLOCK_ALIASES = GeneratedFileEnum.HTML.getBlockAliases();
+    public static final String[] CSS_BLOCK_ALIASES = GeneratedFileEnum.CSS.getBlockAliases();
+    public static final String[] JS_BLOCK_ALIASES = GeneratedFileEnum.JS.getBlockAliases();
 
-    /**
-     * 代码块语言别名：CSS（模型偶尔写 scss / less）
-     */
-    public static final String[] CSS_BLOCK_ALIASES = {"css", "scss", "sass", "less"};
-
-    /**
-     * 代码块语言别名：JavaScript（模型偶尔写 ts / mjs）
-     */
-    public static final String[] JS_BLOCK_ALIASES = {"js", "javascript", "mjs", "cjs", "ts", "typescript"};
+    /** 模型偶尔把 HTML 标成 text / xml */
+    public static final String[] HTML_TEXT_BLOCK_ALIASES = {"text", "xml", "plaintext"};
 
     private GeneratedCodeRepair() {
     }
 
     /**
      * HTML 起始标记
-     * <p>
      * {@code \s*} 而不是 {@code \s+}：模型丢空格时 doctype 会被粘成 {@code <!DOCTYPEhtml>}
      */
     private static final Pattern HTML_START_PATTERN =
             Pattern.compile("<!doctype\\s*html|<html[\\s>]", Pattern.CASE_INSENSITIVE);
 
-    /**
-     * 判断文本是否像一个完整的 HTML 页面
-     *
-     * @param text 文本
-     *
-     * @return true 表示包含 {@code <!DOCTYPE html>} 或 {@code <html …>}
-     */
+    /** 判断文本是否像一个完整的 HTML 页面 */
     public static boolean looksLikeHtmlDocument(String text) {
         return StrUtil.isNotBlank(text) && HTML_START_PATTERN.matcher(text).find();
     }
 
+    /** 从 HTML 起始标记处截取，找不到时返回 null */
+    public static String htmlFromDocumentStart(String content) {
+        if (StrUtil.isBlank(content)) {
+            return null;
+        }
+        Matcher matcher = HTML_START_PATTERN.matcher(content);
+        return matcher.find() ? content.substring(matcher.start()) : null;
+    }
+
+    /** 提取 HTML：优先 html/htm/xhtml 代码块，其次 text/xml 代码块 */
+    public static String extractHtmlCode(String content) {
+        Map<String, String> blocks = extractCodeBlocks(content);
+        String html = firstNonBlank(blocks, HTML_BLOCK_ALIASES);
+        if (html != null) {
+            return html;
+        }
+        for (String alias : HTML_TEXT_BLOCK_ALIASES) {
+            String block = blocks.get(alias);
+            if (block != null && !block.isBlank() && block.contains("<")) {
+                return block;
+            }
+        }
+        return null;
+    }
+
+    /** 去空白并修复粘连标签 */
+    public static String normalizeHtml(String html) {
+        if (StrUtil.isBlank(html)) {
+            return html;
+        }
+        String trimmed = html.trim();
+        return hasGluedTags(trimmed) ? repairHtml(trimmed) : trimmed;
+    }
+
     /**
      * 从模型输出里取三个文件的内容
-     * <p>
      * 两种形态都支持，代码块优先（那是系统提示词要求的格式）：
-     * <ol>
-     *     <li>Markdown 代码块：{@code ```html … ```} / {@code ```css … ```} / {@code ```javascript … ```}；</li>
-     *     <li>结构化输出：{@code {"htmlCode":"…","cssCode":"…","jsCode":"…"}}（LangChain4j 对 POJO 返回类型的要求）。</li>
-     * </ol>
-     *
-     * @param content 模型输出的原始文本
-     *
-     * @return 键为 {@code html} / {@code css} / {@code js} 的有序映射；缺失的文件不会出现在映射里
      */
     public static Map<String, String> extractFiles(String content) {
         Map<String, String> files = new LinkedHashMap<>();
@@ -168,14 +136,7 @@ public final class GeneratedCodeRepair {
         return files;
     }
 
-    /**
-     * 按别名顺序取第一个非空代码块
-     *
-     * @param blocks  代码块映射
-     * @param aliases 语言别名
-     *
-     * @return 代码内容，未找到返回 null
-     */
+    /** 按别名顺序取第一个非空代码块 */
     public static String firstNonBlank(Map<String, String> blocks, String[] aliases) {
         for (String alias : aliases) {
             String block = blocks.get(alias);
@@ -195,15 +156,8 @@ public final class GeneratedCodeRepair {
 
     /**
      * 修复 HTML 文本里"标签名/属性之间空格被吞掉"的问题
-     * <p>
      * 只在确有粘连特征时改动；文本内容（如 &lt;title&gt;简·博客&lt;/title&gt;）不会被影响。
-     * 标签之间的空白也保持原样（那属于代码风格，改动风险大于收益）。
-     * <p>
-     * 注释与 {@code <script>} / {@code <style>} 的内容整段跳过，见 {@link #PROTECTED_REGION_PATTERN}。
-     *
-     * @param html 原始 HTML 文本
-     *
-     * @return 修复后的 HTML 文本（无需修复时原样返回）
+     * 标签之间的空白也保持原样（那属于代码风格，改动风险大于收益）……
      */
     public static String repairHtml(String html) {
         if (StrUtil.isBlank(html)) {
@@ -228,13 +182,7 @@ public final class GeneratedCodeRepair {
         return builder.toString();
     }
 
-    /**
-     * 找出所有"不参与标签修复"的区域（注释 / {@code <script>} / {@code <style>}）
-     *
-     * @param html HTML 文本
-     *
-     * @return 每个区域的 {@code [start, end)} 下标，按出现顺序排列
-     */
+    /** 找出所有"不参与标签修复"的区域（注释 / {@code <script>} / {@code <style>}） */
     private static List<int[]> findProtectedRegions(String html) {
         List<int[]> regions = new ArrayList<>();
         Matcher matcher = PROTECTED_REGION_PATTERN.matcher(html);
@@ -246,15 +194,8 @@ public final class GeneratedCodeRepair {
 
     /**
      * 判断某个区间是否与任一保护区重叠
-     * <p>
      * 用"重叠"而不是"包含"：跨过边界的片段（正文里的 {@code <} 一路匹配到脚本内部）同样不能修，
      * 因为改动它就会动到保护区里的字符。
-     *
-     * @param regions 保护区列表
-     * @param start   区间起点（含）
-     * @param end     区间终点（不含）
-     *
-     * @return true 表示落在保护区内
      */
     private static boolean overlapsProtectedRegion(List<int[]> regions, int start, int end) {
         for (int[] region : regions) {
@@ -265,28 +206,15 @@ public final class GeneratedCodeRepair {
         return false;
     }
 
-    /**
-     * 判断 HTML 文本是否存在"空格被吞掉"的粘连特征（用于日志与回归验证）
-     *
-     * @param html HTML 文本
-     *
-     * @return true 表示存在粘连
-     */
+    /** 判断 HTML 文本是否存在"空格被吞掉"的粘连特征（用于日志与回归验证） */
     public static boolean hasGluedTags(String html) {
         return countGluedTags(html) > 0;
     }
 
     /**
      * 统计存在"标签名/属性粘连"的标签数量
-     * <p>
      * 供 {@link CodeDamageDetector} 打分与门面层日志使用：数量比布尔值更能说明损坏范围。
-     * <p>
-     * 注释与 script / style 区域内的内容不参与统计：那里出现的 {@code <} / {@code >} 是代码本身，
-     * 把它们算成"粘连"会凭空触发一次修复调用（实测多花 80 秒以上，还会把脚本改坏）。
-     *
-     * @param html HTML 文本
-     *
-     * @return 粘连标签数量（0 表示没有粘连）
+     * 注释与 script / style 区域内的内容不参与统计：那里出现的 {@code <} / {@code >} 是代码本身……
      */
     public static int countGluedTags(String html) {
         if (StrUtil.isBlank(html)) {
@@ -309,17 +237,8 @@ public final class GeneratedCodeRepair {
 
     /**
      * 修复单个标签内部的空格丢失
-     * <p>
      * 逐字符扫描：先跳过 {@code <} / {@code </} / 标签名，然后按"属性名 [= 值]"逐个解析属性，
-     * 凡是属性名或属性值<strong>紧贴</strong>在上一段内容之后（中间没有任何空白）就补一个空格。
-     * <p>
-     * 用扫描而不是正则的原因：正则很难同时表达"标签名与属性名的分割点"和"不改动属性取值"
-     * （实测 {@code <span>} 会被误拆成 {@code <s pan>}、合法标签会被补出双空格）。
-     * 这里只插入空格、不改写任何字符，因此合法的标签必然保持原样。
-     *
-     * @param tag 形如 {@code <linkrel="stylesheet"href="style.css">} 的标签
-     *
-     * @return 修复后的标签（没有粘连时原样返回）
+     * 凡是属性名或属性值紧贴在上一段内容之后（中间没有任何空白）就补一个空格……
      */
     private static String repairTag(String tag) {
         // 声明 / 注释 / CDATA（<!DOCTYPE ...>、<!-- -->、<![CDATA[ ]]>）不是普通标签，
@@ -441,14 +360,7 @@ public final class GeneratedCodeRepair {
         return builder.toString();
     }
 
-    /**
-     * 判断下标位置上的内容是否与前一个字符"紧贴"（中间没有任何空白或标签起始符）
-     *
-     * @param tag   标签文本
-     * @param index 当前位置
-     *
-     * @return true 表示需要先补一个空格
-     */
+    /** 判断下标位置上的内容是否与前一个字符"紧贴"（中间没有任何空白或标签起始符） */
     private static boolean needsSeparator(String tag, int index) {
         if (index <= 0) {
             return false;
@@ -459,20 +371,8 @@ public final class GeneratedCodeRepair {
 
     /**
      * 从标签起始位置解析标签名：优先取"最长的已知标签名前缀"
-     * <p>
      * 为什么要按已知标签名匹配：{@code <htmllang="zh-CN">} 里的 {@code htmllang} 在词法上就是一个
-     * 合法标签名，无法用通用规则判断该不该拆。这里用 HTML 标签名表来消歧：
-     * <ul>
-     *     <li>整段就是已知标签（{@code span}）→ 原样返回，不拆（避免 {@code <span>} 被拆成 {@code <s pan>}）；</li>
-     *     <li>最长的已知标签名是它的真前缀（{@code htmllang} → {@code html}、{@code divclass} → {@code div}）
-     *     → 返回该前缀，由调用方在后面补空格；</li>
-     *     <li>没有已知标签名前缀（自定义元素 {@code my-card}）→ 返回空串，交给调用方整体搬运。</li>
-     * </ul>
-     *
-     * @param tag   标签文本（以 {@code <} 开头，可能带 {@code /}）
-     * @param start 标签名起始下标
-     *
-     * @return 标签名（需要在该名字后补空格），无法判断时返回空串
+     * 合法标签名，无法用通用规则判断该不该拆。这里用 HTML 标签名表来消歧……
      */
     private static String splitKnownTagName(String tag, int start) {
         int nameEnd = start;
@@ -502,16 +402,12 @@ public final class GeneratedCodeRepair {
         return "";
     }
 
-    /**
-     * 标签名/属性名允许的字符
-     */
+    /** 标签名/属性名允许的字符 */
     private static boolean isNameChar(char value) {
         return Character.isLetterOrDigit(value) || value == '-' || value == '_' || value == ':';
     }
 
-    /**
-     * 修复 {@code <!DOCTYPEhtml>} 这类声明（含缺少空格的写法）
-     */
+    /** 修复 {@code <!DOCTYPEhtml>} 这类声明（含缺少空格的写法） */
     private static String repairDoctype(String html) {
         return Pattern.compile("<!\\s*DOCTYPE\\s*(?=[A-Za-z])", Pattern.CASE_INSENSITIVE)
                 .matcher(html)
@@ -520,18 +416,8 @@ public final class GeneratedCodeRepair {
 
     /**
      * 把一段文本按 Markdown 代码块切开，返回「语言标识 -> 内容」的有序映射
-     * <p>
      * 相比逐语言写正则：
-     * <ul>
-     *     <li>只把真正位于代码块内的内容当作代码，避免"HTML 代码块里出现的 ```css 字样"串味；</li>
-     *     <li>容忍未闭合的代码块（模型截断时匹配到文本结束）；</li>
-     *     <li>同时兼容 3 个及以上反引号、以及 ~ 作为围栏</li>
-     * </ul>
      * 同一种语言出现多次时只保留第一次（提示词已约束"每种语言只输出一个代码块"）。
-     *
-     * @param markdown 模型输出的完整 Markdown 文本
-     *
-     * @return 语言标识（小写）-> 代码内容
      */
     public static Map<String, String> extractCodeBlocks(String markdown) {
         Map<String, String> blocks = new LinkedHashMap<>();
@@ -572,12 +458,7 @@ public final class GeneratedCodeRepair {
 
     /**
      * 去掉代码内容里因代码块缩进产生的公共前导空格（最多 3 个），保留相对缩进
-     * <p>
      * 不做这一步的话，模型把代码块整体缩进时（例如段落里的列表嵌套），落盘的 HTML 每一行都会多出空格。
-     *
-     * @param content 代码块内容
-     *
-     * @return 去掉公共缩进后的内容
      */
     private static String removeFenceIndent(String content) {
         if (StrUtil.isEmpty(content)) {
@@ -609,9 +490,7 @@ public final class GeneratedCodeRepair {
         return builder.toString();
     }
 
-    /**
-     * 去掉内容末尾多余的换行（代码块闭合前的空行不属于代码）
-     */
+    /** 去掉内容末尾多余的换行（代码块闭合前的空行不属于代码） */
     private static String stripTrailingNewline(String content) {
         int end = content.length();
         while (end > 0 && (content.charAt(end - 1) == '\n' || content.charAt(end - 1) == '\r')) {

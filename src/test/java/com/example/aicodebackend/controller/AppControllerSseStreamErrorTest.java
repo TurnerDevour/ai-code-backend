@@ -23,12 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 流式生成接口的错误兜底回归测试
- * <p>
- * 接口契约：该接口始终以 SSE 形式响应，任何失败都转成 type=error 数据帧 + done 事件，
- * 既不抛出异常给 Servlet 层，也不依赖客户端的 Accept 头。
- * <p>
- * 说明：这里用 JDK 动态代理手写桩对象，而不是 Mockito —— 当前运行环境下 byte-buddy
- * 无法初始化 MockMaker，Mockito 会直接报错。
+ * 接口契约：该接口始终以 SSE 形式响应，任何失败都转成 type=error 数据帧 + done 事件……
  */
 class AppControllerSseStreamErrorTest {
 
@@ -99,15 +94,7 @@ class AppControllerSseStreamErrorTest {
         assertEquals("done", events.get(1).event(), "最后一个事件应为 done");
     }
 
-    /**
-     * 以桩对象构造 AppController 并消费其流式响应
-     *
-     * @param appController 已注入桩服务的控制器
-     * @param appId         应用ID
-     * @param prompt        提示词
-     *
-     * @return 控制器实际下发的事件列表
-     */
+    /** 以桩对象构造 AppController 并消费其流式响应 */
     private List<ServerSentEvent<String>> invoke(AppController appController, Long appId, String prompt) {
         return appController
                 .chatToGenCode(appId, prompt, new MockHttpServletRequest())
@@ -130,9 +117,7 @@ class AppControllerSseStreamErrorTest {
         return stubAppService(null, exception);
     }
 
-    /**
-     * 手写 AppService 桩对象：chatToGenCode 返回指定流，或直接抛出指定异常
-     */
+    /** 手写 AppService 桩对象：chatToGenCode 返回指定流，或直接抛出指定异常 */
     private AppService stubAppService(Flux<String> codeStream, RuntimeException exception) {
         return (AppService) Proxy.newProxyInstance(
                 AppService.class.getClassLoader(),

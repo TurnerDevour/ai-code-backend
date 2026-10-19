@@ -19,9 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 生成收尾（正常完成 / 出错 / 客户端断开）的回归测试
- * <p>
- * 回归背景：客户端断开时 {@code doOnComplete} 不会触发，原来的实现什么都不落库，
- * 于是出现"磁盘上有代码、对话历史里没有 AI 回复"的不一致。现在断开也要落库（带中断标记）。
+ * 回归背景：客户端断开时 {@code doOnComplete} 不会触发，原来的实现什么都不落库……
  */
 class GenerationCompletionHandlerTest {
 
@@ -152,21 +150,12 @@ class GenerationCompletionHandlerTest {
         assertEquals("先想", persistedThinking.get(0));
     }
 
-    /**
-     * 手写 ChatHistoryService 桩对象（当前环境 Mockito 不可用）
-     *
-     * @param persistedMessages 收集落库内容
-     */
+    /** 手写 ChatHistoryService 桩对象（当前环境 Mockito 不可用） */
     private ChatHistoryService stub(List<String> persistedMessages) {
         return stub(persistedMessages, null);
     }
 
-    /**
-     * 手写 ChatHistoryService 桩对象（当前环境 Mockito 不可用）
-     *
-     * @param persistedMessages 收集落库的正文
-     * @param persistedThinking 收集落库的思考过程，为 null 时不关心
-     */
+    /** 手写 ChatHistoryService 桩对象（当前环境 Mockito 不可用） */
     private ChatHistoryService stub(List<String> persistedMessages, List<String> persistedThinking) {
         return (ChatHistoryService) Proxy.newProxyInstance(
                 ChatHistoryService.class.getClassLoader(),

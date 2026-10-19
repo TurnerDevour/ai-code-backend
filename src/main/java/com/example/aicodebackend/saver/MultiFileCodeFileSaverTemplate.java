@@ -5,6 +5,7 @@ import com.example.aicodebackend.ai.model.MultiFileCodeResult;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
+import com.example.aicodebackend.model.enums.GeneratedFileEnum;
 
 public class MultiFileCodeFileSaverTemplate extends CodeFileSaverTemplate<MultiFileCodeResult> {
 
@@ -15,9 +16,9 @@ public class MultiFileCodeFileSaverTemplate extends CodeFileSaverTemplate<MultiF
 
     @Override
     protected void saveFiles(MultiFileCodeResult result, String baseDirPath) {
-        writeToFile(baseDirPath, "index.html", result.getHtmlCode());
-        writeToFile(baseDirPath, "style.css", result.getCssCode());
-        writeToFile(baseDirPath, "script.js", result.getJsCode());
+        writeToFile(baseDirPath, GeneratedFileEnum.HTML.getFileName(), result.getHtmlCode());
+        writeToFile(baseDirPath, GeneratedFileEnum.CSS.getFileName(), result.getCssCode());
+        writeToFile(baseDirPath, GeneratedFileEnum.JS.getFileName(), result.getJsCode());
     }
 
     @Override

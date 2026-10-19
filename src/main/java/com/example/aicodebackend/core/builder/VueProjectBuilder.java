@@ -19,53 +19,41 @@ import java.util.regex.Pattern;
 
 /**
  * 执行命令类
- * <p>
- * 说明：这是一个<b>无状态</b>组件，可以在容器外直接 new 出来使用
- * （例如流处理器需要在单测里独立构造，或需要自建实例做收尾构建）。
- * 它内部没有任何可变字段，因此多实例、被 new 出来都等价于共享同一个实例。
+ * 说明：这是一个无状态组件，可以在容器外直接 new 出来使用
+ * （例如流处理器需要在单测里独立构造，或需要自建实例做收尾构建）……
  */
 @Slf4j
 @Component
 public class VueProjectBuilder {
 
-    /**
-     * 构建临时目录前缀：与工程目录同级，构建结束后删除
-     */
+    /** 构建临时目录前缀：与工程目录同级，构建结束后删除 */
     private static final String BUILD_TEMP_DIR_PREFIX = ".build-tmp-";
 
-    /**
-     * 兜底临时目录名：同级目录不可写时退回工程目录内部
-     */
+    /** 兜底临时目录名：同级目录不可写时退回工程目录内部 */
     private static final String BUILD_TEMP_DIR_FALLBACK = ".build-tmp";
 
-    /**
-     * 构建输出保留的末尾行数（用于归纳失败原因）
-     */
+    /** 构建输出保留的末尾行数（用于归纳失败原因） */
     private static final int OUTPUT_TAIL_LINES = 60;
 
-    /**
-     * 失败原因里最多取几行
-     */
+    /** 失败原因里最多取几行 */
     private static final int ERROR_SUMMARY_LINES = 3;
 
-    /**
-     * 失败原因最大长度（要下发给前端展示，不能把整段构建日志塞进数据库/响应）
-     */
+    /** 失败原因最大长度（要下发给前端展示，不能把整段构建日志塞进数据库/响应） */
     private static final int BUILD_ERROR_MAX_LENGTH = 500;
 
-    /**
-     * 终端颜色控制符：npm / vite 输出带 ANSI 转义，下发给前端前要剥掉
-     */
+    /** npm install 超时（秒） */
+    private static final int NPM_INSTALL_TIMEOUT_SECONDS = 600;
+
+    /** npm run build 超时（秒） */
+    private static final int NPM_BUILD_TIMEOUT_SECONDS = 300;
+
+    /** 终端颜色控制符：npm / vite 输出带 ANSI 转义，下发给前端前要剥掉 */
     private static final Pattern ANSI_ESCAPE = Pattern.compile("\u001B\\[[;\\d]*[ -/]*[@-~]");
 
     /**
      * 构建结果：成功与否 + 失败原因（成功时原因为空串）
-     * <p>
      * 为什么要带原因：构建是"生成结束后的异步收尾"，失败时前端只会看到预览区空白/404。
      * 旧实现只把原因写进后端日志（"请查看后端日志"），用户完全不知道发生了什么。
-     *
-     * @param success 是否构建成功
-     * @param error   失败原因（面向用户的简短描述，最多 {@value #BUILD_ERROR_MAX_LENGTH} 字符）
      */
     public record BuildResult(boolean success, String error) {
 
@@ -78,19 +66,11 @@ public class VueProjectBuilder {
         }
     }
 
-    /**
-     * 一次命令执行的结果
-     *
-     * @param success   是否成功（退出码 0）
-     * @param exitCode  退出码（超时或启动失败为 -1）
-     * @param errorInfo 失败原因（成功时为空串）
-     */
+    /** 一次命令执行的结果 */
     private record CommandResult(boolean success, int exitCode, String errorInfo) {
     }
 
-    /**
-     * 异步构建 Vue 项目
-     */
+    /** 异步构建 Vue 项目 */
     public void buildProjectAsync(String projectPath) {
         Thread.ofVirtual().name("vue-builder-" + System.currentTimeMillis()).start(() -> {
             try {
@@ -108,34 +88,22 @@ public class VueProjectBuilder {
 
     /**
      * 同步执行构建并返回结果
-     * <p>
      * 调用方（生成任务注册表）需要把"构建成功/失败"写回任务状态供前端轮询，
      * 因此它自己负责把这次调用放到独立线程上，这里只做同步构建。
-     *
-     * @param projectPath 项目目录
-     *
-     * @return 构建是否成功
      */
     public boolean buildProjectAsyncAndWait(String projectPath) {
         return buildProject(projectPath);
     }
 
-    /**
-     * 构建 Vue 项目（就地构建，产物落在项目目录下的 dist）
-     */
+    /** 构建 Vue 项目（就地构建，产物落在项目目录下的 dist） */
     public boolean buildProject(String projectPath) {
         return buildProjectTo(projectPath);
     }
 
     /**
      * 在指定目录构建 Vue 项目，并把产物放到该目录下的 dist
-     * <p>
      * 单独抽出来的原因：部署流程会先把源码复制到"构建暂存目录"，在暂存目录里完成构建后再原子切换进源码目录，
      * 这样并发部署时不会出现两个构建同时写同一个 dist、把"构建到一半的产物"发布出去的问题。
-     *
-     * @param projectPath 项目目录（暂存目录或源码目录均可）
-     *
-     * @return 构建是否成功
      */
     public boolean buildProjectTo(String projectPath) {
         return buildProjectDetailed(projectPath).success();
@@ -143,14 +111,8 @@ public class VueProjectBuilder {
 
     /**
      * 构建 Vue 项目并返回失败原因（成功时 {@code error} 为空）
-     * <p>
      * 与 {@link #buildProjectTo(String)} 的唯一区别是把"为什么失败"带出来：
-     * 生成收尾的异步构建要把原因写回 {@code /app/chat/gen/status}，
-     * 否则前端只能显示"构建失败，请查看后端日志"，用户看到的就是预览区一片空白。
-     *
-     * @param projectPath 项目目录
-     *
-     * @return 构建结果
+     * 生成收尾的异步构建要把原因写回 {@code /app/chat/gen/status}……
      */
     public BuildResult buildProjectDetailed(String projectPath) {
         File projectDir = new File(projectPath);
@@ -198,20 +160,8 @@ public class VueProjectBuilder {
 
     /**
      * 为本次构建创建一个专属临时目录（作为子进程的 TEMP/TMP）
-     * <p>
-     * 背景（实测）：esbuild 在<b>输入超过 1 MiB</b> 时不再走管道，而是把内容写进 {@code os.tmpdir()}
-     * 下的临时文件、交给子进程读取后删除（见 esbuild lib/main.js："input.length > 1024 * 1024"）。
-     * 带 three.js 这类大依赖的 Vue 工程，打包后的 chunk 轻松超过 1 MiB，于是每次构建都会命中这条路径。
-     * 而在部分 Windows 环境（安全软件/受限 ACL 拦截了系统 Temp 目录里的删除动作）下，
-     * 这个"删除临时文件"会以 {@code remove ...: Access is denied} 失败，导致 vite build 退出码 1、
-     * <b>dist 根本没产出</b>——前端预览区（/static/vue_project_{appId}/dist/index.html）因此一片空白。
-     * <p>
-     * 处理方式：把子进程的 TEMP/TMP 指向工程自己的目录（与工程同级，仍在生成根目录内，构建结束立即删除），
-     * 不让构建成败取决于"系统 Temp 目录在当前机器上是否可删除文件"。
-     *
-     * @param projectDir 项目目录
-     *
-     * @return 临时目录；创建失败返回 null（此时沿用系统 TEMP，构建仍然照常尝试）
+     * 背景（实测）：esbuild 在输入超过 1 MiB 时不再走管道，而是把内容写进 {@code os.tmpdir()}
+     * 下的临时文件、交给子进程读取后删除（见 esbuild lib/main.js："input.length > 1024 * 1024"）……
      */
     private File createBuildTempDir(File projectDir) {
         File parent = projectDir.getAbsoluteFile().getParentFile();
@@ -234,11 +184,7 @@ public class VueProjectBuilder {
         }
     }
 
-    /**
-     * 删除本次构建的临时目录（尽力而为：Windows 上文件被占用时删不掉也不影响构建结论）
-     *
-     * @param buildTempDir 临时目录，可为 null
-     */
+    /** 删除本次构建的临时目录（尽力而为：Windows 上文件被占用时删不掉也不影响构建结论） */
     private void deleteBuildTempDir(File buildTempDir) {
         if (buildTempDir == null || !buildTempDir.exists()) {
             return;
@@ -254,15 +200,8 @@ public class VueProjectBuilder {
 
     /**
      * 保证 vite.config.js 使用相对 base
-     * <p>
      * 部署地址形如 {@code http://host/{deployKey}/}，属于子路径部署；vite 默认 base 为 "/"，
-     * 产物里的资源引用会变成 {@code /assets/xxx.js}，部署后必然 404。
-     * 这里只在配置里没有显式 base 时补一个相对 base，并对"生成结果不是相对路径"的情况直接失败，
-     * 避免部署出一个白屏页面却返回成功。
-     *
-     * @param projectDir 项目目录
-     *
-     * @return 校验通过返回 true
+     * 产物里的资源引用会变成 {@code /assets/xxx.js}，部署后必然 404……
      */
     private boolean ensureRelativeBase(File projectDir) {
         File viteConfig = new File(projectDir, "vite.config.js");
@@ -293,15 +232,7 @@ public class VueProjectBuilder {
         }
     }
 
-    /**
-     * 创建构建子进程（统一在这里注入构建临时目录）
-     *
-     * @param workingDir   工作目录
-     * @param command      命令
-     * @param buildTempDir 构建临时目录（作为 TEMP/TMP/TMPDIR 传给子进程），可为 null
-     *
-     * @return 进程构建器
-     */
+    /** 创建构建子进程（统一在这里注入构建临时目录） */
     private ProcessBuilder createProcessBuilder(File workingDir, List<String> command, File buildTempDir) {
         // redirectErrorStream = true：合并 stderr 到 stdout，由同一个线程消费，避免缓冲区写满导致子进程阻塞
         ProcessBuilder processBuilder = new ProcessBuilder(command)
@@ -317,16 +248,7 @@ public class VueProjectBuilder {
         return processBuilder;
     }
 
-    /**
-     * 执行命令，并把子进程的标准输出/错误输出实时转发到应用日志，方便定位构建失败原因
-     *
-     * @param workingDir   工作目录
-     * @param command      命令
-     * @param timeoutSeconds 超时时间（秒）
-     * @param buildTempDir 构建临时目录，可为 null
-     *
-     * @return 命令执行结果（含失败原因摘要）
-     */
+    /** 执行命令，并把子进程的标准输出/错误输出实时转发到应用日志，方便定位构建失败原因 */
     private CommandResult executeCommand(File workingDir, List<String> command, int timeoutSeconds, File buildTempDir) {
         // 尾部输出：成功与否都要消费子进程输出，失败时用末尾几行归纳原因
         Deque<String> outputTail = new ArrayDeque<>();
@@ -362,12 +284,7 @@ public class VueProjectBuilder {
         }
     }
 
-    /**
-     * 转发子进程的标准输出与错误输出，并保留末尾若干行用于归纳失败原因
-     *
-     * @param process    子进程
-     * @param outputTail 末尾行缓冲（多线程访问，需同步）
-     */
+    /** 转发子进程的标准输出与错误输出，并保留末尾若干行用于归纳失败原因 */
     private void pumpOutput(Process process, Deque<String> outputTail) {
         try (BufferedReader reader = new BufferedReader(
                 new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
@@ -388,14 +305,8 @@ public class VueProjectBuilder {
 
     /**
      * 从构建输出末尾归纳出一句可展示的失败原因
-     * <p>
      * 规则：剥掉终端颜色控制符 → 去掉空行与纯堆栈帧 → 取最后几行。
-     * 堆栈帧（{@code at xxx (yyy:1:1)}）对用户没有意义，而真正说明问题的往往是被堆栈包在中间的那几行
-     * （例如 {@code [vite:esbuild-transpile] remove ...: Access is denied.} 与 {@code error during build:}）。
-     *
-     * @param outputTail 末尾输出行
-     *
-     * @return 失败原因摘要（可能为空串）
+     * 堆栈帧（{@code at xxx (yyy:1:1)}）对用户没有意义，而真正说明问题的往往是被堆栈包在中间的那几行……
      */
     private String summarizeFailure(Deque<String> outputTail) {
         List<String> lines;
@@ -420,74 +331,42 @@ public class VueProjectBuilder {
         return StrUtil.maxLength(String.join(" | ", summary), BUILD_ERROR_MAX_LENGTH);
     }
 
-    /**
-     * 是否是堆栈帧行（{@code at ...}）
-     *
-     * @param line 输出行
-     *
-     * @return true 表示是堆栈帧
-     */
+    /** 是否是堆栈帧行（{@code at ...}） */
     private boolean isStackFrame(String line) {
         return line.startsWith("at ") || line.startsWith("at\t");
     }
 
-    /**
-     * 去掉终端颜色控制符
-     *
-     * @param line 原始输出行
-     *
-     * @return 纯文本行
-     */
+    /** 去掉终端颜色控制符 */
     private String stripAnsi(String line) {
         return line == null ? "" : ANSI_ESCAPE.matcher(line).replaceAll("");
     }
 
-    /**
-     * 执行 npm install 命令
-     *
-     * @param projectDir   项目目录
-     * @param buildTempDir 构建临时目录，可为 null
-     *
-     * @return 命令执行结果
-     */
+    /** 执行 npm install 命令 */
     private CommandResult executeNpmInstall(File projectDir, File buildTempDir) {
         log.info("执行 npm install...");
         List<String> command = new ArrayList<>(resolveNpmCommand());
         command.add("install");
-        return executeCommand(projectDir, command, 600, buildTempDir); // 10分钟超时
+        return executeCommand(projectDir, command, NPM_INSTALL_TIMEOUT_SECONDS, buildTempDir);
     }
 
-    /**
-     * 执行 npm run build 命令
-     *
-     * @param projectDir   项目目录
-     * @param buildTempDir 构建临时目录，可为 null
-     *
-     * @return 命令执行结果
-     */
+    /** 执行 npm run build 命令 */
     private CommandResult executeNpmBuild(File projectDir, File buildTempDir) {
         log.info("执行 npm run build...");
         List<String> command = new ArrayList<>(resolveNpmCommand());
         command.add("run");
         command.add("build");
-        return executeCommand(projectDir, command, 300, buildTempDir); // 5分钟超时
+        return executeCommand(projectDir, command, NPM_BUILD_TIMEOUT_SECONDS, buildTempDir);
     }
 
-    /**
-     * 判断当前操作系统是否为 Windows
-     */
+    /** 判断当前操作系统是否为 Windows */
     private boolean isWindows() {
         return System.getProperty("os.name").toLowerCase().contains("windows");
     }
 
     /**
      * 解析可用的 npm 可执行文件。
-     * <p>
      * Windows 上 npm 的形态并不统一：官方 Node 安装包提供的是 npm.cmd，
-     * 而部分 Node 发行版（如某些 nvm-for-windows 安装、直接解压的 Node）只有 npm.exe。
-     * 因此这里按 npm.cmd -> npm.exe -> npm 的顺序探测，避免命令不存在导致构建直接失败。
-     *
-     * @return 可直接传给 ProcessBuilder 的命令前缀
+     * 而部分 Node 发行版（如某些 nvm-for-windows 安装、直接解压的 Node）只有 npm.exe……
      */
     private List<String> resolveNpmCommand() {
         if (!isWindows()) {
@@ -505,13 +384,7 @@ public class VueProjectBuilder {
         return List.of("npm");
     }
 
-    /**
-     * 在 PATH 与 Node 安装目录中查找可执行文件
-     *
-     * @param executable 可执行文件名，如 npm.cmd
-     *
-     * @return 可执行文件，未找到返回 null
-     */
+    /** 在 PATH 与 Node 安装目录中查找可执行文件 */
     private File findOnPath(String executable) {
         File found = lookupInPath(executable);
         if (found != null) {
@@ -535,9 +408,7 @@ public class VueProjectBuilder {
         return null;
     }
 
-    /**
-     * 仅在 PATH 环境变量中查找文件
-     */
+    /** 仅在 PATH 环境变量中查找文件 */
     private File lookupInPath(String executable) {
         String path = System.getenv("PATH");
         if (path == null) {

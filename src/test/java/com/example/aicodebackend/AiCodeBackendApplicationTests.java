@@ -15,7 +15,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Slf4j
-@SpringBootTest
+// 单元测试不依赖外部 broker：禁用 RabbitMQ 监听器自动启动，否则本地没有 RabbitMQ 时
+// 监听容器会在上下文刷新阶段一直重连、把整个测试挂住（部署队列的消费逻辑由 Mock 单测覆盖）
+@SpringBootTest(properties = "spring.rabbitmq.listener.simple.auto-startup=false")
 class AiCodeBackendApplicationTests {
 
     @Resource
@@ -31,14 +33,7 @@ class AiCodeBackendApplicationTests {
 
     /**
      * 随应用发布的配置必须真的靠 {@code ai.model-defaults} 把共用项补齐到每个模型上
-     * <p>
-     * 守着两件事：
-     * <ol>
-     *     <li>模型条目里只写 {@code model-name} / {@code max-tokens} 也能拿到 base-url、思考预算等共用配置；
-     *     （凭据的具体取值依赖环境变量，这里只断言"继承到了"，不断言值）</li>
-     *     <li>yaml 里把 {@code model-defaults} 写错名字时不会报错，只会让每个模型都缺 Key / 思考预算——
-     *     这条断言就是让那种静默失效变成一条红测试。</li>
-     * </ol>
+     * 守着两件事……
      */
     @Test
     void shippedModelDefaultsShouldApplyToEveryModel() {

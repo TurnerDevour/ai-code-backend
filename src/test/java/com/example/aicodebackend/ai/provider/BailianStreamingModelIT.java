@@ -30,18 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 阿里云百炼真实调用验证（需要外网 + 真实 API Key）
- * <p>
- * 按仓库惯例用 {@code *IT} 命名，不随 {@code mvn test} 执行。手动验证（环境变量需已配置）：
- * <pre>
- * mvn -o test "-Dtest=BailianStreamingModelIT"
- * </pre>
- * 覆盖三件只有真调用才能确认的事：
- * <ol>
- *     <li>业务空间专属域名 + {@code /compatible-mode/v1} 拼出来的地址确实能通（拼错就是 404/401）；</li>
- *     <li>思考模式：deepseek-v4.1-flash / deepseek-v4-pro / qwen3.8-max / qwen3.8-flash 都会返回
- *     {@code reasoning_content}，而应用在 Vue 工程模式下依赖 onPartialThinking 才有流式输出；</li>
- *     <li>function-calling：带工具的多轮调用能正常收敛（这是"生成 Vue 工程"的核心链路）。</li>
- * </ol>
+ * 按仓库惯例用 {@code *IT} 命名，不随 {@code mvn test} 执行。手动验证（环境变量需已配置）……
  */
 @EnabledIfEnvironmentVariable(named = "ALI_AI_API_KEY", matches = ".+")
 class BailianStreamingModelIT {
@@ -50,7 +39,6 @@ class BailianStreamingModelIT {
 
     /**
      * 按与 application-dev.yaml 相同的方式组装配置（值取环境变量，避免测试里再抄一份硬编码）
-     * <p>
      * 这里刻意与 yaml 保持一致（含 {@code sendThinking=false}），否则验证的是"另一套配置"。
      */
     private static AiModelProperties.Model modelProperties(String modelName) {
@@ -93,13 +81,7 @@ class BailianStreamingModelIT {
         assertTrue(registry.isAvailable(AIModelTypeEnum.QWEN_3_8_FLASH));
     }
 
-    /**
-     * 四个模型都能流式返回正文与思考内容
-     *
-     * @param modelName 模型名
-     *
-     * @throws Exception 等待超时
-     */
+    /** 四个模型都能流式返回正文与思考内容 */
     @ParameterizedTest
     @ValueSource(strings = {"deepseek-v4.1-flash", "deepseek-v4-pro", "qwen3.8-max", "qwen3.8-flash"})
     void shouldAnswerWithThinking(String modelName) throws Exception {
@@ -137,11 +119,7 @@ class BailianStreamingModelIT {
         assertFalse(thinking.toString().isBlank(), "思考模式没有返回 reasoning_content");
     }
 
-    /**
-     * 工具调用链路（应用生成 Vue 工程时依赖它）
-     *
-     * @throws Exception 等待超时
-     */
+    /** 工具调用链路（应用生成 Vue 工程时依赖它） */
     @Test
     void shouldCallTool() throws Exception {
         ClockTool clockTool = new ClockTool();
@@ -174,7 +152,6 @@ class BailianStreamingModelIT {
 
     /**
      * 可用性巡检能真的拉到平台模型目录：配置里的模型都在，且能看到同类可选项
-     * <p>
      * 这条能力就是"模型改名/下架时提前发现"的依据，所以它自己也要被验证，而不是只验证日志能打出来。
      */
     @Test
@@ -194,9 +171,7 @@ class BailianStreamingModelIT {
         assertTrue(available.contains("qwen3.8-max"), "平台目录里没有 qwen3.8-max：" + available.size() + " 个模型");
     }
 
-    /**
-     * 供模型调用的探针工具
-     */
+    /** 供模型调用的探针工具 */
     static class ClockTool {
 
         final AtomicBoolean called = new AtomicBoolean();
@@ -208,9 +183,7 @@ class BailianStreamingModelIT {
         }
     }
 
-    /**
-     * 工具调用用的小助手（必须是流式返回：本应用只配置了 StreamingChatModel）
-     */
+    /** 工具调用用的小助手（必须是流式返回：本应用只配置了 StreamingChatModel） */
     interface ToolProbe {
 
         @SystemMessage("你可以在需要时调用工具")

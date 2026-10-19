@@ -12,14 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 「思考跑飞」判定的回归测试
- * <p>
- * 背景（实测）：模型遇到做不到的需求时会一直吐 reasoning_content，既不出正文也不调用工具，
- * 前端「AI 思考过程」面板看起来就是死循环（实测同一轮跑了 15 分钟以上）。
- * 这里锁住判定规则本身，避免阈值被改坏成"正常生成也被误杀"或"跑飞也放过去"。
- * <p>
- * 其中"阈值必须比思考预算宽松"与"首 token 之前的等待不算思考时间"两条，
- * 对应线上真实误报：{@code thinking-budget=8192} 配写死的 5 分钟上限，
- * 预算内的合法推理被当成跑飞掐掉，用户看到的是"模型在思考阶段长时间没有产出"。
+ * 背景（实测）：模型遇到做不到的需求时会一直吐 reasoning_content，既不出正文也不调用工具……
  */
 class ThinkingRunawayGuardTest {
 

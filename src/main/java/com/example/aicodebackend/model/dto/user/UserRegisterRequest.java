@@ -6,28 +6,20 @@ import lombok.Data;
 import java.io.Serial;
 import java.io.Serializable;
 
-/**
- * 用户注册请求体
- */
+/** 用户注册请求体 */
 @Data
 @Schema(description = "用户注册请求体")
 public class UserRegisterRequest implements Serializable {
 
-    /**
-     * 账号
-     */
+    /** 账号 */
     @Schema(description = "账号", requiredMode = Schema.RequiredMode.REQUIRED)
     private String userAccount;
 
-    /**
-     * 密码
-     */
+    /** 密码 */
     @Schema(description = "密码", requiredMode = Schema.RequiredMode.REQUIRED)
     private String userPassword;
 
-    /**
-     * 确认密码
-     */
+    /** 确认密码 */
     @Schema(description = "确认密码", requiredMode = Schema.RequiredMode.REQUIRED)
     private String checkPassword;
 

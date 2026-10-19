@@ -13,9 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * 生成服务缓存失效（记忆损坏后的自愈入口）测试
- * <p>
- * 背景：一次生成因"assistant 消息带 tool_calls 却没有工具结果"失败后，缓存里的生成服务实例
- * 仍持有损坏的记忆快照；必须把该应用的缓存条目清掉，下一次请求才会按（读取时已清洗的）记忆重建。
+ * 背景：一次生成因"assistant 消息带 tool_calls 却没有工具结果"失败后，缓存里的生成服务实例……
  */
 class AiCodeGeneratorServiceCacheTest {
 
@@ -44,7 +42,6 @@ class AiCodeGeneratorServiceCacheTest {
 
     /**
      * 往缓存里塞测试数据
-     * <p>
      * 缓存实现类是包内私有类，反射调用其接口方法时需要显式放开访问权限。
      */
     private static void put(AiCodeGeneratorServiceFactory factory, long appId, CodeGenTypeEnum type) throws Exception {
@@ -85,9 +82,7 @@ class AiCodeGeneratorServiceCacheTest {
         assertEquals(0, factory.invalidateAiCodeGeneratorService(9999L));
     }
 
-    /**
-     * 只有"tool_calls / tool messages"这类记忆损坏才触发失效
-     */
+    /** 只有"tool_calls / tool messages"这类记忆损坏才触发失效 */
     @Test
     void shouldDetectToolMessagesInvalidError() throws Exception {
         AiCodeGeneratorServiceFactory factory = new AiCodeGeneratorServiceFactory(null, null, null, null);

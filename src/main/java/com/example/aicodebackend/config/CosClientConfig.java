@@ -13,29 +13,19 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @ConfigurationProperties(prefix = "cos.client")
 public class CosClientConfig {
-    /**
-     * COS 域名
-     */
+    /** COS 域名 */
     private String host;
 
-    /**
-     * COS 所在区域
-     */
+    /** COS 所在区域 */
     private String region;
 
-    /**
-     * COS 存储桶
-     */
+    /** COS 存储桶 */
     private String bucket;
 
-    /**
-     * COS 密钥 ID
-     */
+    /** COS 密钥 ID */
     private String secretId;
 
-    /**
-     * COS 密钥
-     */
+    /** COS 密钥 */
     private String secretKey;
 
     @Bean

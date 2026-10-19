@@ -24,9 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 生成任务注册表（方案 C）的回归测试
- * <p>
- * 核心语义：客户端断开只影响"下发"，不影响"生成与落库"——
- * 历史里必须是**生成真正结束后的完整内容**，而不是断开那一刻的片段。
+ * 核心语义：客户端断开只影响"下发"，不影响"生成与落库"——……
  */
 class GenerationTaskRegistryTest {
 
@@ -39,9 +37,7 @@ class GenerationTaskRegistryTest {
     /** 事件名：订阅者收到结束信号（客户端看到 done） */
     private static final String SUBSCRIBER_COMPLETED = "subscriber-complete";
 
-    /**
-     * 取一个测试专用的 appId
-     */
+    /** 取一个测试专用的 appId */
     private static long nextAppId() {
         return APP_ID_SEQ.incrementAndGet();
     }
@@ -142,12 +138,7 @@ class GenerationTaskRegistryTest {
                         + ", 内容=" + first.getContent());
     }
 
-    /**
-     * 等待落库完成（落库在"状态置为结束"之后执行，避免断言时序抖动）
-     *
-     * @param persisted 落库内容列表
-     * @param timeoutMs 超时时间
-     */
+    /** 等待落库完成（落库在"状态置为结束"之后执行，避免断言时序抖动） */
     private void awaitPersisted(List<String> persisted, long timeoutMs) throws InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (persisted.isEmpty() && System.currentTimeMillis() < deadline) {
@@ -187,10 +178,7 @@ class GenerationTaskRegistryTest {
 
     /**
      * 生成成功时，必须"先把代码标记为已变更（edit_time 落库），再通知客户端结束"
-     * <p>
-     * 为什么：前端收到 done 之后会立刻重新查询部署状态来把按钮从「已部署」切成「重新部署」。
-     * 如果这时 edit_time 还没落库，前端会再缓存一次 {@code deployStale=false}，
-     * 用户就会遇到"用 AI 改完内容却点不动部署按钮"（实测问题：无法二次部署）。
+     * 为什么：前端收到 done 之后会立刻重新查询部署状态来把按钮从「已部署」切成「重新部署」……
      */
     @Test
     @DisplayName("生成成功：先落 edit_time，再通知订阅者结束")
@@ -221,9 +209,7 @@ class GenerationTaskRegistryTest {
 
     /**
      * 模型用文本"假装"调用工具时，必须显式告警
-     * <p>
-     * 实测事故：模型学会了照抄历史里的 {@code [工具调用] xxx} 文本格式，整轮只打印这种文本、
-     * 一次工具都没执行，文件一个都没写，而对话里看起来和真实调用一模一样。
+     * 实测事故：模型学会了照抄历史里的 {@code [工具调用] xxx} 文本格式，整轮只打印这种文本、……
      */
     @Test
     @DisplayName("文本形式的假工具调用：落库内容里必须给出明确警告")
@@ -273,11 +259,6 @@ class GenerationTaskRegistryTest {
                 "真实执行不能报警告，实际: " + persisted.get(0));
     }
 
-    /**
-     * @param persisted 落库正文收集（addChatMessage / addAiChatMessage 的第 3 个参数）
-     * @param thinking  落库思考过程收集（addAiChatMessage 的第 4 个参数），为 null 时不收集
-     * @param events    关键动作的发生顺序，为 null 时不记录
-     */
     private GenerationTaskRegistry newRegistry(List<String> persisted, List<String> thinking, List<String> events) {        ChatHistoryService chatHistoryService = (ChatHistoryService) Proxy.newProxyInstance(
                 ChatHistoryService.class.getClassLoader(),
                 new Class<?>[]{ChatHistoryService.class},
@@ -309,11 +290,7 @@ class GenerationTaskRegistryTest {
         return new GenerationTaskRegistry(chatHistoryService, new VueProjectBuilder(), new AppCodeStateService(stubAppMapper(events)));
     }
 
-    /**
-     * 桩 AppMapper：只让 update 返回 1（表示刷新 edit_time 成功），并按需记录"代码已变更"这一动作
-     *
-     * @param events 记录动作顺序的列表，可为 null
-     */
+    /** 桩 AppMapper：只让 update 返回 1（表示刷新 edit_time 成功），并按需记录"代码已变更"这一动作 */
     private AppMapper stubAppMapper(List<String> events) {
         return (AppMapper) Proxy.newProxyInstance(
                 AppMapper.class.getClassLoader(),
@@ -340,10 +317,7 @@ class GenerationTaskRegistryTest {
 
     /**
      * 思考过程必须单独累积、单独落库
-     * <p>
-     * VUE_PROJECT 用推理模型，生成过程中模型先输出大段 reasoning_content 才动工具。
-     * 如果思考过程并进正文，对话历史里"模型怎么想的"会和"给用户看的结果"混成一团，
-     * 用户读起来是一团噪音，模型上下文也会被推理内容挤爆。
+     * VUE_PROJECT 用推理模型，生成过程中模型先输出大段 reasoning_content 才动工具……
      */
     @Test
     @DisplayName("思考过程单独累积落库，不与正文混在一起")

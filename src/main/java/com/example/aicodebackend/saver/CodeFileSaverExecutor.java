@@ -18,14 +18,7 @@ public class CodeFileSaverExecutor {
 
     private static final MultiFileCodeFileSaverTemplate multiFileCodeFileSaver = new MultiFileCodeFileSaverTemplate();
 
-    /**
-     * 执行代码保存操作
-     *
-     * @param codeResult      代码生成结果对象，可以是 HTMLCodeResult 或 MultiFileCodeResult
-     * @param codeGenTypeEnum 代码生成类型枚举，指定生成 HTML 代码或多文件代码
-     *
-     * @return 保存的文件
-     */
+    /** 执行代码保存操作 */
     public static File executeSaver(Object codeResult, CodeGenTypeEnum codeGenTypeEnum, Long appId) {
         if (codeGenTypeEnum == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "代码生成类型不能为空");

@@ -19,9 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 对话记忆工具消息清洗的单元测试
- * <p>
- * 用例来自线上实测的损坏记忆：{@code AiMessage} 带 1 个 tool_call 但后面没有任何结果消息，
- * 导致该应用之后每次对话都被接口拒绝（insufficient tool messages following tool_calls message）。
+ * 用例来自线上实测的损坏记忆：{@code AiMessage} 带 1 个 tool_call 但后面没有任何结果消息……
  */
 class ChatMemorySanitizerTest {
 
@@ -120,7 +118,6 @@ class ChatMemorySanitizerTest {
 
     /**
      * 轮次边界修复：上一轮异常中断留下的"有 tool_calls、没有结果"必须被清掉并写回
-     * <p>
      * 这是 {@link #shouldDropToolCallWithoutResult} 的"落库版本"——只有在新一轮开始前做才是安全的。
      */
     @Test
@@ -168,9 +165,7 @@ class ChatMemorySanitizerTest {
 
     /**
      * 内存版记忆存储：只做读写、不做任何清洗
-     * <p>
-     * 与真实存储（{@code JedisChatMemoryStore}）的读取语义保持一致：
-     * 读取路径必须是"原样返回"，任何清洗都只能在轮次边界显式触发。
+     * 与真实存储（{@code JedisChatMemoryStore}）的读取语义保持一致……
      */
     private static class InMemoryChatMemoryStore implements ChatMemoryStore {
 
@@ -221,9 +216,7 @@ class ChatMemorySanitizerTest {
         assertEquals(messages, ChatMemorySanitizer.trimToWindow(messages, 10));
     }
 
-    /**
-     * 判断消息列表里是否还有"带 tool_calls 却没有结果"的消息
-     */
+    /** 判断消息列表里是否还有"带 tool_calls 却没有结果"的消息 */
     private static boolean hasDanglingToolCall(List<ChatMessage> messages) {
         for (int i = 0; i < messages.size(); i++) {
             if (messages.get(i) instanceof AiMessage ai && ai.hasToolExecutionRequests()) {

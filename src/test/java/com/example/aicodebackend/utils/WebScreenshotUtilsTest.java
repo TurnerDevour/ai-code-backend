@@ -11,7 +11,8 @@ import java.io.File;
 import static org.junit.jupiter.api.Assertions.*;
 
 @Slf4j
-@SpringBootTest
+// 理由同 AiCodeBackendApplicationTests：测试环境没有 RabbitMQ，不能让它去启动监听容器
+@SpringBootTest(properties = "spring.rabbitmq.listener.simple.auto-startup=false")
 class WebScreenshotUtilsTest {
 
     @Test

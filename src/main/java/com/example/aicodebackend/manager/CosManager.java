@@ -10,9 +10,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.File;
 
-/**
- * COS对象存储管理器
- */
+/** COS对象存储管理器 */
 @Slf4j
 @Component
 public class CosManager {
@@ -23,27 +21,13 @@ public class CosManager {
     @Resource
     private COSClient cosClient;
 
-    /**
-     * 上传对象
-     *
-     * @param key  唯一键
-     * @param file 文件
-     *
-     * @return 上传结果
-     */
+    /** 上传对象 */
     public PutObjectResult putObject(String key, File file) {
         PutObjectRequest putObjectRequest = new PutObjectRequest(cosClientConfig.getBucket(), key, file);
         return cosClient.putObject(putObjectRequest);
     }
 
-    /**
-     * 上传文件到 COS 并返回访问 URL
-     *
-     * @param key  COS对象键（完整路径）
-     * @param file 要上传的文件
-     *
-     * @return 文件的访问URL，失败返回null
-     */
+    /** 上传文件到 COS 并返回访问 URL */
     public String uploadFile(String key, File file) {
         // 上传文件
         PutObjectResult result = putObject(key, file);

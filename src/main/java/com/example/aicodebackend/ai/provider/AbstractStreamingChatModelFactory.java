@@ -12,21 +12,13 @@ import java.time.Duration;
 
 /**
  * OpenAI 兼容协议平台的公共构建逻辑
- * <p>
  * 阿里云百炼的各个模型都提供 OpenAI 兼容接口，请求体与响应体结构一致，差别只在
- * "接口根地址怎么得到"和"要不要带平台专属参数"，所以这里用模板方法把公共部分固定下来，
- * 子类只实现这两个钩子。
- * <p>
- * 不使用 starter 自动装配的 {@code openAiStreamingChatModel}：starter 的属性类没有暴露
- * {@code sendThinking}，而思考模式的模型在带 tools 的多轮里对历史轮次的 reasoning_content
- * 有要求，缺少该开关就只能二选一（要么全部回传、要么全部不回传）。
+ * "接口根地址怎么得到"和"要不要带平台专属参数"，所以这里用模板方法把公共部分固定下来……
  */
 @Slf4j
 public abstract class AbstractStreamingChatModelFactory implements StreamingChatModelFactory {
 
-    /**
-     * timeout 配成空值时的兜底超时
-     */
+    /** timeout 配成空值时的兜底超时 */
     private static final Duration FALLBACK_TIMEOUT = Duration.ofSeconds(600);
 
     @Override
@@ -64,21 +56,10 @@ public abstract class AbstractStreamingChatModelFactory implements StreamingChat
         return resolveBaseUrl(properties) + "/models";
     }
 
-    /**
-     * 解析该平台的接口根地址（子类实现，平台差异的入口）
-     *
-     * @param properties 单模型配置
-     *
-     * @return 接口根地址
-     */
+    /** 解析该平台的接口根地址（子类实现，平台差异的入口） */
     protected abstract String resolveBaseUrl(AiModelProperties.Model properties);
 
-    /**
-     * 平台专属的构建参数（子类按需覆写，默认不加任何参数）
-     *
-     * @param builder    模型构建器
-     * @param properties 单模型配置
-     */
+    /** 平台专属的构建参数（子类按需覆写，默认不加任何参数） */
     protected void customize(OpenAiStreamingChatModel.OpenAiStreamingChatModelBuilder builder,
                              AiModelProperties.Model properties) {
         // 默认无平台专属参数
@@ -86,11 +67,8 @@ public abstract class AbstractStreamingChatModelFactory implements StreamingChat
 
     /**
      * 校验必填项
-     * <p>
      * 校验放在"构建时"而不是"绑定时"：一个模型的配置写错只让该模型不可用，
      * 其它模型照样能用（见 {@link StreamingChatModelRegistry}），应用也不会起不来。
-     *
-     * @param properties 单模型配置
      */
     protected void validate(AiModelProperties.Model properties) {
         if (properties == null) {
@@ -106,13 +84,7 @@ public abstract class AbstractStreamingChatModelFactory implements StreamingChat
         }
     }
 
-    /**
-     * 超时兜底
-     *
-     * @param properties 单模型配置
-     *
-     * @return 非空超时
-     */
+    /** 超时兜底 */
     private Duration resolveTimeout(AiModelProperties.Model properties) {
         if (properties.getTimeout() == null) {
             log.warn("模型 {} 未配置 timeout，按 {} 兜底（框架默认 60 秒对思考模式太短）",
@@ -124,14 +96,8 @@ public abstract class AbstractStreamingChatModelFactory implements StreamingChat
 
     /**
      * 判断配置值是否缺失
-     * <p>
      * 除了空白，还要把 {@code ${ALI_AI_API_KEY}} 这种"环境变量没配、Spring 原样保留占位符"的情况
-     * 也当成缺失：{@code @ConfigurationProperties} 的绑定默认忽略无法解析的占位符，
-     * 不识别出来的话，模型会带着一串 {@code ${...}} 去请求，报错信息对排查毫无帮助。
-     *
-     * @param value 配置值
-     *
-     * @return 缺失返回 true
+     * 也当成缺失：{@code @ConfigurationProperties} 的绑定默认忽略无法解析的占位符……
      */
     public static boolean isUnresolved(String value) {
         if (StrUtil.isBlank(value)) {

@@ -26,27 +26,15 @@ import java.util.TreeSet;
 
 /**
  * 启动期的模型可用性巡检
- * <p>
  * 背景：各平台都会下架 / 改名模型（百炼的模型名还带日期快照版本），而"模型名不存在"这类配置错误
- * 只有在用户真正发起生成时才会暴露成一次 400，排查时要翻日志才知道是模型名的问题。
- * 这里在应用启动后异步拉一次平台的 {@code GET /models}，把"配置里写了但平台已经没有"的模型提前喊出来，
- * 并给出同类可选模型，省掉一次"上线才发现"。
- * <p>
- * 三条硬约束（都是踩过的坑）：
- * <ul>
- *     <li><b>只提示，不阻断</b>：任何失败（没外网、超时、401）都只记日志，绝不抛异常、绝不改任何状态；</li>
- *     <li><b>不拖慢启动</b>：跑在后台（虚拟线程），启动流程不等它；</li>
- *     <li><b>可关</b>：默认关闭，dev 环境显式打开（{@code ai.model-check.enabled: true}）。</li>
- * </ul>
+ * 只有在用户真正发起生成时才会暴露成一次 400，排查时要翻日志才知道是模型名的问题……
  */
 @Slf4j
 @Component
 @ConditionalOnProperty(prefix = "ai.model-check", name = "enabled", havingValue = "true")
 public class AiModelAvailabilityChecker implements ApplicationRunner {
 
-    /**
-     * 提示同类可选模型时的上限（日志里贴几十个模型名没人看）
-     */
+    /** 提示同类可选模型时的上限（日志里贴几十个模型名没人看） */
     private static final int MAX_SUGGESTIONS = 6;
 
     private final AiModelProperties properties;
@@ -74,9 +62,7 @@ public class AiModelAvailabilityChecker implements ApplicationRunner {
         });
     }
 
-    /**
-     * 按"平台 + 接口地址 + Key"分组核对（同一个平台可能配了不同的业务空间，不能混在一起查）
-     */
+    /** 按"平台 + 接口地址 + Key"分组核对（同一个平台可能配了不同的业务空间，不能混在一起查） */
     void check() {
         Map<String, ProbeGroup> groups = groupByEndpoint();
         if (groups.isEmpty()) {
@@ -86,11 +72,7 @@ public class AiModelAvailabilityChecker implements ApplicationRunner {
         groups.values().forEach(this::checkGroup);
     }
 
-    /**
-     * 核对一组（同一个接口地址）配置的模型是否都还在
-     *
-     * @param group 分组
-     */
+    /** 核对一组（同一个接口地址）配置的模型是否都还在 */
     private void checkGroup(ProbeGroup group) {
         Set<String> available = fetchModelIds(group.modelsUrl, group.apiKey);
         if (available == null) {
@@ -111,13 +93,7 @@ public class AiModelAvailabilityChecker implements ApplicationRunner {
 
     /**
      * 拉取平台的模型列表
-     * <p>
      * 包内可见：真实调用（{@code BailianStreamingModelIT}）需要直接断言"能拉到平台目录"。
-     *
-     * @param modelsUrl 模型列表地址
-     * @param apiKey    API Key
-     *
-     * @return 模型 id 集合，拉取失败返回 null
      */
     Set<String> fetchModelIds(String modelsUrl, String apiKey) {
         try {
@@ -142,13 +118,7 @@ public class AiModelAvailabilityChecker implements ApplicationRunner {
         }
     }
 
-    /**
-     * 解析 OpenAI 兼容的 {@code /models} 响应：{@code {"data":[{"id":"..."}]}}
-     *
-     * @param body 响应体
-     *
-     * @return 模型 id 集合，结构不符合预期时返回 null
-     */
+    /** 解析 OpenAI 兼容的 {@code /models} 响应：{@code {"data":[{"id":"..."}]}} */
     static Set<String> parseModelIds(String body) {
         try {
             JSONArray data = JSONUtil.parseObj(body).getJSONArray("data");
@@ -172,16 +142,8 @@ public class AiModelAvailabilityChecker implements ApplicationRunner {
 
     /**
      * 找出与配置模型同族的可选模型
-     * <p>
      * 先按"第一个连字符之前"的家族名匹配（{@code qwen3.8-max} → {@code qwen3.8-*}），
-     * 家族名里带点的再退一级按主版本匹配（{@code qwen3.8-max} → {@code qwen3*}），
-     * 都匹配不到就返回空（宁可不说，也不要给出不相干的模型名）。
-     *
-     * @param modelName 配置的模型名
-     * @param available 平台返回的可用模型
-     * @param limit     最多返回多少个
-     *
-     * @return 建议的模型名列表
+     * 家族名里带点的再退一级按主版本匹配（{@code qwen3.8-max} → {@code qwen3*}）……
      */
     static List<String> suggest(String modelName, Set<String> available, int limit) {
         if (StrUtil.isBlank(modelName) || available == null || available.isEmpty()) {
@@ -203,9 +165,7 @@ public class AiModelAvailabilityChecker implements ApplicationRunner {
         return capped;
     }
 
-    /**
-     * 取指定前缀的模型名（排序后返回，便于阅读与断言）
-     */
+    /** 取指定前缀的模型名（排序后返回，便于阅读与断言） */
     private static List<String> withPrefix(Set<String> available, String prefix) {
         Set<String> matched = new TreeSet<>();
         available.stream().filter(id -> id.startsWith(prefix)).forEach(matched::add);
@@ -214,11 +174,8 @@ public class AiModelAvailabilityChecker implements ApplicationRunner {
 
     /**
      * 按"平台 + 模型列表地址 + Key"把配置里的模型分组
-     * <p>
      * 不按平台直接分组：同一平台下不同模型可能指向不同业务空间（不同域名 = 不同模型目录），
      * 混在一起查会把"A 空间没有的模型"误报成"配置错了"。
-     *
-     * @return 分组结果（key 为分组标识）
      */
     Map<String, ProbeGroup> groupByEndpoint() {
         Map<String, ProbeGroup> groups = new LinkedHashMap<>();
@@ -253,7 +210,6 @@ public class AiModelAvailabilityChecker implements ApplicationRunner {
 
     /**
      * 一组待核对的模型（同一个接口地址与 Key）
-     * <p>
      * 包内可见是为了让单测能直接断言分组结果，不需要真的发 HTTP 请求。
      */
     static final class ProbeGroup {

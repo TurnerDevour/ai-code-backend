@@ -19,11 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 异步部署状态机的回归测试
- * <p>
- * 关注三件事：
- * 1. 状态视图的推导（含"改造前历史数据没有 deploy_status"的兼容分支）；
- * 2. 部署操作权限（创建者 或 部署发起人）；
- * 3. 失败原因要面向用户、长度受限、不泄露堆栈。
+ * 关注三件事……
  */
 class AppServiceImplDeployStatusTest {
 
@@ -31,8 +27,7 @@ class AppServiceImplDeployStatusTest {
 
     /**
      * 本类直接 new 出被测对象（不起 Spring 上下文），因此 {@code @Value} 不会生效：
-     * deployHost 保持为 null，拼出来的部署地址就成了 {@code null/abc123/}。
-     * 这里按 application-dev.yaml 的取值手动注入一次，让用例不依赖运行环境。
+     * deployHost 保持为 null，拼出来的部署地址就成了 {@code null/abc123/}……
      */
     @BeforeEach
     void setUp() {

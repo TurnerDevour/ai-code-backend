@@ -24,14 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * "新一轮开始前修复对话记忆"的装配测试
- * <p>
- * 背景（实测死循环）：工具消息清洗曾经挂在记忆<b>读取</b>路径上。LangChain4j 的工具循环是
- * "先写 assistant(tool_calls) → 执行工具 → 再写工具结果"，而每次写记忆前都会先读一遍存储，
- * 于是刚写进去的 assistant 消息被当成"未完成"删掉、随后的工具结果又被当成"孤立结果"删掉，
- * 模型永远看不到工具结果，以为文件没写成功，反复重写同一批文件 —— Vue 工程模式的生成永不收敛。
- * <p>
- * 修复后清洗只在"新的一轮开始"这个边界做一次（{@link AiCodeGeneratorServiceFactory#getAiCodeGeneratorService}），
- * 本用例锁住这条装配线：脏数据要清掉、完整的工具轮次不能动、清洗失败不能影响生成。
+ * 背景（实测死循环）：工具消息清洗曾经挂在记忆读取路径上。LangChain4j 的工具循环是……
  */
 class AiCodeGeneratorServiceMemoryRepairTest {
 
@@ -58,9 +51,7 @@ class AiCodeGeneratorServiceMemoryRepairTest {
         }
     };
 
-    /**
-     * 测试用工厂：跳过真实的 AiServices 构建（不起模型、不连数据库），只保留"轮次边界修复"这段装配逻辑
-     */
+    /** 测试用工厂：跳过真实的 AiServices 构建（不起模型、不连数据库），只保留"轮次边界修复"这段装配逻辑 */
     private static class RepairingFactory extends AiCodeGeneratorServiceFactory {
 
         RepairingFactory(ChatMemoryStore store) {

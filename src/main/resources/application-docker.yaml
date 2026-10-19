@@ -48,13 +48,59 @@ spring:
           min-idle: ${REDIS_POOL_MIN_IDLE:4}
           max-wait: 10s
           time-between-eviction-runs: 30s
+  # RabbitMQ：部署任务队列（详见 core/builder/mq 与 DOCKER.md）
+  rabbitmq:
+    host: ${RABBITMQ_HOST:rabbitmq}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:ai_code}
+    password: ${RABBITMQ_PASSWORD:}
+    virtual-host: ${RABBITMQ_VHOST:/}
+    connection-timeout: 10s
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+      retry:
+        enabled: false
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 1
+        # 启动时 broker 还没就绪不要直接失败：容器会不断重试，等 RabbitMQ 起来后自动恢复
+        missing-queues-fatal: false
+        default-requeue-rejected: false
 
-# 部署构建队列：容器里并发跑 npm install / npm run build，每个进程要吃 0.4~0.8G 内存 + 1 个核
-# 2 核机器给 2；内存吃紧或频繁 OOM 就降到 1（部署会排队，但更稳）
+# 部署构建队列（RabbitMQ）：容器里并发跑 npm install / npm run build，每个进程要吃 0.4~0.8G 内存 + 1 个核
+# 4 核机器给 3（留 1 核给 Web/AI 请求）；内存吃紧或频繁 OOM 就降到 2
 deploy:
   queue:
-    workers: ${DEPLOY_QUEUE_WORKERS:2}
+    # 同时作为消费者 concurrency：每实例同时构建数
+    workers: ${DEPLOY_QUEUE_WORKERS:3}
+    # 队列容量（x-max-length）：注意它是队列声明参数，改了必须重建队列，见 DOCKER.md
     max-queue-size: ${DEPLOY_QUEUE_MAX_SIZE:32}
+    # 同步部署接口的独立额度（/app/deploy 需要当场返回地址，不能进 MQ 排队）
+    sync-permits: ${DEPLOY_QUEUE_SYNC_PERMITS:1}
+    # 同步部署的等待者上限（每实例）：额度被占满时最多允许多少个请求短时间排队，超出直接拒绝
+    sync-max-waiters: ${DEPLOY_QUEUE_SYNC_MAX_WAITERS:10}
+    # 同步部署的等待窗口（毫秒）：只接住"刚好有构建结束"的情况，避免请求线程被挂住几分钟
+    sync-wait-timeout-ms: ${DEPLOY_QUEUE_SYNC_WAIT_TIMEOUT_MS:5000}
+    # 死信队列容量上限（x-max-length）：不设上限时消费端长时间失败会把磁盘吃满；
+    # 溢出丢最老的。注意它是队列声明参数，改了必须重建 deploy.dlq，见 DOCKER.md
+    max-dead-letter-size: ${DEPLOY_QUEUE_MAX_DEAD_LETTER_SIZE:1000}
+    # 后台巡检告警：等待队列积压 / 死信积压，只在状态切换时打一条日志
+    monitor:
+      enabled: ${DEPLOY_QUEUE_MONITOR_ENABLED:true}
+      interval-seconds: ${DEPLOY_QUEUE_MONITOR_INTERVAL_SECONDS:60}
+      waiting-threshold: ${DEPLOY_QUEUE_MONITOR_WAITING_THRESHOLD:24}
+      dead-letter-threshold: ${DEPLOY_QUEUE_MONITOR_DEAD_LETTER_THRESHOLD:1}
+  # 部署任务恢复扫描：心跳过期落 failed、queued 超时重投（解决同步崩溃/数据库抖动卡死）
+  recovery:
+    enabled: ${DEPLOY_RECOVERY_ENABLED:true}
+    interval-seconds: ${DEPLOY_RECOVERY_INTERVAL_SECONDS:60}
+    deploying-timeout-seconds: ${DEPLOY_RECOVERY_DEPLOYING_TIMEOUT_SECONDS:300}
+    queued-timeout-seconds: ${DEPLOY_RECOVERY_QUEUED_TIMEOUT_SECONDS:900}
+    heartbeat-interval-seconds: ${DEPLOY_RECOVERY_HEARTBEAT_INTERVAL_SECONDS:30}
+    batch-size: ${DEPLOY_RECOVERY_BATCH_SIZE:50}
 
 # knife4j 接口文档（生产默认开 basic 认证）
 knife4j:

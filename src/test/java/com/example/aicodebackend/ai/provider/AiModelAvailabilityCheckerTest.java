@@ -15,9 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 模型可用性巡检测试
- * <p>
- * 巡检本身必须"绝对安全"：它跑在后台、访问外网，任何异常都不能影响应用。所以这里既验证
- * 解析与建议逻辑，也验证"接口不可达时不抛异常"。
+ * 巡检本身必须"绝对安全"：它跑在后台、访问外网，任何异常都不能影响应用。所以这里既验证……
  */
 class AiModelAvailabilityCheckerTest {
 

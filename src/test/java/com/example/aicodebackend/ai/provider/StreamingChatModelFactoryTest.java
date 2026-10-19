@@ -15,12 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 平台模型工厂测试
- * <p>
  * 这里不校验"构建出来的模型能不能调通"（那要连外网），只锁两件事：
- * <ul>
- *     <li>接口根地址算得对不对 —— 算错的后果是 404 / 401，靠日志很难一眼看出来；</li>
- *     <li>配置缺项时给的是"说清楚缺什么"的业务异常，而不是 NPE 或半个地址去请求。</li>
- * </ul>
  */
 class StreamingChatModelFactoryTest {
 
@@ -79,9 +74,7 @@ class StreamingChatModelFactoryTest {
 
     /**
      * 思考预算必须真的进到请求参数里
-     * <p>
-     * 这是"思考过程死循环"的硬性防线：模型在需求做不到时会长时间自我推敲，只有请求体里带了
-     * {@code thinking_budget}，平台侧才会把推理截断（实测同一请求不设预算 10 分钟以上不收敛）。
+     * 这是"思考过程死循环"的硬性防线：模型在需求做不到时会长时间自我推敲，只有请求体里带了……
      */
     @Test
     void shouldPassThinkingBudgetToRequestParameters() {

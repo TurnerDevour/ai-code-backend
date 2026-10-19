@@ -1,6 +1,6 @@
 # 部署步骤详解
 
-**目标环境**：Ubuntu Server 24.04 LTS 64bit（x86_64）· 2 核 4G · 域名 `https://wlbc.top`
+**目标环境**：Ubuntu Server 24.04 LTS 64bit（x86_64）· 4 核 8G（2026-10 由 2 核 4G 扩容）· 域名 `https://wlbc.top`
 （跑在容器里的系统是 Debian 12，与宿主发行版无关；本文按 Ubuntu 24.04 写命令）
 
 > 本文是**按顺序照抄即可**的操作手册；每一步都说明「在干什么 / 怎么验证 / 失败了怎么办」。
@@ -29,7 +29,7 @@
 
 ## 第 1 步：服务器准备（Ubuntu Server 24.04）
 
-**在干什么**：让这台 2 核 4G 的 Ubuntu 24.04 具备跑容器的条件。要点：装**官方新版** Docker（别用 apt 里的
+**在干什么**：让这台 4 核 8G 的 Ubuntu 24.04 具备跑容器的条件。要点：装**官方新版** Docker（别用 apt 里的
 `docker.io` 旧版）、让当前用户免 `sudo`、配镜像加速与日志轮转、按需补 swap。
 
 ```bash
@@ -52,7 +52,7 @@ sudo usermod -aG docker "$USER"
 # 退出终端重新登录（或执行 newgrp docker）后验证：
 docker version && docker compose version      # 期望 compose v2.x，且都不需要 sudo
 
-# 1.5 镜像加速 + 日志轮转（4G 机器磁盘小，日志必须限大小）
+# 1.5 镜像加速 + 日志轮转（磁盘有限，日志必须限大小）
 sudo mkdir -p /etc/docker
 sudo tee /etc/docker/daemon.json >/dev/null <<'EOF'
 {
@@ -99,7 +99,7 @@ free -h
 ```
 app.jar                               ← 本地打好的可执行 jar（镜像里真正跑的东西）
 Dockerfile                            ← 怎么把 jar 装成镜像
-docker-compose.yaml                   ← 四个服务的编排
+docker-compose.yaml                   ← 五个服务的编排（mysql / redis / rabbitmq / backend / nginx）
 .dockerignore                         ← 让 temp/、frontend-dist/ 等不进构建上下文
 .env                                  ← 密钥/密码/域名
 docker/entrypoint.sh, nginx.conf      ← 启动脚本、nginx 配置
@@ -195,6 +195,8 @@ vi .env
 | `MYSQL_ROOT_PASSWORD` | 自定义强密码 | 容器内 root 密码，只在**首次**初始化时生效 |
 | `MYSQL_PASSWORD` | 自定义强密码 | 应用连库用的密码，同样只在首次初始化生效 |
 | `REDIS_PASSWORD` | 自定义强密码 | Redis 密码 |
+| `RABBITMQ_PASSWORD` | 自定义强密码 | RabbitMQ 密码（部署构建队列）。**只在首次初始化数据卷时生效**，之后改 `.env` 不会改已有密码 |
+| `RABBITMQ_USER` | `ai_code` | RabbitMQ 用户名，同样只在首次初始化生效 |
 | `CODE_DEPLOY_HOST` | `https://wlbc.top/dist` | 已填好；**必须容器内也能访问**（第 8 步会验证），且必须是 **https**（前端页面是 https，给 http 地址会被浏览器当混合内容拦掉） |
 | `COS_*` | 腾讯云密钥 | 不填也能跑，但部署后没有封面图 |
 | `AI_BASE_URL / AI_WORKSPACE_ID / AI_API_KEY` | 阿里云百炼 | 不填则代码生成接口不可用 |
@@ -202,17 +204,26 @@ vi .env
 | `NGINX_SSL_PORT` | `443` | https 入口，承载全部业务（443 要在云防火墙放行，见第 9 步） |
 | `DOCKER_SUBNET` | `10.201.0.0/24` | 容器自定义网络 `ai-code-net` 的网段，**刻意避开 Docker 默认池 172.17~172.31**；部署前先用 `ip -4 addr show \| grep inet` 核对本机/VPC 网段，撞了就换成 `10.202.0.0/24` 之类 |
 | `NPM_REGISTRY` | 已默认 `https://registry.npmmirror.com` | 用户工程构建时 `npm install` 用 |
-| `JAVA_OPTS` | 已按 2 核 4G 调好 | 堆 1G、Chrome 池 2 |
-| `DEPLOY_QUEUE_WORKERS` | `2` | 并发构建数 |
+| `JAVA_OPTS` | 已按 4 核 8G 调好 | 堆 2G、Chrome 池 2；内存吃紧时优先降 `-Xmx` |
+| `DEPLOY_QUEUE_WORKERS` | `3` | **每实例并发构建数**（= RabbitMQ 消费者 concurrency）；4 核留 1 核给 Web/AI |
+| `DEPLOY_QUEUE_MAX_SIZE` | `32` | 队列容量（`x-max-length`）。改了必须重建队列，见 DOCKER.md 第 7.1 节 |
+| `DEPLOY_QUEUE_SYNC_PERMITS` | `1` | 同步部署接口 `/app/deploy` 的独立额度（它要当场返回地址，不能进 MQ 排队）；每实例总并发 = workers + 本值 |
+| `DEPLOY_QUEUE_SYNC_MAX_WAITERS` / `..._WAIT_TIMEOUT_MS` | `10` / `5000` | 同步接口的有界短排队（每实例）：额度占满时最多 10 个请求各等 5 秒，其余/超时请求当场失败并提示改用 `/app/deploy/async`，避免占满 Web 线程池 |
+| `DEPLOY_RECOVERY_ENABLED` / `..._INTERVAL_SECONDS` | `true` / `60` | 部署任务恢复扫描：心跳过期落 failed、queued 超时按 taskId 重投（同步崩溃/数据库抖动卡死自愈） |
+| `DEPLOY_RECOVERY_DEPLOYING_TIMEOUT_SECONDS` / `..._QUEUED_TIMEOUT_SECONDS` | `300` / `900` | deploying 心跳超过 5 分钟没更新即判定进程崩溃；queued 超过 15 分钟无进展则重新入队 |
+| `DEPLOY_QUEUE_MAX_DEAD_LETTER_SIZE` | `1000` | 死信队列容量（溢出丢最老的）：防止消费端长时间失败把磁盘吃满；改了要重建 `deploy.dlq` |
+| `DEPLOY_QUEUE_MONITOR_ENABLED` / `..._INTERVAL_SECONDS` | `true` / `60` | 内置巡检开关与间隔；只在状态切换时打日志 |
+| `DEPLOY_QUEUE_MONITOR_WAITING_THRESHOLD` / `..._DEAD_LETTER_THRESHOLD` | `24` / `1` | 等待积压 / 死信积压的告警阈值；当前告警态可从 `/api/health/deploy-queue` 的 `alerts` 读取 |
 
 > **两个坑**：
 > 1. 密码里如果含 `$`，compose 会当成变量插值 → 要么别用 `$`，要么写成 `$$`。
 > 2. 数据库密码只在**第一次**初始化数据卷时写入 MySQL；之后改 `.env` 不会改数据库里已有的密码，会导致连不上（解决办法见第 6 步的"重置"）。
 
-> **数据库与 Redis 不对外暴露**：编排里 mysql/redis **没有 `ports:`**，
-> 它们只挂在 `ai-code-net` 上，宿主机和公网都连不到 3306/6379（backend 用服务名 `mysql:3306`、`redis:6379` 连）。
+> **数据库、Redis、RabbitMQ 不对外暴露**：编排里 mysql/redis/rabbitmq **没有 `ports:`**，
+> 它们只挂在 `ai-code-net` 上，宿主机和公网都连不到 3306/6379/5672/15672（backend 用服务名
+> `mysql:3306`、`redis:6379`、`rabbitmq:5672` 连）。
 > 所以 `.env` 里的 `MYSQL_BIND` / `REDIS_BIND` 平时**不起作用**（只有临时加回 ports 映射时才会用到）。
-> 要连库/Redis 请看第 6 步的容器内命令，需要图形工具时用第 9 步里的 SSH 隧道方式。
+> 要连库/Redis/RabbitMQ 请看第 6 步的容器内命令，需要图形工具或管理台时用第 9 步里的 SSH 隧道方式。
 
 ---
 
@@ -226,8 +237,8 @@ docker compose config | grep -E "CODE_DEPLOY_HOST|mem_limit|MYSQL_USER"
 # 核对"实际发布"的端口：期望只有 nginx 的 80/443 与 backend 的 127.0.0.1:8123，
 # 不应出现 mysql/redis 的 3306/6379（它们只在编排网络内可达，见下面的坑）
 docker compose config | grep -A2 "published" | head -30
-# 核对四个服务都挂在自定义网络 ai-code-net 上（漏挂服务 → 服务名解析不了 → 后端起不来）
-# 期望 6：mysql/redis/backend/nginx 各 1 次 + 网络定义 2 次（ai-code-net: 与 name: ai-code-net）
+# 核对五个服务都挂在自定义网络 ai-code-net 上（漏挂服务 → 服务名解析不了 → 后端起不来）
+# 期望 7：mysql/redis/rabbitmq/backend/nginx 各 1 次 + 网络定义 2 次（ai-code-net: 与 name: ai-code-net）
 docker compose config | grep -c "ai-code-net"
 # 核对容器网络网段（应是你 .env 里 DOCKER_SUBNET 的值，默认 10.201.0.0/24）
 docker compose config | grep -A6 "^networks:"
@@ -283,7 +294,7 @@ docker images | grep ai-code-backend      # 期望 ai-code-backend:1.0.0
 BACKEND_BUILD_TARGET=runtime docker compose build backend
 ```
 
-代价：容器里要跑 Maven（下载依赖 + 编译），2 核机器约 5~10 分钟，构建阶段内存峰值约 1G。
+代价：容器里要跑 Maven（下载依赖 + 编译），4 核机器约 3~6 分钟，构建阶段内存峰值约 1G。
 
 ### 两种方式的共同点与排错
 
@@ -306,17 +317,18 @@ BACKEND_BUILD_TARGET=runtime docker compose build backend
 
 ---
 
-## 第 6 步：只启动 MySQL 和 Redis
+## 第 6 步：只启动 MySQL、Redis、RabbitMQ
 
-**在干什么**：先把数据库起来，并**首次执行建表脚本** `src/main/resources/sql/ai_code_db.sql`（用户表、应用表、对话历史表 + 索引）。这一步做完再起后端，避免后端连不上库刷一堆报错。
+**在干什么**：先把中间件起来。MySQL 首次启动会**执行建表脚本** `src/main/resources/sql/ai_code_db.sql`（用户表、应用表、对话历史表 + 索引）；RabbitMQ 首次启动会创建 `RABBITMQ_USER` / `RABBITMQ_PASSWORD`。这一步做完再起后端，避免后端连不上库/队列刷一堆报错。
 
-> mysql / redis **不发布宿主机端口**，所以只能用容器内客户端验证（下面这条），
-> 宿主机上 `mysql -h127.0.0.1` / `redis-cli` 是连不上的——这是刻意的，见编排里的注释。
+> mysql / redis / rabbitmq **不发布宿主机端口**，所以只能用容器内客户端验证（下面几条），
+> 宿主机上 `mysql -h127.0.0.1` / `redis-cli` / 连 5672 都是连不上的——这是刻意的，见编排里的注释。
 
 ```bash
-docker compose up -d mysql redis
-docker compose ps                       # 等 STATUS 变成 healthy（约 30~60 秒）
+docker compose up -d mysql redis rabbitmq
+docker compose ps                       # 等 STATUS 变成 healthy（MySQL 约 30~60 秒，RabbitMQ 约 20~40 秒）
 docker compose logs --tail=50 mysql     # 看到 "ready for connections" 即完成初始化
+docker compose logs --tail=50 rabbitmq  # 看到 "Server startup complete" 即就绪
 ```
 
 **验证库表真的建好了**（`sh -c` 里的变量由**容器内**的环境变量展开，不用在宿主机上导出密码）：
@@ -325,6 +337,8 @@ docker compose logs --tail=50 mysql     # 看到 "ready for connections" 即完�
 docker compose exec mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" ai_code_db -e "show tables;"'
 # Redis 同理（容器内客户端）
 docker compose exec redis sh -c 'redis-cli --no-auth-warning -a "$REDIS_PASSWORD" ping'   # PONG
+# RabbitMQ：应能看到随后端启动自动声明的 deploy.queue / deploy.dlq（backend 还没起时列表为空是正常的）
+docker compose exec rabbitmq rabbitmqctl list_queues name messages consumers
 ```
 
 **预期**：列出 `app`、`chat_history`、`user` 三张表。
@@ -338,7 +352,7 @@ docker compose exec redis sh -c 'redis-cli --no-auth-warning -a "$REDIS_PASSWORD
 
 ## 第 7 步：启动 backend
 
-**在干什么**：起 Spring Boot 服务（容器内监听 8123；默认只映射到宿主机 `127.0.0.1:8123`，对外统一走 nginx 的 80），它会连 MySQL/Redis、初始化 AI 模型配置。
+**在干什么**：起 Spring Boot 服务（容器内监听 8123；默认只映射到宿主机 `127.0.0.1:8123`，对外统一走 nginx 的 80），它会连 MySQL / Redis / RabbitMQ、初始化 AI 模型配置，并在 broker 上声明 `deploy.exchange` / `deploy.queue` / `deploy.dlx` / `deploy.dlq`。
 
 ```bash
 docker compose up -d backend
@@ -352,11 +366,14 @@ docker compose logs -f backend          # 看到 "Started AiCodeBackendApplicati
 ```bash
 docker compose ps                                   # backend 应为 healthy
 curl -fsS http://127.0.0.1:8123/api/health           # {"code":0,...,"data":"ok"}
+# 部署队列水位（RabbitMQ 口径）：
+#   {"broker":"rabbitmq","workers":3,"maxQueueSize":32,"waiting":0,"executing":0,"inFlight":0,"consumers":3}
+#   consumers 应等于 workers（每实例 3 个消费者）；字段为 -1 表示 broker 查询失败
 curl -s  http://127.0.0.1:8123/api/health/deploy-queue
 
-# 确认服务确实接在自定义网络 ai-code-net 上（backend 就是靠它解析 mysql / redis 的）
+# 确认服务确实接在自定义网络 ai-code-net 上（backend 就是靠它解析 mysql / redis / rabbitmq 的）
 docker network inspect ai-code-net --format '{{range .Containers}}{{.Name}} {{end}}'
-# 期望看到：ai-code-mysql ai-code-redis ai-code-backend
+# 期望看到：ai-code-mysql ai-code-redis ai-code-rabbitmq ai-code-backend
 
 # 确认网段就是你要的（默认 10.201.0.0/24，刻意避开 Docker 默认池 172.17~172.31）
 docker network inspect ai-code-net --format '{{range .IPAM.Config}}subnet={{.Subnet}} gateway={{.Gateway}}{{end}}'
@@ -616,7 +633,7 @@ docker compose exec mysql mysql -uroot -p"$DB_ROOT_PWD" ai_code_db \
 | 打开部署地址 | 浏览器访问 `https://wlbc.top/dist/{deployKey}/` 页面正常 |
 | 封面图 | 日志出现 `网页截图上传成功，cosUrl: ...`（截图失败不影响部署成功，但封面会空） |
 
-**部署很慢是正常的**：2 核机器上一个 Vue 工程 `npm install` + `build` 通常 1~3 分钟；同时部署会排队，队列水位看 `https://wlbc.top/api/health/deploy-queue`。
+**部署很慢是正常的**：4 核机器上一个 Vue 工程 `npm install` + `build` 通常 1~3 分钟；同时部署会排队，队列水位看 `https://wlbc.top/api/health/deploy-queue`（`waiting` = broker 里待消费，`executing` = 本实例正在构建；同步接口另看 `syncWaiting`）。
 
 ---
 
@@ -714,8 +731,13 @@ ls -l /opt/ai-code-backend/frontend-dist/index.html /opt/ai-code-backend/fronten
 | 部署报 `ERR_MODULE_NOT_FOUND: … node_modules/dist/node/cli.js … imported from …/.bin/vite` | `docker compose exec backend ls -l /app/temp/code_output/` | **旧版本 bug**：构建暂存目录把上一次的 `node_modules` 整份复制过去，Linux 上 npm 的 `.bin/*` 是符号链接，复制时被实体化成真实文件，里面的相对导入就错位了。已在代码里修复（复制时跳过 `node_modules` / `dist`）—— 本地重新 `mvn package` 并上传新 `app.jar` 后重建镜像即可；`code_output` 里残留的 `node_modules` 无需手工清理 |
 | 部署成功但封面为空 | `docker compose logs backend \| grep -i -E "chrom\|截图"` | 容器内访问不到 `wlbc.top`（第 8 步第 ④ 条）；或 COS 密钥不对 |
 | 截图里中文是方块 | — | 镜像里的 `fonts-noto-cjk` 被删了，别动 Dockerfile 那一行 |
-| 容器反复重启 | `docker inspect ai-code-backend --format '{{.State.OOMKilled}}'` | 内存不够：先把 `DEPLOY_QUEUE_WORKERS` 降到 1，再把 `-Xmx1024m` 降到 `896m` |
-| 部署排队很久 | `https://wlbc.top/api/health/deploy-queue` | 2 核机器正常现象；`workers` 不要超过 2 |
+| 容器反复重启 | `docker inspect ai-code-backend --format '{{.State.OOMKilled}}'` | 内存不够：先把 `DEPLOY_QUEUE_WORKERS` 降到 2，再把 `-Xmx2048m` 降到 `-Xmx1536m`（4 核 8G 上按 DOCKER.md 第 7 节的预算排查） |
+| 部署排队很久 | `https://wlbc.top/api/health/deploy-queue` 看 `waiting` / `consumers`；同步接口看 `syncWaiting` | 4 核机器 `workers` 建议 3（别超过 3）；`waiting` 持续增长说明构建跟不上提交速度 |
+| 提交部署返回"部署队列已满" | 同上，看 `waiting` 是否接近 `maxQueueSize` | 这是**预期的背压**：RabbitMQ 队列满了由 broker 拒绝（`x-max-length` + `x-overflow=reject-publish`，被拒消息不进死信），提示用户稍后重试 |
+| backend 日志报 `Connection refused: rabbitmq:5672` | `docker compose ps` 看 rabbitmq 是否 healthy；`docker compose logs rabbitmq` | broker 没起来 / 密码与数据卷不匹配（`RABBITMQ_PASSWORD` 只在首次初始化生效） |
+| 启动报 `PRECONDITION_FAILED - inequivalent arg 'x-max-length' for queue 'deploy.queue'` | — | 改过 `DEPLOY_QUEUE_MAX_SIZE` 但队列已存在：按 DOCKER.md 第 7.1 节删队列后重启（会丢弃排队任务，挑低峰期） |
+| 应用一直停在"排队中" | `curl /api/health/deploy-queue` 的 `consumers`；`docker compose exec rabbitmq rabbitmqctl list_queues name messages messages_unacknowledged consumers` | `consumers` 为 0 说明消费端没连上（看 backend 日志里的 `rabbit` 关键字）；`messages_unacknowledged` 长期不降说明构建卡住，`docker compose restart backend` 可让消息重回队列重投 |
+| RabbitMQ 管理台打不开 | 15672 **没有**发布到宿主机（与 3306/6379 同理） | 用 SSH 隧道到容器 IP：`docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ai-code-rabbitmq` + `ssh -N -L 15672:<容器IP>:15672 <用户>@<服务器>`，浏览器开 `http://127.0.0.1:15672` |
 | 生成的站点页面白屏 | 访问地址是否形如 `/dist/{key}/` 且**结尾带斜杠** | 产物是相对路径（`base: './'`），少了斜杠资源就找不到 |
 
 ---

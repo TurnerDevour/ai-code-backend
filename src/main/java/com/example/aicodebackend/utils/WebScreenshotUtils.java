@@ -32,61 +32,56 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 网页截图工具
- * <p>
  * 并发模型（本次修复的核心）：
- * 旧实现是全应用共享<b>一个</b> {@code static final WebDriver}，所有截图请求排队复用同一个浏览器实例：
- * 100 个应用并发部署时，最后一张截图比第一个部署请求晚近一分钟，而且并发的 {@code get()} 会互相打断，
- * 存在"A 应用截到 B 应用页面"的串号风险；一旦 Chrome 崩溃，整个实例的截图能力全部不可用。
- * <p>
- * 现在改为<b>有界浏览器池</b>：
- * <ul>
- *     <li>最多 {@value MAX_DRIVERS} 个实例，按需创建、用完归还，每个实例同一时刻只服务一个请求；</li>
- *     <li>取不到实例时最多等待 {@value BORROW_TIMEOUT_SECONDS} 秒，超时给出明确失败，而不是无限堆积；</li>
- *     <li>截图过程中出错的实例直接销毁，下次按需重建，单个浏览器崩溃不会拖垮整个服务；</li>
- *     <li>空闲实例在超过 {@value IDLE_EVICT_MILLIS} ms 未使用后被回收，避免长期占用内存。</li>
- * </ul>
+ * 旧实现是全应用共享一个 {@code static final WebDriver}，所有截图请求排队复用同一个浏览器实例……
  */
 @Slf4j
 public class WebScreenshotUtils {
 
-    /**
-     * 浏览器实例上限：Chrome 是重资源，按机器核数与内存给出保守上限
-     */
+    /** 浏览器实例上限：Chrome 是重资源，按机器核数与内存给出保守上限 */
     private static final int MAX_DRIVERS = Integer.getInteger("screenshot.max-drivers", 6);
 
     /**
      * 借出浏览器的最长等待时间（秒）
-     * <p>
      * 100 个应用并发部署会产生 100 个截图任务，单张截图约 3 秒，池化后必然排队：
-     * 超时过小会让排队中的任务直接失败（实测 30 秒 + 池大小 4 时，100 个任务里 71 个失败）。
-     * 这里按"最坏情况 ≈ 任务数 × 单张耗时 / 池大小"留出余量，并通过 JVM 参数可调。
+     * 超时过小会让排队中的任务直接失败（实测 30 秒 + 池大小 4 时，100 个任务里 71 个失败）……
      */
     private static final int BORROW_TIMEOUT_SECONDS = Integer.getInteger("screenshot.borrow-timeout-seconds", 180);
 
-    /**
-     * 空闲实例的保留时长（毫秒），超过则关闭，避免浏览器实例长期驻留
-     */
+    /** 空闲实例的保留时长（毫秒），超过则关闭，避免浏览器实例长期驻留 */
     private static final long IDLE_EVICT_MILLIS = 5 * 60 * 1000L;
 
     private static final int DEFAULT_WIDTH = 1600;
 
     private static final int DEFAULT_HEIGHT = 900;
 
-    /**
-     * 空闲实例池（每个实例同一时刻只被一个线程持有）
-     */
+    /** 原始截图后缀 */
+    private static final String IMAGE_SUFFIX = ".png";
+
+    /** 压缩截图后缀 */
+    private static final String COMPRESSED_IMAGE_SUFFIX = "_compressed.jpg";
+
+    /** 压缩质量 */
+    private static final float COMPRESSION_QUALITY = 0.3f;
+
+    /** 页面加载超时（秒） */
+    private static final int PAGE_LOAD_TIMEOUT_SECONDS = 30;
+
+    /** 元素隐式等待（秒） */
+    private static final int IMPLICIT_WAIT_SECONDS = 10;
+
+    /** 动态内容额外等待（毫秒） */
+    private static final long DYNAMIC_CONTENT_WAIT_MILLIS = 2000;
+
+    /** 空闲实例池（每个实例同一时刻只被一个线程持有） */
     private static final LinkedBlockingDeque<PooledDriver> IDLE_DRIVERS = new LinkedBlockingDeque<>(MAX_DRIVERS);
 
     private static final Object POOL_LOCK = new Object();
 
-    /**
-     * 已创建的实例总数（含借出中），用于控制总量不超过 MAX_DRIVERS
-     */
+    /** 已创建的实例总数（含借出中），用于控制总量不超过 MAX_DRIVERS */
     private static final AtomicInteger CREATED_DRIVERS = new AtomicInteger();
 
-    /**
-     * 「实际使用的浏览器与驱动」只记一次日志：进程内这一对不会变，重复记录只会刷屏
-     */
+    /** 「实际使用的浏览器与驱动」只记一次日志：进程内这一对不会变，重复记录只会刷屏 */
     private static final AtomicBoolean VERSIONS_LOGGED = new AtomicBoolean(false);
 
     static {
@@ -99,13 +94,7 @@ public class WebScreenshotUtils {
         closeAll();
     }
 
-    /**
-     * 生成网页截图
-     *
-     * @param webUrl 网页URL
-     *
-     * @return 压缩后的截图文件路径，失败返回null
-     */
+    /** 生成网页截图 */
     public static String saveWebPageScreenshot(String webUrl) {
         if (StrUtil.isBlank(webUrl)) {
             log.error("网页URL不能为空");
@@ -122,12 +111,10 @@ public class WebScreenshotUtils {
             pooledDriver = borrowDriver();
             WebDriver driver = pooledDriver.driver;
             // 创建临时目录
-            rootPath = System.getProperty("user.dir") + File.separator + "temp" + File.separator + "screenshots"
-                    + File.separator + UUID.randomUUID().toString().substring(0, 8);
+            rootPath = AppPathUtils.screenshotTempDir()
+                    .resolve(UUID.randomUUID().toString().substring(0, 8))
+                    .toString();
             FileUtil.mkdir(rootPath);
-            // 图片后缀
-            final String IMAGE_SUFFIX = ".png";
-            // 原始截图文件路径
             String imageSavePath = rootPath + File.separator + RandomUtil.randomNumbers(5) + IMAGE_SUFFIX;
             // 访问网页
             driver.get(webUrl);
@@ -139,8 +126,8 @@ public class WebScreenshotUtils {
             saveImage(screenshotBytes, imageSavePath);
             log.info("原始截图保存成功: {}", imageSavePath);
             // 压缩图片
-            final String COMPRESSION_SUFFIX = "_compressed.jpg";
-            String compressedImagePath = rootPath + File.separator + RandomUtil.randomNumbers(5) + COMPRESSION_SUFFIX;
+            String compressedImagePath = rootPath + File.separator + RandomUtil.randomNumbers(5)
+                    + COMPRESSED_IMAGE_SUFFIX;
             compressImage(imageSavePath, compressedImagePath);
             log.info("压缩图片保存成功: {}", compressedImagePath);
             // 删除原始图片，只保留压缩图片
@@ -161,11 +148,7 @@ public class WebScreenshotUtils {
         }
     }
 
-    /**
-     * 删除截图临时目录（失败路径收尾用）：删不掉只记日志，绝不因为清理失败影响主流程
-     *
-     * @param rootPath 本次截图的临时目录（可为 null）
-     */
+    /** 删除截图临时目录（失败路径收尾用）：删不掉只记日志，绝不因为清理失败影响主流程 */
     private static void deleteQuietly(String rootPath) {
         if (StrUtil.isBlank(rootPath)) {
             return;
@@ -180,11 +163,7 @@ public class WebScreenshotUtils {
         }
     }
 
-    /**
-     * 借出一个浏览器实例：优先复用空闲实例，池未满则新建，否则等待其它请求归还
-     *
-     * @return 池化的浏览器实例
-     */
+    /** 借出一个浏览器实例：优先复用空闲实例，池未满则新建，否则等待其它请求归还 */
     private static PooledDriver borrowDriver() {
         long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(BORROW_TIMEOUT_SECONDS);
         while (true) {
@@ -216,11 +195,7 @@ public class WebScreenshotUtils {
         }
     }
 
-    /**
-     * 从空闲队列取一个实例，并顺带回收闲置过久的实例
-     *
-     * @return 可用的浏览器实例，池空时返回 null
-     */
+    /** 从空闲队列取一个实例，并顺带回收闲置过久的实例 */
     private static PooledDriver takeIdle() {
         PooledDriver pooled = IDLE_DRIVERS.pollFirst();
         while (pooled != null && System.currentTimeMillis() - pooled.lastUsedAt > IDLE_EVICT_MILLIS) {
@@ -232,12 +207,7 @@ public class WebScreenshotUtils {
         return pooled;
     }
 
-    /**
-     * 归还浏览器实例
-     *
-     * @param pooled  池化实例，可能为 null
-     * @param healthy 本次使用是否正常（异常时销毁该实例，避免复用坏实例）
-     */
+    /** 归还浏览器实例 */
     private static void returnDriver(PooledDriver pooled, boolean healthy) {
         if (pooled == null) {
             return;
@@ -255,9 +225,7 @@ public class WebScreenshotUtils {
         }
     }
 
-    /**
-     * 关闭所有浏览器实例
-     */
+    /** 关闭所有浏览器实例 */
     private static void closeAll() {
         PooledDriver pooled;
         while ((pooled = IDLE_DRIVERS.pollFirst()) != null) {
@@ -274,9 +242,7 @@ public class WebScreenshotUtils {
         }
     }
 
-    /**
-     * 池化实例：记录最后一次使用时间，用于空闲回收
-     */
+    /** 池化实例：记录最后一次使用时间，用于空闲回收 */
     private static final class PooledDriver {
         private final WebDriver driver;
         private volatile long lastUsedAt;
@@ -287,19 +253,12 @@ public class WebScreenshotUtils {
         }
     }
 
-    /**
-     * 初始化 ChromeDriver
-     *
-     * @param width  默认宽度
-     * @param height 默认高度
-     *
-     * @return WebDriver 实例
-     */
+    /** 初始化 ChromeDriver */
     private static WebDriver initChromeDriver(int width, int height) {
         try {
             ChromeDriver chromeDriver = new ChromeDriver(buildDriverService(), chromeOptions(width, height));
-            chromeDriver.manage().timeouts().pageLoadTimeout(Duration.ofSeconds(30)); // 设置页面加载超时时间
-            chromeDriver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10)); // 设置隐式等待时间
+            chromeDriver.manage().timeouts().pageLoadTimeout(Duration.ofSeconds(PAGE_LOAD_TIMEOUT_SECONDS));
+            chromeDriver.manage().timeouts().implicitlyWait(Duration.ofSeconds(IMPLICIT_WAIT_SECONDS));
             return chromeDriver;
         } catch (BusinessException e) {
             // 已经是我们自己给出原因的业务异常（例如驱动与浏览器版本不匹配）：原样抛出，
@@ -313,23 +272,9 @@ public class WebScreenshotUtils {
     }
 
     /**
-     * 创建 ChromeDriver 服务：<b>优先用系统里已经装好的驱动</b>，只有系统里没有才回退 WebDriverManager
-     * <p>
+     * 创建 ChromeDriver 服务：优先用系统里已经装好的驱动，只有系统里没有才回退 WebDriverManager
      * 线上故障（实测）：镜像里 apt 装的 {@code chromium} 与 {@code chromium-driver} 本来同源同版本，
-     * 但每次都让 {@code WebDriverManager.chromedriver().setup()} 自己解析驱动，一旦它的解析结果不是
-     * 镜像里的那一版，Selenium 就报
-     * {@code session not created: This version of ChromeDriver only supports Chrome version 155 /
-     * Current browser version is 154.0.8037.92}——所有截图（应用封面）整体失败。
-     * 现在改成把系统里的 {@code /usr/bin/chromedriver} 显式交给 Selenium：用哪个驱动完全由镜像决定，
-     * 不再受 WebDriverManager"探测浏览器版本 → 联网查版本 → 下载到缓存"这条链路影响
-     * （国内服务器还会卡在 storage.googleapis.com 下载上）。
-     * <p>
-     * 校验放在创建实例之前：主版本不一致时抛出说清修法的业务异常，
-     * 而不是把驱动返回的 500（"只支持 Chrome 155"）原样抛给用户。
-     *
-     * @return ChromeDriver 服务
-     *
-     * @throws IOException 驱动不可执行
+     * 但每次都让 {@code WebDriverManager.chromedriver().setup()} 自己解析驱动，一旦它的解析结果不是……
      */
     private static ChromeDriverService buildDriverService() throws IOException {
         Path systemDriver = ChromeInstallation.findDriver();
@@ -351,14 +296,7 @@ public class WebScreenshotUtils {
                 .build();
     }
 
-    /**
-     * 获取 Chrome 启动参数
-     *
-     * @param width  窗口宽度
-     * @param height 窗口高度
-     *
-     * @return 启动参数
-     */
+    /** 获取 Chrome 启动参数 */
     private static @NonNull ChromeOptions chromeOptions(int width, int height) {
         ChromeOptions options = new ChromeOptions();
         options.addArguments("--headless"); // 无头模式
@@ -377,9 +315,7 @@ public class WebScreenshotUtils {
         return options;
     }
 
-    /**
-     * 保存图片到文件
-     */
+    /** 保存图片到文件 */
     private static void saveImage(byte[] imageBytes, String imagePath) {
         try {
             FileUtil.writeBytes(imageBytes, imagePath);
@@ -389,12 +325,8 @@ public class WebScreenshotUtils {
         }
     }
 
-    /**
-     * 压缩图片
-     */
+    /** 压缩图片 */
     private static void compressImage(String originalImagePath, String compressedImagePath) {
-        // 压缩图片质量（0.1 = 10% 质量）
-        final float COMPRESSION_QUALITY = 0.3f;
         try {
             ImgUtil.compress(
                     FileUtil.file(originalImagePath),
@@ -407,19 +339,17 @@ public class WebScreenshotUtils {
         }
     }
 
-    /**
-     * 等待页面加载完成
-     */
+    /** 等待页面加载完成 */
     private static void waitForPageLoad(WebDriver webDriver) {
         try {
             // 创建等待页面加载对象
-            WebDriverWait wait = new WebDriverWait(webDriver, Duration.ofSeconds(10));
+            WebDriverWait wait = new WebDriverWait(webDriver, Duration.ofSeconds(IMPLICIT_WAIT_SECONDS));
             // 等待 document.readyState 为complete
             wait.until(driver ->
                     Objects.equals(((JavascriptExecutor) driver).executeScript("return document.readyState"), "complete")
             );
             // 额外等待一段时间，确保动态内容加载完成
-            Thread.sleep(2000);
+            Thread.sleep(DYNAMIC_CONTENT_WAIT_MILLIS);
             log.info("页面加载完成");
         } catch (Exception e) {
             log.error("等待页面加载时出现异常，继续执行截图", e);

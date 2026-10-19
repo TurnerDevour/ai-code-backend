@@ -22,15 +22,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * VueProjectBuilder 的 npm 命令解析与真实构建测试。
- * <p>
- * 回归背景：旧实现固定拼接 "npm.cmd"，在只提供 npm.exe 的 Node 发行版上会直接
- * 报「系统找不到指定的路径」，导致 npm install 与 npm run build 全部失败。
+ * 回归背景：旧实现固定拼接 "npm.cmd"，在只提供 npm.exe 的 Node 发行版上会直接……
  */
 class VueProjectBuilderTest {
 
-    /**
-     * 生成项目的构建产物目录名
-     */
+    /** 生成项目的构建产物目录名 */
     private static final String DIST_DIR = "dist";
 
     /**
@@ -39,9 +35,7 @@ class VueProjectBuilderTest {
      */
     private static final String E2E_SWITCH = "RUN_VUE_BUILD_E2E";
 
-    /**
-     * 解析出的 npm 命令必须是真实存在的可执行文件，而不是想当然的 npm.cmd
-     */
+    /** 解析出的 npm 命令必须是真实存在的可执行文件，而不是想当然的 npm.cmd */
     @Test
     @EnabledOnOs(OS.WINDOWS)
     void shouldResolveExistingNpmExecutableOnWindows() throws Exception {
@@ -55,9 +49,7 @@ class VueProjectBuilderTest {
                 "解析结果不是 npm 可执行文件: " + executable);
     }
 
-    /**
-     * 解析出的 npm 命令必须能够在当前环境下真正执行
-     */
+    /** 解析出的 npm 命令必须能够在当前环境下真正执行 */
     @Test
     @EnabledOnOs(OS.WINDOWS)
     void shouldExecuteResolvedNpmCommand() throws Exception {
@@ -73,9 +65,7 @@ class VueProjectBuilderTest {
         assertEquals(0, process.exitValue(), "npm --version 执行失败");
     }
 
-    /**
-     * 非 Windows 平台直接使用 npm
-     */
+    /** 非 Windows 平台直接使用 npm */
     @Test
     @EnabledOnOs({OS.LINUX, OS.MAC})
     void shouldUsePlainNpmOnUnixLikeSystem() throws Exception {
@@ -84,9 +74,7 @@ class VueProjectBuilderTest {
 
     /**
      * 端到端真实构建：用提示词中约定的 Vue3 工程模板，真正执行 npm install + npm run build，
-     * 并校验 dist/index.html 是否产出，确保生成的项目可以构建。
-     * <p>
-     * 需要显式开启：$env:RUN_VUE_BUILD_E2E="true"; mvn test -Dtest=VueProjectBuilderTest
+     * 并校验 dist/index.html 是否产出，确保生成的项目可以构建……
      */
     @Test
     void shouldBuildGeneratedVueProjectEndToEnd() throws Exception {
@@ -111,17 +99,7 @@ class VueProjectBuilderTest {
 
     /**
      * 端到端真实构建：产物 chunk 超过 1 MiB 的工程
-     * <p>
-     * 回归背景（实测）：esbuild 对<b>超过 1 MiB 的输入</b>不走管道，而是把内容写进 {@code os.tmpdir()}
-     * 下的临时文件、交给子进程读取后删除（vite 打包时的 {@code vite:esbuild-transpile} 会整块处理 chunk）。
-     * 带 three.js 这类大依赖的工程 chunk 轻松超过 1 MiB，一旦该删除动作被本机环境拒绝
-     * （{@code remove ...: Access is denied}），vite build 会以退出码 1 结束、dist 根本不产出，
-     * 前端预览区（{@code /static/vue_project_{appId}/dist/index.html}）就是一片空白。
-     * <p>
-     * 这里用一个超大字符串制造 >1 MiB 的 chunk，并断言产物真的超过 1 MiB，
-     * 保证用例确实走到了 esbuild 的临时文件路径（否则用例会变成"永远通过"的假用例）。
-     * <p>
-     * 需要显式开启：$env:RUN_VUE_BUILD_E2E="true"; mvn test -Dtest=VueProjectBuilderTest
+     * 回归背景（实测）：esbuild 对超过 1 MiB 的输入不走管道，而是把内容写进 {@code os.tmpdir()}……
      */
     @Test
     void shouldBuildProjectWithLargeChunkEndToEnd() throws Exception {
@@ -148,9 +126,7 @@ class VueProjectBuilderTest {
         }
     }
 
-    /**
-     * 写入一个超大模块并让入口引用它，使打包后的 chunk 超过 1 MiB
-     */
+    /** 写入一个超大模块并让入口引用它，使打包后的 chunk 超过 1 MiB */
     private void writeLargeModuleFixture(Path projectDir) throws IOException {
         int payloadLength = 1400 * 1024;
         StringBuilder payload = new StringBuilder(payloadLength);
@@ -172,9 +148,7 @@ class VueProjectBuilderTest {
                 """, StandardCharsets.UTF_8);
     }
 
-    /**
-     * 取产物目录里最大的文件字节数
-     */
+    /** 取产物目录里最大的文件字节数 */
     private long largestAssetSize(Path distDir) throws IOException {
         try (Stream<Path> paths = Files.walk(distDir)) {
             return paths.filter(Files::isRegularFile)
@@ -192,7 +166,6 @@ class VueProjectBuilderTest {
 
     /**
      * 写入一个最小可构建的 Vue3 工程，与 codegen-vue-project-system-prompt 中的约定保持一致
-     * <p>
      * 注意：vite.config.js 必须包含 fileURLToPath 的导入，缺失会直接导致构建失败。
      */
     private void writeVueProjectFixture(Path projectDir) throws IOException {

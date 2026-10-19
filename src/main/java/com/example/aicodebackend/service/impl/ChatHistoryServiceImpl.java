@@ -2,6 +2,7 @@ package com.example.aicodebackend.service.impl;
 
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
+import com.example.aicodebackend.common.PageRequest;
 import com.example.aicodebackend.constant.ChatHistoryConstant;
 import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.exception.ThrowUtils;
@@ -14,9 +15,6 @@ import com.example.aicodebackend.utils.TextUtils;
 import com.mybatisflex.core.paginate.Page;
 import com.mybatisflex.core.query.QueryWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
-import dev.langchain4j.data.message.AiMessage;
-import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -27,32 +25,13 @@ import java.util.List;
 @Service
 public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatHistory> implements ChatHistoryService {
 
-    /**
-     * 添加对话消息（用户消息、AI 消息、错误消息都通过该方法持久化）
-     *
-     * @param appId       应用id
-     * @param userId      创建用户id
-     * @param message     消息内容
-     * @param messageType 消息类型
-     *
-     * @return 新消息的id
-     */
+    /** 添加对话消息（用户消息、AI 消息、错误消息都通过该方法持久化） */
     @Override
     public Long addChatMessage(Long appId, Long userId, String message, ChatMessageTypeEnum messageType) {
         return addChatMessage(appId, userId, message, messageType, null);
     }
 
-    /**
-     * 添加对话消息，并关联父消息（用于上下文关联）
-     *
-     * @param appId       应用id
-     * @param userId      创建用户id
-     * @param message     消息内容
-     * @param messageType 消息类型
-     * @param parentId    父消息id
-     *
-     * @return 新消息的id
-     */
+    /** 添加对话消息，并关联父消息（用于上下文关联） */
     @Override
     public Long addChatMessage(Long appId, Long userId, String message, ChatMessageTypeEnum messageType, Long parentId) {
         return saveChatMessage(appId, userId, message, messageType, parentId, null);
@@ -60,17 +39,8 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
 
     /**
      * 添加一条 AI 消息，同时记录模型的思考过程
-     * <p>
      * 思考过程单独一列落库（{@code chat_history.thinking}），不进 {@code message}：
-     * 前端在对话页顶部单独展示它，模型上下文也只读 {@code message}（见 {@link #loadChatHistoryToMemory}），
-     * 因此历史正文与多轮上下文都不会被推理内容污染。
-     *
-     * @param appId    应用id
-     * @param userId   创建用户id
-     * @param message  消息内容（给用户看的正文）
-     * @param thinking 思考过程（可为空）
-     *
-     * @return 新消息的id
+     * 前端在对话页顶部单独展示它，模型上下文也只读 {@code message}（见 {@link #loadRecentChatHistory}）……
      */
     @Override
     public Long addAiChatMessage(Long appId, Long userId, String message, String thinking) {
@@ -78,27 +48,15 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
                 TextUtils.truncate(thinking, ChatHistoryConstant.MESSAGE_MAX_LENGTH));
     }
 
-    /**
-     * 落库对话消息的公共实现
-     *
-     * @param appId       应用id
-     * @param userId      创建用户id
-     * @param message     消息内容
-     * @param messageType 消息类型
-     * @param parentId    父消息id
-     * @param thinking    思考过程（仅 AI 消息使用，可为空）
-     *
-     * @return 新消息的id
-     */
+    /** 落库对话消息的公共实现 */
     private Long saveChatMessage(Long appId, Long userId, String message, ChatMessageTypeEnum messageType,
                                  Long parentId, String thinking) {
-        // 1. 校验参数
+
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
         ThrowUtils.throwIf(userId == null || userId <= 0, ErrorCode.PARAMS_ERROR, "用户ID不合法");
         ThrowUtils.throwIf(StrUtil.isBlank(message), ErrorCode.PARAMS_ERROR, "消息内容不能为空");
         ThrowUtils.throwIf(messageType == null, ErrorCode.PARAMS_ERROR, "消息类型不能为空");
-        // 2. 构建对话历史实体
-        // 2.1 落库保留完整内容（用户「查看对话」时看到的是完整历史），
+
         //     这里只做安全上限兜底，防止异常巨大的模型输出撑爆 message 字段导致插入失败
         String messageToSave = TextUtils.truncate(message, ChatHistoryConstant.MESSAGE_MAX_LENGTH);
         ChatHistory chatHistory = new ChatHistory();
@@ -108,7 +66,7 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
         chatHistory.setThinking(thinking);
         chatHistory.setMessageType(messageType.getValue());
         chatHistory.setParentId(parentId);
-        // 3. 保存消息
+
         boolean result = this.save(chatHistory);
         ThrowUtils.throwIf(!result, ErrorCode.SYSTEM_ERROR, "保存对话历史失败");
         return chatHistory.getId();
@@ -116,27 +74,20 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
 
     /**
      * 删除某个应用的所有对话历史（删除应用时关联删除）
-     *
-     * @param appId 应用id
-     *
-     * @return 是否删除成功
+     * 语义是"删完为止"而不是"至少删掉一行"：应用可能还没有任何对话（刚创建就删、或只用过部署），
+     * 此时一行都删不到，但这显然是成功。压测时实测过把它当成失败的后果——……
      */
     @Override
     public boolean deleteByAppId(Long appId) {
-        // 1. 校验参数
+
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
-        // 2. 根据应用id删除对话历史（逻辑删除，不会真正删除数据）
+
         QueryWrapper queryWrapper = QueryWrapper.create().eq("app_id", appId);
-        return this.remove(queryWrapper);
+        this.remove(queryWrapper);
+        return true;
     }
 
-    /**
-     * 统计某个应用已有的 AI 消息条数
-     *
-     * @param appId 应用id
-     *
-     * @return AI 消息条数
-     */
+    /** 统计某个应用已有的 AI 消息条数 */
     @Override
     public int countAiMessages(Long appId) {
         if (appId == null || appId <= 0) {
@@ -148,21 +99,14 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
         return Math.toIntExact(this.count(queryWrapper));
     }
 
-    /**
-     * 获取查询条件包装器
-     *
-     * @param chatHistoryQueryRequest 对话历史查询请求对象
-     *
-     * @return 查询条件包装器
-     */
+    /** 获取查询条件包装器 */
     @Override
     public QueryWrapper getQueryWrapper(ChatHistoryQueryRequest chatHistoryQueryRequest) {
-        // 1. 校验参数
+
         if (chatHistoryQueryRequest == null) {
             return QueryWrapper.create();
         }
 
-        // 2. 创建查询条件包装器
         Long id = chatHistoryQueryRequest.getId();
         Long appId = chatHistoryQueryRequest.getAppId();
         Long userId = chatHistoryQueryRequest.getUserId();
@@ -170,7 +114,6 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
         String message = chatHistoryQueryRequest.getMessage();
         Long parentId = chatHistoryQueryRequest.getParentId();
         String sortField = chatHistoryQueryRequest.getSortField();
-        String sortOrder = chatHistoryQueryRequest.getSortOrder();
         QueryWrapper queryWrapper = QueryWrapper.create()
                 .eq("id", id)
                 .eq("app_id", appId)
@@ -179,107 +122,61 @@ public class ChatHistoryServiceImpl extends ServiceImpl<ChatHistoryMapper, ChatH
                 .eq("parent_id", parentId)
                 .like("message", message);
 
-        // 3. 排序字段为空时，默认按创建时间降序（最新的消息在前）
         if (StrUtil.isNotBlank(sortField)) {
-            queryWrapper.orderBy(sortField, "ascend".equals(sortOrder));
+            queryWrapper.orderBy(sortField, chatHistoryQueryRequest.isAscending());
         } else {
-            queryWrapper.orderBy("create_time", false);
+            queryWrapper.orderBy(PageRequest.DEFAULT_SORT_FIELD, false);
         }
         return queryWrapper;
     }
 
-    /**
-     * 游标分页查询某个应用的对话历史（每次加载最新的 N 条，支持向前加载更多历史记录）
-     *
-     * @param appId                   应用id
-     * @param pageSize                每次加载的条数
-     * @param lastCreateTime          上一次查询的最后一条消息的创建时间，为空表示查询最新的消息
-     * @param chatHistoryQueryRequest 其他查询条件
-     *
-     * @return 对话历史分页对象
-     */
+    /** 游标分页查询某个应用的对话历史（每次加载最新的 N 条，支持向前加载更多历史记录） */
     @Override
     public Page<ChatHistory> listAppChatHistoryByPage(Long appId, long pageSize, LocalDateTime lastCreateTime, ChatHistoryQueryRequest chatHistoryQueryRequest) {
-        // 1. 校验参数
+
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
         ThrowUtils.throwIf(pageSize <= 0, ErrorCode.PARAMS_ERROR, "每次加载的条数不合法");
-        // 2. 强制指定应用id，并按创建时间降序，保证应用之间的数据隔离
+
         ChatHistoryQueryRequest queryRequest = chatHistoryQueryRequest == null ? new ChatHistoryQueryRequest() : chatHistoryQueryRequest;
         queryRequest.setAppId(appId);
         queryRequest.setLastCreateTime(lastCreateTime);
-        queryRequest.setSortField("create_time");
-        queryRequest.setSortOrder("descend");
+        queryRequest.setSortField(PageRequest.DEFAULT_SORT_FIELD);
+        queryRequest.setSortOrder(PageRequest.DESCEND);
         QueryWrapper queryWrapper = getQueryWrapper(queryRequest);
-        // 3. 游标查询：只查询比上一条更早的消息，实现「向前加载更多历史记录」
+
         if (lastCreateTime != null) {
-            queryWrapper.lt("create_time", lastCreateTime);
+            queryWrapper.lt(PageRequest.DEFAULT_SORT_FIELD, lastCreateTime);
         }
-        // 4. 游标分页始终查询第一页
+
         return this.page(Page.of(1, pageSize), queryWrapper);
     }
 
     /**
-     * 加载对话历史到记忆中（对话记忆初始化时调用，用于恢复历史上下文）
-     *
-     * @param appId      应用id
-     * @param chatMemory 对话记忆
-     * @param maxCount   最多加载的历史消息条数
+     * 读取某个应用最近的对话历史（升序，旧的在前）
+     * 只做"取数 + 排序"：消息类型过滤、AI 消息的代码块压缩、工具调用文本改写这些
+     * 模型上下文相关的加工全部在 ai 层（{@code AiCodeGeneratorServiceFactory#loadHistoryIntoMemory}）……
      */
     @Override
-    public int loadChatHistoryToMemory(Long appId, MessageWindowChatMemory chatMemory, int maxCount) {
-        // 1. 校验参数
+    public List<ChatHistory> loadRecentChatHistory(Long appId, int maxCount) {
+
         ThrowUtils.throwIf(appId == null || appId <= 0, ErrorCode.PARAMS_ERROR, "应用ID不合法");
-        ThrowUtils.throwIf(chatMemory == null, ErrorCode.PARAMS_ERROR, "对话记忆不能为空");
         ThrowUtils.throwIf(maxCount <= 0, ErrorCode.PARAMS_ERROR, "加载的历史消息条数不合法");
         try {
-            // 2. 构造查询条件：只查询用户消息和AI消息，按创建时间降序，限制条数
+
             QueryWrapper queryWrapper = QueryWrapper.create()
                     .eq("app_id", appId)
-                    .orderBy("create_time", false)
+                    .orderBy(PageRequest.DEFAULT_SORT_FIELD, false)
                     .limit(1, maxCount);
-            // 3. 查询对话历史
             List<ChatHistory> chatHistoryList = this.list(queryWrapper);
             if (CollUtil.isEmpty(chatHistoryList)) {
                 log.info("该应用暂无对话历史，appId: {}", appId);
-                return 0;
+                return List.of();
             }
-            // 4. 反转列表，按时间正序（旧的在前，新的在后）
-            chatHistoryList = chatHistoryList.reversed();
-            // 5. 将对话历史加载到记忆中
-            int loadedCount = 0;
-            // 先清理记忆中的历史消息，避免重复加载
-            chatMemory.clear();
-            for (ChatHistory chatHistory : chatHistoryList) {
-                // 5.1 根据消息类型，将消息转换为对应的 ChatMessage 对象，并添加到记忆中
-                if (ChatMessageTypeEnum.USER.getValue().equals(chatHistory.getMessageType())) {
-                    // 用户消息（含用户粘贴的内容）就是真实指令，原样进入上下文，不做压缩或截断
-                    if (StrUtil.isBlank(chatHistory.getMessage())) {
-                        continue;
-                    }
-                    chatMemory.add(UserMessage.from(chatHistory.getMessage()));
-                    loadedCount++;
-                    // 5.2 AI 消息：进入模型上下文前压缩代码块，每个代码块只保留开头预览，代码块之外的说明与文件路径保留。
-                    //     完整源码留在数据库中供用户查看历史，不参与多轮上下文，避免撑爆模型上下文与费用。
-                } else if (ChatMessageTypeEnum.AI.getValue().equals(chatHistory.getMessageType())) {
-                    String aiMessage = TextUtils.truncate(
-                            // 先改写工具调用记录（否则模型会照抄这个文本格式"假装"调用工具，实测导致 0 次真实调用），
-                            // 再压缩代码块、最后兜底截断：改写放在最前面，能顺手丢掉巨型入参，省下大量 token。
-                            TextUtils.compressCodeBlocks(
-                                    TextUtils.neutralizeToolCallRecords(chatHistory.getMessage()),
-                                    ChatHistoryConstant.MEMORY_CODE_BLOCK_MAX_LENGTH),
-                            ChatHistoryConstant.MEMORY_MESSAGE_MAX_LENGTH);
-                    if (StrUtil.isBlank(aiMessage)) {
-                        continue;
-                    }
-                    chatMemory.add(AiMessage.from(aiMessage));
-                    loadedCount++;
-                }
-            }
-            log.info("加载对话历史到记忆成功，appId: {}, 加载条数: {}", appId, loadedCount);
-            return loadedCount;
+            return chatHistoryList.reversed();
         } catch (Exception e) {
-            log.error("加载对话历史到记忆失败", e);
-            return 0;
+            // 历史读失败不应该让整个生成请求失败
+            log.error("查询对话历史失败，appId: {}", appId, e);
+            return List.of();
         }
     }
 }

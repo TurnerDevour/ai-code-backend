@@ -9,7 +9,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,12 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * "没有生成任务时"的状态查询回归测试
- * <p>
- * 背景（实测线上表现）：生成任务注册表是进程内的，后端一重启任务就没了。此前这种场景一律回
- * {@code status=none, buildStatus=idle}，前端据此认为"构建还没做完"，于是每 1.5 秒轮询一次状态接口
- * 直到上限——后端日志里 {@code SELECT user} / {@code SELECT app} 一直在刷，而预览区一直空白。
- * 修复后：Vue 工程只要产物（dist/index.html）已经存在，就直接回 {@code buildStatus=finished}，
- * 前端立刻刷新预览、不再轮询。
+ * 背景（实测线上表现）：生成任务注册表是进程内的，后端一重启任务就没了。此前这种场景一律回……
  */
 class AppServiceImplGenStatusTest {
 
@@ -99,9 +93,7 @@ class AppServiceImplGenStatusTest {
         assertEquals("none", vo.getStatus());
     }
 
-    /**
-     * 反射调用私有的 {@code noTaskStatus(Long, App)}
-     */
+    /** 反射调用私有的 {@code noTaskStatus(Long, App)} */
     private GenerationStatusVO invokeNoTaskStatus(Long appId, App app) throws Exception {
         Method method = AppServiceImpl.class.getDeclaredMethod("noTaskStatus", Long.class, App.class);
         method.setAccessible(true);

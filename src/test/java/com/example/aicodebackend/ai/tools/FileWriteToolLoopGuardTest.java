@@ -16,10 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 文件写入工具的"重复写入断路器"测试
- * <p>
- * 背景（实测死循环）：模型一旦以为文件没写成功，就会无限重复写入同一批文件。
- * 重复写入本身有确定答案（文件里已经是这份内容了），所以工具在这里必须把循环打破：
- * 连续第 3 次写入完全相同的内容时跳过写入，并明确提示模型继续别的文件或收尾。
+ * 背景（实测死循环）：模型一旦以为文件没写成功，就会无限重复写入同一批文件……
  */
 class FileWriteToolLoopGuardTest {
 
@@ -101,9 +98,7 @@ class FileWriteToolLoopGuardTest {
 
     /**
      * 非法路径不能把异常抛出工具
-     * <p>
-     * 以前只 catch IOException，InvalidPathException（RuntimeException）会逃出工具，
-     * LangChain4j 只会把它变成一条"看不出失败"的工具结果——模型以为写成功、用户看到 AI 说改了但没写。
+     * 以前只 catch IOException，InvalidPathException（RuntimeException）会逃出工具……
      */
     @Test
     void shouldReturnFailureInsteadOfThrowingForInvalidPath() {

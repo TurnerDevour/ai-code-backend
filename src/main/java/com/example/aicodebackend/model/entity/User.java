@@ -13,69 +13,45 @@ import java.time.LocalDateTime;
 import com.mybatisflex.core.keygen.KeyGenerators;
 import lombok.Data;
 
-/**
- * 用户
- */
+/** 用户 */
 @Data
 @Table(value = "user")
 public class User implements Serializable {
-    /**
-     * id
-     */
+    /** id */
     @Id(keyType = KeyType.Generator, value = KeyGenerators.snowFlakeId)
     private Long id;
 
-    /**
-     * 账号
-     */
+    /** 账号 */
     private String userAccount;
 
-    /**
-     * 密码
-     */
+    /** 密码 */
     private String userPassword;
 
-    /**
-     * 用户昵称
-     */
+    /** 用户昵称 */
     private String username;
 
-    /**
-     * 用户头像
-     */
+    /** 用户头像 */
     private String userAvatar;
 
-    /**
-     * 用户简介
-     */
+    /** 用户简介 */
     private String userProfile;
 
-    /**
-     * 用户角色：user/admin
-     */
+    /** 用户角色：user/admin */
     private String userRole;
 
-    /**
-     * 编辑时间
-     */
+    /** 编辑时间 */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime editTime;
 
-    /**
-     * 创建时间
-     */
+    /** 创建时间 */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime createTime;
 
-    /**
-     * 更新时间
-     */
+    /** 更新时间 */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime updateTime;
 
-    /**
-     * 是否删除
-     */
+    /** 是否删除 */
     @Column(isLogicDelete = true)
     private Integer isDelete;
 

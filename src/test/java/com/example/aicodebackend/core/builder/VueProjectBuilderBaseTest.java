@@ -18,10 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Vue 构建的部署适配回归测试
- * <p>
- * 回归背景：部署地址是 {@code http://host/{deployKey}/} 这样的子路径，vite 默认 base 为 "/"，
- * 产物会引用 {@code /assets/xxx.js}，部署后必然 404；提示词里虽然要求生成 {@code base: './'}，
- * 但不能保证模型每次都照做，因此在构建前补一层兜底。
+ * 回归背景：部署地址是 {@code http://host/{deployKey}/} 这样的子路径，vite 默认 base 为 "/"……
  */
 class VueProjectBuilderBaseTest {
 
@@ -68,10 +65,7 @@ class VueProjectBuilderBaseTest {
 
     /**
      * 构建临时目录必须落在工程旁边，而不是系统临时目录
-     * <p>
-     * 回归背景：esbuild 对超过 1 MiB 的输入会写临时文件到 {@code os.tmpdir()} 再删除，
-     * 部分 Windows 环境下这个删除动作会以 {@code Access is denied} 失败（实测：带 three.js 的工程），
-     * 导致 vite build 退出码 1、dist 不产出、前端预览区一片空白。
+     * 回归背景：esbuild 对超过 1 MiB 的输入会写临时文件到 {@code os.tmpdir()} 再删除……
      */
     @Test
     void shouldCreateBuildTempDirBesideProject(@TempDir Path root) throws Exception {
@@ -85,9 +79,7 @@ class VueProjectBuilderBaseTest {
         assertTrue(tempDir.getName().startsWith(".build-tmp-"), "构建临时目录命名不符合约定: " + tempDir.getName());
     }
 
-    /**
-     * 构建子进程必须拿到指向该临时目录的 TEMP/TMP，否则修复不会生效
-     */
+    /** 构建子进程必须拿到指向该临时目录的 TEMP/TMP，否则修复不会生效 */
     @Test
     void shouldPassBuildTempDirToProcessEnvironment(@TempDir Path root) throws Exception {
         Path projectDir = Files.createDirectory(root.resolve("vue_project_2"));
@@ -101,9 +93,7 @@ class VueProjectBuilderBaseTest {
         assertEquals(expected, processBuilder.environment().get("TMPDIR"), "未把 TMPDIR 指向构建临时目录");
     }
 
-    /**
-     * 失败原因要能从构建输出里摘出来，并且剥掉终端颜色控制符（否则前端显示乱码）
-     */
+    /** 失败原因要能从构建输出里摘出来，并且剥掉终端颜色控制符（否则前端显示乱码） */
     @Test
     void shouldSummarizeBuildFailureWithoutAnsiEscape() throws Exception {
         Deque<String> outputTail = new ArrayDeque<>();

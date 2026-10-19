@@ -25,16 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * 多文件模式「生成结果自检 + 一次自动修复」的测试
- * <p>
- * 覆盖三类实测问题：
- * <ol>
- *     <li>模型只输出 {@code ```html} 一个代码块，style.css / script.js 整个缺失；</li>
- *     <li>模型把代码里的行内空格全部吞掉（{@code <divclass="box">}、{@code padding:024px}、
- *     {@code varheader=null;}、{@code functionsetYear(){}）——HTML 可以纯文本修复，
- *     CSS / JavaScript 必须让模型按原内容补回空格；</li>
- *     <li>模型返回的是结构化 JSON（{@code {"htmlCode":"…"}}）而不是代码块。</li>
- * </ol>
- * 不启动 Spring 容器、不调用真实模型：用桩服务记录"修复请求"，验证落盘内容与采纳规则。
+ * 覆盖三类实测问题……
  */
 class AiCodeGeneratorFacadeCompletionTest {
 
@@ -132,9 +123,7 @@ class AiCodeGeneratorFacadeCompletionTest {
             + "  \"description\": \"本次输出为演示网站的完整三文件实现。\"\n"
             + "}";
 
-    /**
-     * 记录修复请求并返回预置结果的桩服务
-     */
+    /** 记录修复请求并返回预置结果的桩服务 */
     private static class StubAiCodeGeneratorService implements AiCodeGeneratorService {
         private final String streamResponse;
         private final String repairResponse;
@@ -186,9 +175,7 @@ class AiCodeGeneratorFacadeCompletionTest {
         }
     }
 
-    /**
-     * 只替换"创建服务"这一步的工厂子类：用桩服务代替真实模型调用
-     */
+    /** 只替换"创建服务"这一步的工厂子类：用桩服务代替真实模型调用 */
     private static class StubFactory extends AiCodeGeneratorServiceFactory {
         private final AiCodeGeneratorService stub;
 
@@ -354,10 +341,7 @@ class AiCodeGeneratorFacadeCompletionTest {
 
     /**
      * 思考过程必须随流单独下发（{@code type=ai_thinking}），且不能混进正文与落盘文件
-     * <p>
-     * 回归背景（实测）：HTML / 多文件模式原来用 {@code Flux<String>} 接模型输出，langchain4j 的 Reactor
-     * 适配器只接正文增量，思考内容（reasoning_content）在适配层就被丢掉了，前端「AI 思考过程」面板永远是空的。
-     * 现在这两个模式也走 TokenStream，思考增量必须作为独立消息下发——同时正文与落盘内容都要保持"只有代码"。
+     * 回归背景（实测）：HTML / 多文件模式原来用 {@code Flux<String>} 接模型输出，langchain4j 的 Reactor……
      */
     @Test
     void shouldStreamThinkingSeparatelyFromCode(@TempDir Path tempRoot) throws Exception {
@@ -399,11 +383,7 @@ class AiCodeGeneratorFacadeCompletionTest {
 
     /**
      * 思考跑飞必须被主动中止
-     * <p>
-     * 回归背景（实测）：应用只有文件读写工具、没有联网能力，用户却要求"上网找真实的历史人物画像"，
-     * 模型就在推理里反复推翻自己——既不出正文也不调用工具，前端「AI 思考过程」面板一直滚，
-     * 实测跑 15 分钟以上仍未结束。这里锁住三件事：以明确原因失败、<b>真正取消</b>模型调用
-     * （不然它还会继续跑到 max_tokens 白烧 token）、中止的一轮不落盘半截代码。
+     * 回归背景（实测）：应用只有文件读写工具、没有联网能力，用户却要求"上网找真实的历史人物画像"……
      */
     @Test
     void shouldAbortWhenThinkingRunsAway(@TempDir Path tempRoot) throws Exception {
@@ -432,13 +412,7 @@ class AiCodeGeneratorFacadeCompletionTest {
 
     /**
      * 预算内的「长思考」不能被误杀
-     * <p>
-     * 回归背景（线上误报）：守卫阈值原来写死成 20000 字 / 5 分钟，而生产配置的
-     * {@code thinking-budget=8192}（平台允许模型用 8192 个 token 做内部推理）在推理模型的实际
-     * 吞吐下本来就可能产出更多字符、耗时更久，于是"完整的合法推理"被当成跑飞掐掉，
-     * 用户看到的就是"模型在思考阶段长时间没有产出"。
-     * <p>
-     * 这里锁住：默认（不额外配置）时，超过旧阈值的长思考必须照常走完并落盘。
+     * 回归背景（线上误报）：守卫阈值原来写死成 20000 字 / 5 分钟，而生产配置的……
      */
     @Test
     void shouldNotAbortLongButLegitimateThinking(@TempDir Path tempRoot) throws Exception {

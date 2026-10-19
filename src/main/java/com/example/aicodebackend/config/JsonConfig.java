@@ -10,9 +10,7 @@ import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 @JsonComponent
 public class JsonConfig {
 
-    /**
-     * 配置 JSON 序列化和反序列化
-     */
+    /** 配置 JSON 序列化和反序列化 */
     @Bean
     public ObjectMapper jacksonObjectMapper(Jackson2ObjectMapperBuilder builder) {
         ObjectMapper objectMapper = builder.createXmlMapper(false).build();
