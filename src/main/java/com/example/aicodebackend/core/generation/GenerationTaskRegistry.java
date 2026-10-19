@@ -22,6 +22,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * 生成任务注册表（方案 C 的原型，当前只接 VUE_PROJECT）
@@ -90,8 +92,7 @@ public class GenerationTaskRegistry {
          * 真实工具执行次数（用于识别"模型把工具调用写成文本"的假调用）
          * 假调用不会执行任何工具：文件一个都不会变，但对话里看起来与真实调用一模一样。
          */
-        private final java.util.concurrent.atomic.AtomicInteger realToolRecords =
-                new java.util.concurrent.atomic.AtomicInteger();
+        private final AtomicInteger realToolRecords = new AtomicInteger();
 
         GenerationTask(Long appId, Long userId, int historyAiCountBefore) {
             this.appId = appId;
@@ -183,8 +184,7 @@ public class GenerationTaskRegistry {
     }
 
     /** 提交（或复用）生成任务 */
-    public GenerationTask submitOrGet(Long appId, User loginUser,
-                                      java.util.function.Supplier<Flux<GenerationEmit>> upstreamFactory) {
+    public GenerationTask submitOrGet(Long appId, User loginUser, Supplier<Flux<GenerationEmit>> upstreamFactory) {
         GenerationTask running = tasks.get(appId);
         if (running != null && running.isRunning()) {
             log.info("应用已有进行中的生成任务，复用该任务：appId={}", appId);

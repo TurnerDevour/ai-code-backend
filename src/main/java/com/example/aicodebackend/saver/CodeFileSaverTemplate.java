@@ -2,7 +2,6 @@ package com.example.aicodebackend.saver;
 
 import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.StrUtil;
-import com.example.aicodebackend.constant.AppConstant;
 import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
 import com.example.aicodebackend.model.enums.CodeGenTypeEnum;
@@ -13,8 +12,6 @@ import java.nio.charset.StandardCharsets;
 
 /** 抽象类，定义了保存代码文件的模板方法 */
 public abstract class CodeFileSaverTemplate<T> {
-
-    protected static final String FILE_SAVE_ROOT_DIR = AppConstant.CODE_OUTPUT_ROOT_DIR;
 
     /** 保存代码文件的模板方法 */
     public final File saveCode(T result, Long appId) {

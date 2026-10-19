@@ -10,8 +10,6 @@ public enum UserRoleEnum {
     ADMIN("管理员", "admin");
 
     /** 注解参数需要编译期常量 */
-    public static final String USER_VALUE = "user";
-
     public static final String ADMIN_VALUE = "admin";
 
     private final String text;
@@ -33,7 +31,7 @@ public enum UserRoleEnum {
         if (ObjUtil.isEmpty(value)) {
             return null;
         }
-        for (UserRoleEnum anEnum : UserRoleEnum.values()) {
+        for (UserRoleEnum anEnum : values()) {
             if (anEnum.value.equals(value)) {
                 return anEnum;
             }

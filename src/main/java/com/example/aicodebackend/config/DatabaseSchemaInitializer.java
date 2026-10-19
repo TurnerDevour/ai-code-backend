@@ -14,7 +14,7 @@ import java.sql.Statement;
 /**
  * 轻量数据库结构自愈
  * 按需补齐本次功能新增的字段，全部幂等（存在即跳过），可以安全地重复执行：
- * {@code deploy_task_id} / {@code deploy_heartbeat} 与状态索引，并把历史数据的空状态归一化为 {@code idle}；</li>……
+ * 包括部署状态相关字段、状态索引，以及把历史数据的空状态归一化为 {@code idle}。
  */
 @Slf4j
 @Component

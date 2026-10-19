@@ -216,15 +216,6 @@ public class AiCodeGeneratorFacade {
     }
 
     /**
-     * 处理 TokenStream（VUE_PROJECT 模式），把模型输出、思考过程与工具调用转换为前端可消费的 JSON 消息流。
-     * VUE_PROJECT 使用推理模型，模型在调用文件写入工具之前只会输出思考内容（reasoning_content），
-     * 不会产生正常的文本增量。因此必须监听 onPartialThinking，否则前端在整个代码生成阶段收不到任何内容……
-     */
-    private Flux<String> processCodeTokenStream(TokenStream tokenStream) {
-        return processCodeTokenStream(tokenStream, null, null);
-    }
-
-    /**
      * 处理 TokenStream（VUE_PROJECT 模式），并在记忆损坏时自愈
      * 自愈场景（实测）：模型流式发出工具调用后连接异常中断，记忆里留下"有 tool_calls、没有工具结果"的
      * assistant 消息，之后每次请求都被接口拒绝……
@@ -609,10 +600,5 @@ public class AiCodeGeneratorFacade {
             return original;
         }
         return scorer.applyAsInt(trimmed) < originalScore ? trimmed : original;
-    }
-
-    /** HTML 兜底修复：采纳/保留的内容里若仍有粘连标签，用纯语法规则再补一层 */
-    private static String normalizeHtml(String html) {
-        return GeneratedCodeRepair.normalizeHtml(html);
     }
 }

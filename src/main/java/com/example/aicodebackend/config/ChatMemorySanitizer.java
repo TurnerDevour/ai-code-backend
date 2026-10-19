@@ -67,13 +67,12 @@ public final class ChatMemorySanitizer {
                 index = next - 1;
                 continue;
             }
-            if (message instanceof ToolExecutionResultMessage toolResult) {
-                if (!pairedRequestIds.contains(toolResult.id())) {
-                    // 结果没有对应的 assistant 请求（历史数据损坏）：同样丢弃，避免被接口拒绝
-                    removedResults++;
-                    log.warn("对话记忆里发现孤立的工具执行结果，已丢弃：toolCallId={}", toolResult.id());
-                    continue;
-                }
+            if (message instanceof ToolExecutionResultMessage toolResult
+                    && !pairedRequestIds.contains(toolResult.id())) {
+                // 结果没有对应的 assistant 请求（历史数据损坏）：同样丢弃，避免被接口拒绝
+                removedResults++;
+                log.warn("对话记忆里发现孤立的工具执行结果，已丢弃：toolCallId={}", toolResult.id());
+                continue;
             }
             result.add(message);
         }

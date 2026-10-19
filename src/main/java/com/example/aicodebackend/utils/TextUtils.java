@@ -8,7 +8,7 @@ import java.util.regex.Pattern;
 /**
  * 文本工具类
  * 两个用途：
- * 避免完整工程源码参与多轮对话。</li>
+ * 落库时兜底限制异常巨大的文本；写入模型上下文前压缩代码块，避免完整工程源码参与多轮对话。
  */
 public final class TextUtils {
 

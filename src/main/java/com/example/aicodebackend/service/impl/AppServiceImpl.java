@@ -40,10 +40,10 @@ import com.example.aicodebackend.service.ScreenshotService;
 import com.example.aicodebackend.service.UserService;
 import com.example.aicodebackend.utils.AppPathUtils;
 import com.example.aicodebackend.utils.ThrowableUtils;
-import com.mybatisflex.core.constant.SqlOperator;
 import com.mybatisflex.core.query.QueryColumn;
 import com.mybatisflex.core.query.QueryCondition;
 import com.mybatisflex.core.query.QueryWrapper;
+import com.mybatisflex.core.update.UpdateWrapper;
 import com.mybatisflex.spring.service.impl.ServiceImpl;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -67,6 +67,8 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
@@ -134,7 +136,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
         final ReentrantLock lock = new ReentrantLock();
 
-        final java.util.concurrent.atomic.AtomicInteger users = new java.util.concurrent.atomic.AtomicInteger();
+        final AtomicInteger users = new AtomicInteger();
     }
 
     /** 带引用计数的信号量（对话生成串行化用） */
@@ -142,7 +144,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
         final Semaphore semaphore = new Semaphore(1);
 
-        final java.util.concurrent.atomic.AtomicInteger users = new java.util.concurrent.atomic.AtomicInteger();
+        final AtomicInteger users = new AtomicInteger();
     }
 
     /** 获取部署执行锁引用（必须与 {@link #releaseDeployLock} 配对） */
@@ -363,7 +365,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             //     其它类型沿用原来的流处理（本次未改）。
             if (codeGenTypeEnum == CodeGenTypeEnum.VUE_PROJECT) {
                 Flux<GenerationTaskRegistry.SequencedFrame> registryStream =
-                        chatToGenCodeWithRegistry(app, appId, prompt, loginUser, codeGenTypeEnum, aiModelTypeEnum);
+                        chatToGenCodeWithRegistry(appId, prompt, loginUser, codeGenTypeEnum, aiModelTypeEnum);
                 return registryStream.doFinally(signalType -> releaseChat.run());
             }
 
@@ -373,7 +375,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
 
             //    这里只做"释放 + 兜底下发一个结束空帧"，不改变正常消息类型（HTML/MULTI_FILE 仍是纯文本增量）。
             //    HTML / MULTI_FILE 没有"续订"概念，序号按到达顺序递增（客户端不使用它）。
-            java.util.concurrent.atomic.AtomicLong htmlSeq = new java.util.concurrent.atomic.AtomicLong();
+            AtomicLong htmlSeq = new AtomicLong();
             return handledStream
                     .doFinally(signalType -> releaseChat.run())
                     .concatWith(Flux.just(""))
@@ -401,15 +403,14 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
      * 生成在服务端独立运行（累积 + 结束后落库完整内容），返回给客户端的只是"订阅这份输出"；
      * 客户端断开只解绑自己的订阅，不会取消生成，也不会让历史里只有半截内容。
      */
-    private Flux<GenerationTaskRegistry.SequencedFrame> chatToGenCodeWithRegistry(App app,
-                                                                                  Long appId,
+    private Flux<GenerationTaskRegistry.SequencedFrame> chatToGenCodeWithRegistry(Long appId,
                                                                                   String prompt,
                                                                                   User loginUser,
                                                                                   CodeGenTypeEnum codeGenTypeEnum,
                                                                                   AIModelTypeEnum aiModelTypeEnum) {
         String subId = "sub-" + appId + "-" + System.nanoTime();
         GenerationTaskRegistry.GenerationTask task = generationTaskRegistry.submitOrGet(appId, loginUser,
-                () -> buildRegistryUpstream(app, appId, prompt, codeGenTypeEnum, aiModelTypeEnum));
+                () -> buildRegistryUpstream(appId, prompt, codeGenTypeEnum, aiModelTypeEnum));
         return generationTaskRegistry.subscribe(task, subId, 0L);
     }
 
@@ -418,8 +419,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
      * 下发帧与原来的 SSE 格式保持一致（复用 StreamMessageTypeEnum 的 JSON 结构），
      * 累积文本用于落库：文本增量取原文，工具执行结果带上完整入参，保证「查看对话」能看到完整历史。
      */
-    private Flux<GenerationTaskRegistry.GenerationEmit> buildRegistryUpstream(App app,
-                                                                              Long appId,
+    private Flux<GenerationTaskRegistry.GenerationEmit> buildRegistryUpstream(Long appId,
                                                                               String prompt,
                                                                               CodeGenTypeEnum codeGenTypeEnum,
                                                                               AIModelTypeEnum aiModelTypeEnum) {
@@ -576,7 +576,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     /**
      * 部署应用
      * 并发语义（本次修复的核心）：
-     * 1. deployKey 的"生成 + 落库"是一个 CAS 过程（{@code UPDATE app SET deploy_key=? WHERE id=? AND deploy_key IS NU………
+     * 1. deployKey 的"生成 + 落库"是一个 CAS 过程：只有 deploy_key 为空时才能写入，其余并发请求复用已有值；
      */
     @Override
     public String deployApp(Long appId, User loginUser) {
@@ -653,7 +653,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
         String codeGenType = latest.getCodeGenType();
         File sourceDir = new File(buildSourceDirPath(codeGenType, appId));
-        try (DeployHeartbeat.Handle ignored = deployHeartbeat.start(appId, taskId)) {
+        DeployHeartbeat.Handle heartbeat = deployHeartbeat.start(appId, taskId);
+        try {
             return doDeploy(latest, appId, codeGenType, sourceDir);
         } catch (RuntimeException | Error e) {
             // doDeploy 内部已经按失败路径回滚 deployKey；这里补状态，避免应用永远停在 deploying
@@ -664,6 +665,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 log.error("同步部署失败后写入失败状态出错，appId: {}", appId, markError);
             }
             throw e;
+        } finally {
+            if (heartbeat != null) {
+                heartbeat.close();
+            }
         }
     }
 
@@ -712,7 +717,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
     /**
      * 提交异步部署任务：立即返回，后台线程完成构建与发布
      * 与同步接口的差异：
-     * 抢不到的请求直接返回当前状态，不会重复构建、不会写第二份部署目录；</li>
+     * 不在请求线程执行构建；用状态 CAS 保证同一应用只有一个部署任务，抢不到直接返回当前状态。
      */
     @Override
     public DeployStatusVO submitDeploy(Long appId, User loginUser) {
@@ -824,7 +829,8 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             log.info("部署任务开始构建，appId: {}, sequence: {}, taskId: {}, 重试次数: {}, 重投: {}, thread: {}",
                     appId, task.sequence(), taskId, attempt, redelivered, threadName);
 
-            try (DeployHeartbeat.Handle ignored = deployHeartbeat.start(appId, taskId)) {
+            DeployHeartbeat.Handle heartbeat = deployHeartbeat.start(appId, taskId);
+            try {
                 String sourceDirPath = buildSourceDirPath(latest.getCodeGenType(), appId);
                 File sourceDir = new File(sourceDirPath);
 
@@ -844,6 +850,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
                 // doDeploy 成功时已经把状态写成 ready，这里不再重复 update：
                 // 重复写一次只会多一次数据库往返，且写失败时容易被误判成"部署失败"
                 log.info("部署任务完成，appId: {}, sequence: {}, 部署地址: {}, thread: {}", appId, task.sequence(), deployUrl, threadName);
+            } finally {
+                if (heartbeat != null) {
+                    heartbeat.close();
+                }
             }
         } catch (BusinessException e) {
             String errorMessage = resolveDeployErrorMessage(e);
@@ -885,7 +895,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
         App failed = deployState(DeployStatusEnum.FAILED, "部署任务重试耗尽，已转入死信队列，请重新提交", null, "");
         QueryCondition condition = appCondition(appId)
-                .and(QueryCondition.create(new QueryColumn("deploy_status"), SqlOperator.IN,
+                .and(new QueryColumn("deploy_status").in(
                         List.of(DeployStatusEnum.QUEUED.getValue(), DeployStatusEnum.DEPLOYING.getValue())));
         if (StrUtil.isNotBlank(task.taskId())) {
             condition.and(QueryCondition.create(new QueryColumn("deploy_task_id"), task.taskId()));
@@ -914,7 +924,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         if (StrUtil.isBlank(taskId)) {
             // 兼容升级前已在队列里的消息
             if (attempt > 0 || redelivered) {
-                condition.and(QueryCondition.create(new QueryColumn("deploy_status"), SqlOperator.IN,
+                condition.and(new QueryColumn("deploy_status").in(
                         List.of(DeployStatusEnum.QUEUED.getValue(), DeployStatusEnum.DEPLOYING.getValue())));
             } else {
                 condition.and(QueryCondition.create(new QueryColumn("deploy_status"),
@@ -923,13 +933,13 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             return this.getMapper().updateByCondition(claim, condition) == 1;
         }
         condition.and(QueryCondition.create(new QueryColumn("deploy_task_id"), taskId));
-        List<String> allowedStatuses = new java.util.ArrayList<>(List.of(
+        List<String> allowedStatuses = new ArrayList<>(List.of(
                 DeployStatusEnum.QUEUED.getValue(),
                 DeployStatusEnum.FAILED.getValue()));
         if (redelivered || attempt > 0) {
             allowedStatuses.add(DeployStatusEnum.DEPLOYING.getValue());
         }
-        condition.and(QueryCondition.create(new QueryColumn("deploy_status"), SqlOperator.IN, allowedStatuses));
+        condition.and(new QueryColumn("deploy_status").in(allowedStatuses));
         return this.getMapper().updateByCondition(claim, condition) == 1;
     }
 
@@ -1295,7 +1305,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
         }
         try {
             // 用 UpdateWrapper 显式把列置为 SQL NULL（普通 set(null) 会被当作"不更新该字段"）
-            App release = com.mybatisflex.core.update.UpdateWrapper
+            App release = UpdateWrapper
                     .of(new App())
                     .setRaw("deploy_key", "NULL")
                     .toEntity();
@@ -1334,7 +1344,7 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
                 Path relative = sourceDir.relativize(dir);
-                if (relative.getNameCount() == 1 && STAGING_SKIP_DIRS.contains(relative.getFileName().toString())) {
+                if (relative.getNameCount() == 1 && STAGING_SKIP_DIRS.contains(relative.toString())) {
                     log.debug("构建暂存目录跳过: {}", dir);
                     return FileVisitResult.SKIP_SUBTREE;
                 }
@@ -1356,7 +1366,10 @@ public class AppServiceImpl extends ServiceImpl<AppMapper, App> implements AppSe
      * "旧目录改名备份 -> 新目录改名就位 -> 删除备份" 的顺序，任何一步失败都恢复旧目录。
      */
     private void replaceDirectory(Path newDir, Path targetDir) throws IOException {
-        Files.createDirectories(targetDir.getParent());
+        Path parent = targetDir.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
         Path backup = null;
         if (Files.exists(targetDir)) {
             backup = targetDir.resolveSibling(targetDir.getFileName() + ".bak-" + System.nanoTime());

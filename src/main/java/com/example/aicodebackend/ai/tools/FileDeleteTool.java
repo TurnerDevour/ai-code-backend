@@ -34,7 +34,8 @@ public class FileDeleteTool extends AbstractFileTool {
             if (!Files.isRegularFile(path)) {
                 return "错误：指定路径不是文件，无法删除 - " + relativeFilePath;
             }
-            String fileName = path.getFileName().toString();
+            Path fileNamePath = path.getFileName();
+            String fileName = fileNamePath == null ? "" : fileNamePath.toString();
             if (isImportantFile(fileName)) {
                 return "错误：不允许删除重要文件 - " + fileName;
             }

@@ -38,8 +38,8 @@ public class ToolManager {
         return toolMap.get(toolName);
     }
 
-    /** 获取已注册的工具集合 */
+    /** 获取已注册的工具集合（副本，避免外部修改内部数组） */
     public BaseTool[] getAllTools() {
-        return tools;
+        return tools == null ? null : tools.clone();
     }
 }

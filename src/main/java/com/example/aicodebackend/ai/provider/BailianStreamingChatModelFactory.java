@@ -11,8 +11,8 @@ import java.util.Map;
 
 /**
  * 阿里云百炼的模型工厂（DeepSeek 系列与 Qwen 系列都走这里）
- * 相对"其它 OpenAI 兼容平台"的差异只有两处，都收敛在这里：
- * 交给 {@link BailianEndpointResolver} 拼装与校验；</li>……
+ * 相对其它 OpenAI 兼容平台的差异只有两处：
+ * 接口地址由 {@link BailianEndpointResolver} 拼装与校验，百炼专属请求参数在此透传。
  */
 @Slf4j
 @Component

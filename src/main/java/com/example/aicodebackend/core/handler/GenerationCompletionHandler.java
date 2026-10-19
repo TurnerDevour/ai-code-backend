@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
@@ -78,7 +79,7 @@ public class GenerationCompletionHandler {
         AtomicBoolean persisted = new AtomicBoolean(false);
         // 同时产出的展示内容：display 可能因为去重而不产出（例如工具请求已经被累积侧消费过），
         // 此时把累积侧的内容作为下发内容，保证"下发给客户端的内容"与"落库内容"完全一致、不会丢消息
-        java.util.concurrent.atomic.AtomicReference<String> emitted = new java.util.concurrent.atomic.AtomicReference<>("");
+        AtomicReference<String> emitted = new AtomicReference<>("");
         return originFlux
                 .doOnNext(chunk -> {
                     // 累积（落库用）：与客户端是否在线无关，写的是本地 StringBuilder

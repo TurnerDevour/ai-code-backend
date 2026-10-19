@@ -13,6 +13,7 @@ import com.example.aicodebackend.model.enums.DeployStatusEnum;
 import com.mybatisflex.core.query.QueryCondition;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentMatchers;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.File;
@@ -25,7 +26,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -95,7 +95,7 @@ class AppServiceImplSyncDeployFlowTest {
 
             DeployQueueManager manager = mock(DeployQueueManager.class);
             try {
-                when(manager.runWithPermit(any(Callable.class))).thenAnswer(invocation -> {
+                when(manager.runWithPermit(ArgumentMatchers.<Callable<String>>any())).thenAnswer(invocation -> {
                     Callable<?> action = invocation.getArgument(0);
                     return action.call();
                 });

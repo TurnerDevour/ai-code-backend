@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Configuration;
 /**
  * 部署构建队列的 RabbitMQ 拓扑
  * 结构（全部 durable，broker 重启后拓扑与消息都还在）：
- * <pre>……
+ * 业务交换机、业务队列、死信交换机与死信队列。
  */
 @Configuration
 public class DeployRabbitConfig {

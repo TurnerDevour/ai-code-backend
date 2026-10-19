@@ -30,7 +30,7 @@ public enum AIProviderEnum {
             return null;
         }
         String normalized = value.trim();
-        for (AIProviderEnum anEnum : AIProviderEnum.values()) {
+        for (AIProviderEnum anEnum : values()) {
             if (anEnum.value.equalsIgnoreCase(normalized)) {
                 return anEnum;
             }

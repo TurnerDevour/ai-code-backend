@@ -20,7 +20,7 @@ import java.util.regex.Pattern;
 /**
  * 执行命令类
  * 说明：这是一个无状态组件，可以在容器外直接 new 出来使用
- * （例如流处理器需要在单测里独立构造，或需要自建实例做收尾构建）……
+ * （例如流处理器需要在单测里独立构造，或需要自建实例做收尾构建）
  */
 @Slf4j
 @Component
@@ -84,15 +84,6 @@ public class VueProjectBuilder {
                 log.error("异步构建 Vue 项目失败: {}", e.getMessage(), e);
             }
         });
-    }
-
-    /**
-     * 同步执行构建并返回结果
-     * 调用方（生成任务注册表）需要把"构建成功/失败"写回任务状态供前端轮询，
-     * 因此它自己负责把这次调用放到独立线程上，这里只做同步构建。
-     */
-    public boolean buildProjectAsyncAndWait(String projectPath) {
-        return buildProject(projectPath);
     }
 
     /** 构建 Vue 项目（就地构建，产物落在项目目录下的 dist） */
@@ -200,7 +191,7 @@ public class VueProjectBuilder {
 
     /**
      * 保证 vite.config.js 使用相对 base
-     * 部署地址形如 {@code http://host/{deployKey}/}，属于子路径部署；vite 默认 base 为 "/"，
+     * 部署地址形如 {@code http://localhost/{deployKey}/}，属于子路径部署；vite 默认 base 为 "/"，
      * 产物里的资源引用会变成 {@code /assets/xxx.js}，部署后必然 404……
      */
     private boolean ensureRelativeBase(File projectDir) {
@@ -213,7 +204,7 @@ public class VueProjectBuilder {
             return true;
         }
         try {
-            String content = new String(java.nio.file.Files.readAllBytes(viteConfig.toPath()), java.nio.charset.StandardCharsets.UTF_8);
+            String content = Files.readString(viteConfig.toPath());
             if (content.contains("base:")) {
                 log.info("vite 配置已显式声明 base，保持原样: {}", viteConfig.getName());
                 return true;
@@ -223,7 +214,7 @@ public class VueProjectBuilder {
                 log.warn("无法自动注入相对 base（配置形态不匹配），跳过: {}", viteConfig.getName());
                 return true;
             }
-            java.nio.file.Files.write(viteConfig.toPath(), patched.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            Files.writeString(viteConfig.toPath(), patched);
             log.info("已为子路径部署注入相对 base: {}", viteConfig.getName());
             return true;
         } catch (Exception e) {
@@ -325,7 +316,7 @@ public class VueProjectBuilder {
         for (int i = meaningful.size() - 1; i >= 0 && summary.size() < ERROR_SUMMARY_LINES; i--) {
             String line = meaningful.get(i);
             if (!summary.contains(line)) {
-                summary.add(0, line);
+                summary.addFirst(line);
             }
         }
         return StrUtil.maxLength(String.join(" | ", summary), BUILD_ERROR_MAX_LENGTH);

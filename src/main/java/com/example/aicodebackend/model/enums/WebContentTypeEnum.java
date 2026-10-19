@@ -1,12 +1,9 @@
 package com.example.aicodebackend.model.enums;
 
-import lombok.Getter;
-
 import java.util.Arrays;
 import java.util.Locale;
 
 /** 静态资源扩展名与 Content-Type 的映射 */
-@Getter
 public enum WebContentTypeEnum {
 
     HTML("text/html; charset=UTF-8", "html", "htm"),
@@ -53,7 +50,7 @@ public enum WebContentTypeEnum {
         String normalized = extension.toLowerCase(Locale.ROOT);
         return Arrays.stream(values())
                 .filter(type -> Arrays.asList(type.extensions).contains(normalized))
-                .map(WebContentTypeEnum::getContentType)
+                .map(type -> type.contentType)
                 .findFirst()
                 .orElse(OCTET_STREAM.contentType);
     }

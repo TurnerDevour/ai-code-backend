@@ -3,6 +3,7 @@ package com.example.aicodebackend.ai.tools;
 import cn.hutool.core.util.StrUtil;
 import com.example.aicodebackend.utils.AppPathUtils;
 
+import java.io.Serial;
 import java.nio.file.Path;
 
 /** 文件类工具的公共能力：项目目录解析、越界保护与展示文案 */
@@ -32,29 +33,20 @@ public abstract class AbstractFileTool extends BaseTool {
         return String.format("%s %s %s", TOOL_CALL_PREFIX, getDisplayName(), StrUtil.nullToEmpty(target));
     }
 
-    /** Markdown 代码块内容 */
-    protected String codeBlock(String content) {
-        return "```\n" + StrUtil.nullToEmpty(content) + "\n```";
-    }
-
     /** 路径越界异常（由各工具翻译成自己的返回文案） */
     protected static final class PathOutsideProjectException extends RuntimeException {
 
-        private final String rawPath;
+        @Serial
+        private static final long serialVersionUID = 1L;
 
-        private final Path projectRoot;
+        private final String projectRoot;
 
         private PathOutsideProjectException(String rawPath, Path projectRoot) {
             super("路径不在项目目录内：" + rawPath);
-            this.rawPath = rawPath;
-            this.projectRoot = projectRoot;
+            this.projectRoot = projectRoot.toString();
         }
 
-        public String rawPath() {
-            return rawPath;
-        }
-
-        public Path projectRoot() {
+        public String projectRoot() {
             return projectRoot;
         }
     }

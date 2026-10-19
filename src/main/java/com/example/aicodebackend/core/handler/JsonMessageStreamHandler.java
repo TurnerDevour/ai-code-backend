@@ -7,6 +7,7 @@ import com.example.aicodebackend.ai.tools.ToolMessageRenderer;
 import com.example.aicodebackend.core.builder.VueProjectBuilder;
 import com.example.aicodebackend.model.entity.User;
 import com.example.aicodebackend.service.ChatHistoryService;
+import jakarta.annotation.PostConstruct;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -41,7 +42,7 @@ public class JsonMessageStreamHandler {
      */
     private GenerationCompletionHandler completionHandler;
 
-    @jakarta.annotation.PostConstruct
+    @PostConstruct
     public void initCompletionHandler() {
         this.completionHandler = new GenerationCompletionHandler(vueProjectBuilder);
     }
@@ -78,7 +79,7 @@ public class JsonMessageStreamHandler {
     /**
      * 处理 HTML / 多文件模式的消息流（无工具，只有正文与思考两条增量）
      * 与 Vue 工程模式的两点差别：
-     * 没有别的地方能把思考内容存下来（前端因此看不到「AI 思考过程」面板）。</li>
+     * 收尾不触发构建；思考过程在这里单独落库，否则前端看不到「AI 思考过程」面板。
      */
     public Flux<String> handleGeneratedFiles(Flux<String> originFlux, ChatHistoryService chatHistoryService,
                                             long appId, User loginUser) {

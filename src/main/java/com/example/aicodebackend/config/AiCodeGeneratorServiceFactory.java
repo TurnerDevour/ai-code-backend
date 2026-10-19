@@ -130,7 +130,7 @@ public class AiCodeGeneratorServiceFactory {
      */
     public synchronized int invalidateAiCodeGeneratorService(long appId) {
         String prefix = appId + "_";
-        java.util.List<String> keys = serviceCache.asMap().keySet().stream()
+        List<String> keys = serviceCache.asMap().keySet().stream()
                 .filter(key -> key.startsWith(prefix))
                 .toList();
         serviceCache.invalidateAll(keys);
@@ -236,7 +236,7 @@ public class AiCodeGeneratorServiceFactory {
                 yield AiServices.builder(AiCodeGeneratorService.class)
                         .streamingChatModel(selectedStreamingChatModel)
                         .chatMemoryProvider((memoryId) -> chatMemory)
-                        .tools(tools == null ? new Object[0] : (Object[]) tools)
+                        .tools(tools == null ? new Object[0] : tools)
                         .hallucinatedToolNameStrategy(
                                 toolExecutionRequest -> ToolExecutionResultMessage.from(toolExecutionRequest, "错误：不存在这个工具， " + toolExecutionRequest.name())
                         )

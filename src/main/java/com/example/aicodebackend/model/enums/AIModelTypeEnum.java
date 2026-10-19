@@ -37,7 +37,7 @@ public enum AIModelTypeEnum {
         if (ObjUtil.isEmpty(value)) {
             return null;
         }
-        for (AIModelTypeEnum anEnum : AIModelTypeEnum.values()) {
+        for (AIModelTypeEnum anEnum : values()) {
             if (anEnum.value.equals(value)) {
                 return anEnum;
             }

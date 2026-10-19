@@ -30,8 +30,8 @@ public final class CodeDamageDetector {
 
     /**
      * CSS 强信号：函数名与前面的 token 粘连（{@code transformvar(--ease)}、{@code 22pxrgba(…)}）
-     * 前面的 token 必须是字母/数字/{@code %}/{@code )}：正常写法里 {@code :} 或空格之后是函数名（如 {@code background:linear-gradient…
-     * 因此这条规则不会命中正常样式……
+     * 前面的 token 必须是字母、数字、{@code %} 或 {@code )}：正常写法里函数名前是 {@code :} 或空格。
+     * 因此这条规则不会命中正常样式。
      */
     private static final Pattern CSS_FUNCTION_GLUE = Pattern.compile(
             "[A-Za-z0-9%)](?:var|calc|rgba|rgb|hsla|hsl|translateX|translateY|translateZ|translate|scaleX|scaleY|scale|rotate|skewX|skewY|skew|clamp|minmax|repeat|linear-gradient|radial-gradient|conic-gradient|cubic-bezier|steps|drop-shadow)\\(");

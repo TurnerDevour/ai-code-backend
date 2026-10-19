@@ -16,18 +16,15 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
  * 部署任务恢复扫描
- * 解决两类"没有消息/消息不可靠"的卡死：
- * 现在构建期间有 {@link DeployHeartbeat} 续租，心跳超过阈值没更新即可判定进程已死，落 failed；</li>……
+ * 解决两类"没有消息/消息不可靠"的卡死：同步请求进程崩溃、数据库抖动导致状态未回滚。
+ * 构建期间有 {@link DeployHeartbeat} 续租，心跳超过阈值未更新即可判定进程已死并落 failed。
  */
 @Slf4j
 @Component
@@ -133,7 +130,7 @@ public class DeployTaskRecovery implements ApplicationRunner {
                 .eq("deploy_status", status)
                 .lt("deploy_heartbeat", cutoff)
                 .limit(batchSize);
-        for (App app : appMapper.selectListByQuery(heartbeatExpired)) {
+        for (App app : Objects.requireNonNull(appMapper.selectListByQuery(heartbeatExpired))) {
             result.put(app.getId(), app);
         }
         QueryWrapper noHeartbeat = QueryWrapper.create()
@@ -141,7 +138,7 @@ public class DeployTaskRecovery implements ApplicationRunner {
                 .isNull("deploy_heartbeat")
                 .lt("update_time", cutoff)
                 .limit(batchSize);
-        for (App app : appMapper.selectListByQuery(noHeartbeat)) {
+        for (App app : Objects.requireNonNull(appMapper.selectListByQuery(noHeartbeat))) {
             result.putIfAbsent(app.getId(), app);
         }
         return new ArrayList<>(result.values());

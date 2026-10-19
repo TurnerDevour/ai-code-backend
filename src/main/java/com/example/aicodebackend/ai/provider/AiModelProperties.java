@@ -240,7 +240,7 @@ public class AiModelProperties {
 
         /** 取采样温度（未配置时回落 {@value #DEFAULT_TEMPERATURE}） */
         public Double getTemperature() {
-            return temperature == null ? DEFAULT_TEMPERATURE : temperature;
+            return temperature == null ? Double.valueOf(DEFAULT_TEMPERATURE) : temperature;
         }
 
         /** 是否解析响应里的 {@code reasoning_content}（未配置视为 true） */

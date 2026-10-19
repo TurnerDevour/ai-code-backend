@@ -23,7 +23,7 @@ public enum CodeGenTypeEnum {
         if (ObjUtil.isEmpty(value)) {
             return null;
         }
-        for (CodeGenTypeEnum anEnum : CodeGenTypeEnum.values()) {
+        for (CodeGenTypeEnum anEnum : values()) {
             if (anEnum.value.equals(value)) {
                 return anEnum;
             }

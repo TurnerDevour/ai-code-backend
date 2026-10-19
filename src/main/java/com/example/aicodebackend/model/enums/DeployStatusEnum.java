@@ -44,7 +44,7 @@ public enum DeployStatusEnum {
         if (ObjUtil.isEmpty(value)) {
             return null;
         }
-        for (DeployStatusEnum anEnum : DeployStatusEnum.values()) {
+        for (DeployStatusEnum anEnum : values()) {
             if (anEnum.value.equals(value)) {
                 return anEnum;
             }

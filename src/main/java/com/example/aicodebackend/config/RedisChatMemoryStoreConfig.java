@@ -11,7 +11,7 @@ import org.springframework.util.StringUtils;
 /**
  * 对话记忆存储配置
  * 100 并发压测暴露的问题：Spring Session（Spring Data Redis/Jedis）与 langchain4j 社区版的
- * {@code RedisChatMemoryStore} 各自用默认的小连接池 + 2s 命令超时，并发下大量出现……
+ * {@code RedisChatMemoryStore} 各自用默认的小连接池 + 2s 命令超时，并发下大量出现
  */
 @Slf4j
 @Configuration

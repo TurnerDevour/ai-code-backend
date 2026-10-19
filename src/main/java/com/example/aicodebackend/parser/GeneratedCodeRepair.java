@@ -60,12 +60,12 @@ public final class GeneratedCodeRepair {
     public static final String FILE_JS = GeneratedFileEnum.JS.getKey();
 
     /** 代码块语言别名 */
-    public static final String[] HTML_BLOCK_ALIASES = GeneratedFileEnum.HTML.getBlockAliases();
-    public static final String[] CSS_BLOCK_ALIASES = GeneratedFileEnum.CSS.getBlockAliases();
-    public static final String[] JS_BLOCK_ALIASES = GeneratedFileEnum.JS.getBlockAliases();
+    static final String[] HTML_BLOCK_ALIASES = GeneratedFileEnum.HTML.getBlockAliases();
+    static final String[] CSS_BLOCK_ALIASES = GeneratedFileEnum.CSS.getBlockAliases();
+    static final String[] JS_BLOCK_ALIASES = GeneratedFileEnum.JS.getBlockAliases();
 
     /** 模型偶尔把 HTML 标成 text / xml */
-    public static final String[] HTML_TEXT_BLOCK_ALIASES = {"text", "xml", "plaintext"};
+    static final String[] HTML_TEXT_BLOCK_ALIASES = {"text", "xml", "plaintext"};
 
     private GeneratedCodeRepair() {
     }
@@ -476,7 +476,7 @@ public final class GeneratedCodeRepair {
             }
             common = Math.min(common, spaces);
         }
-        if (common <= 0 || common == Integer.MAX_VALUE) {
+        if (common == 0 || common == Integer.MAX_VALUE) {
             return content;
         }
         StringBuilder builder = new StringBuilder(content.length());

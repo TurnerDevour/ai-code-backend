@@ -15,11 +15,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 部署任务心跳
  * 构建（同步或 MQ worker）期间每 {@code deploy.recovery.heartbeat-interval-seconds} 秒刷新一次
- * {@code app.deploy_heartbeat}。恢复扫描用"心跳是否新鲜"区分"构建还在跑"和"进程已经崩了"……
+ * {@code app.deploy_heartbeat}。恢复扫描用"心跳是否新鲜"区分"构建还在跑"和"进程已经崩了"
  */
 @Slf4j
 @Component
@@ -57,8 +58,7 @@ public class DeployHeartbeat {
             // 心跳绑定构建线程：如果构建线程死了但 finally 没来得及执行（Error/ThreadDeath），
             // 调度器也应停止续租，让恢复扫描把 deploying 收敛掉。
             Thread owner = Thread.currentThread();
-            java.util.concurrent.atomic.AtomicReference<ScheduledFuture<?>> futureRef =
-                    new java.util.concurrent.atomic.AtomicReference<>();
+            AtomicReference<ScheduledFuture<?>> futureRef = new AtomicReference<>();
             ScheduledFuture<?> future = scheduler.scheduleAtFixedRate(() -> {
                 ScheduledFuture<?> current = futureRef.get();
                 if (!owner.isAlive()) {

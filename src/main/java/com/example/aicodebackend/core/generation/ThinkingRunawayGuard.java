@@ -147,11 +147,6 @@ public class ThinkingRunawayGuard {
         return limits;
     }
 
-    /** 无进展期间已累积的思考字符数 */
-    public int thinkingChars() {
-        return thinkingChars;
-    }
-
     /** 无进展期间已过去的秒数（尚未收到思考增量时为 0） */
     public long elapsedSeconds() {
         if (windowStartNanos == NOT_STARTED) {

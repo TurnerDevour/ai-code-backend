@@ -1,7 +1,5 @@
 package com.example.aicodebackend.utils;
 
-import cn.hutool.core.util.StrUtil;
-
 import java.util.function.Predicate;
 
 /** 异常链查找工具 */
@@ -48,17 +46,5 @@ public final class ThrowableUtils {
             current = current.getCause();
         }
         return false;
-    }
-
-    /** 取第一个非空的消息 */
-    public static String firstNonBlankMessage(Throwable error) {
-        Throwable current = error;
-        while (current != null) {
-            if (StrUtil.isNotBlank(current.getMessage())) {
-                return current.getMessage();
-            }
-            current = current.getCause();
-        }
-        return null;
     }
 }

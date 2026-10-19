@@ -9,6 +9,7 @@ import dev.langchain4j.agent.tool.ToolMemoryId;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -48,7 +49,7 @@ public class FileWriteTool extends AbstractFileTool {
             if (parentDir != null) {
                 Files.createDirectories(parentDir);
             }
-            Files.write(path, StrUtil.nullToEmpty(content).getBytes(),
+            Files.write(path, StrUtil.nullToEmpty(content).getBytes(StandardCharsets.UTF_8),
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
             log.info("文件写入成功，文件路径：{}", path.toAbsolutePath());
             return "文件写入成功，文件路径：" + relativeFilePath;

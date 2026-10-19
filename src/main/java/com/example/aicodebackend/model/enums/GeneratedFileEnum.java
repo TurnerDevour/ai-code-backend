@@ -31,6 +31,11 @@ public enum GeneratedFileEnum {
         this.blockAliases = blockAliases;
     }
 
+    /** 返回副本，避免调用方修改内部数组 */
+    public String[] getBlockAliases() {
+        return blockAliases.clone();
+    }
+
     /** 按文件名取枚举，未匹配时返回 null */
     public static GeneratedFileEnum fromFileName(String fileName) {
         return Arrays.stream(values())

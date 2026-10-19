@@ -25,7 +25,7 @@ public enum ChatMessageTypeEnum {
         if (ObjUtil.isEmpty(value)) {
             return null;
         }
-        for (ChatMessageTypeEnum anEnum : ChatMessageTypeEnum.values()) {
+        for (ChatMessageTypeEnum anEnum : values()) {
             if (anEnum.value.equals(value)) {
                 return anEnum;
             }

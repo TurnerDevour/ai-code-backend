@@ -5,20 +5,18 @@ import dev.langchain4j.data.message.ChatMessageDeserializer;
 import dev.langchain4j.data.message.ChatMessageSerializer;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 import redis.clients.jedis.DefaultJedisClientConfig;
 import redis.clients.jedis.HostAndPort;
 import redis.clients.jedis.JedisClientConfig;
-import redis.clients.jedis.JedisPooled;
+import redis.clients.jedis.RedisClient;
 import redis.clients.jedis.exceptions.JedisException;
-import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * 基于 Jedis 连接池的对话记忆存储
- * 为什么不直接用 langchain4j 社区版的 {@code RedisChatMemoryStore}：
- * 它的 Builder 只暴露 host/port/user/password/ttl/prefix/storeType……
  */
 @Slf4j
 public class JedisChatMemoryStore implements ChatMemoryStore {
@@ -26,7 +24,7 @@ public class JedisChatMemoryStore implements ChatMemoryStore {
     /** 单个 memoryId 的记忆过期时间（秒） */
     private final long ttlSeconds;
 
-    private final JedisPooled jedis;
+    private final RedisClient jedis;
 
     public JedisChatMemoryStore(String host, int port, String user, String password, long ttlSeconds,
                                 int maxTotal, int maxIdle, int minIdle, long maxWaitMillis, int commandTimeoutMs) {
@@ -46,7 +44,11 @@ public class JedisChatMemoryStore implements ChatMemoryStore {
                 .password(password)
                 .build();
 
-        this.jedis = new JedisPooled(new HostAndPort(host, port), clientConfig, poolConfig);
+        this.jedis = RedisClient.builder()
+                .hostAndPort(new HostAndPort(host, port))
+                .clientConfig(clientConfig)
+                .poolConfig(poolConfig)
+                .build();
         log.info("对话记忆存储初始化完成：redis={}:{}, maxTotal={}, maxIdle={}, minIdle={}, maxWait={}ms, commandTimeout={}ms, ttl={}s",
                 host, port, maxTotal, maxIdle, minIdle, maxWaitMillis, commandTimeoutMs, ttlSeconds);
     }
@@ -54,7 +56,7 @@ public class JedisChatMemoryStore implements ChatMemoryStore {
     /**
      * 读取某个会话的全部消息
      * 这里必须是纯读取，绝不能做"工具消息配对清洗"：LangChain4j 的工具循环是
-     * "先把 assistant(tool_calls) 写进记忆 → 执行工具 → 再把工具结果写进记忆"……
+     * "先把 assistant(tool_calls) 写进记忆 → 执行工具 → 再把工具结果写进记忆"
      */
     @Override
     public List<ChatMessage> getMessages(Object memoryId) {

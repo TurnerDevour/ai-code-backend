@@ -1,9 +1,10 @@
 package com.example.aicodebackend.core.builder;
 
 import com.example.aicodebackend.core.builder.mq.DeployMessageProducer;
+import com.example.aicodebackend.core.builder.mq.DeployMessageProducer.PublishException;
 import com.example.aicodebackend.core.builder.mq.DeployRabbitConfig;
 import com.example.aicodebackend.core.builder.mq.DeployTaskMessage;
-import com.example.aicodebackend.core.builder.mq.DeployMessageProducer.PublishException;import com.example.aicodebackend.exception.BusinessException;
+import com.example.aicodebackend.exception.BusinessException;
 import com.example.aicodebackend.exception.ErrorCode;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -25,7 +26,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * 部署构建队列（RabbitMQ 版）
  * 为什么需要它：部署一个 Vue 工程要跑 {@code npm install + npm run build}，单个任务会吃满一个 CPU 核
- * 并大量读写磁盘。改造前"每个请求起一个虚拟线程直接构建"，100 个应用同时部署就会拉起 100 个 npm 进程……
+ * 并大量读写磁盘。改造前"每个请求起一个虚拟线程直接构建"，100 个应用同时部署就会拉起 100 个 npm 进程，CPU 100% 占满，磁盘 I/O 100% 占满，系统直接卡死。
  */
 @Slf4j
 @Component
@@ -47,7 +48,7 @@ public class DeployQueueManager {
     /**
      * AMQP 管理端：用来查队列水位
      * 这里注入的是接口 {@link AmqpAdmin} 而不是具体的 {@link RabbitAdmin}：
-     * Spring Boot 3.5 自动配置声明的 {@code @Bean} 返回类型就是 {@code AmqpAdmin}……
+     * Spring Boot 3.5 自动配置声明的 {@code @Bean} 返回类型就是 {@code AmqpAdmin}
      */
     private final AmqpAdmin amqpAdmin;
 
@@ -173,7 +174,7 @@ public class DeployQueueManager {
     /**
      * 以"限流"的方式执行一段构建逻辑（可指定等待窗口）
      * 两层准入，避免"排队"变成线程池杀手：
-     * 无论等到与否都立刻归还等待者名额，因此名额只代表"正在等待的请求数"，不代表在构建。</li>
+     * 无论是否等到额度都会立刻归还等待者名额，因此名额只代表"正在等待的请求数"，不代表在构建。
      */
     public <T> T runWithPermit(Callable<T> action, Duration timeout) throws InterruptedException {
         if (shuttingDown.get()) {

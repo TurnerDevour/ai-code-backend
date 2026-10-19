@@ -277,8 +277,8 @@ public class AppController {
 
     /**
      * 续订当前应用的生成流（用于浏览器刷新/返回后重新接上正在进行的生成）
-     * 方案 C 的配套接口：生成任务在服务端独立运行，客户端断开不影响它。续订有两种定位方式：
-     * 精确补发且不会重复；</li>……
+     * 方案 C 的配套接口：生成任务在服务端独立运行，客户端断开不影响它。
+     * 客户端可用 fromSeq 或 subId 续订，服务端精确补发缺失帧。
      */
     @GetMapping(value = "/chat/gen/resume", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> resumeGenCode(@RequestParam Long appId, @RequestParam(required = false) Long fromSeq, @RequestParam(required = false) String subId, HttpServletRequest request) {

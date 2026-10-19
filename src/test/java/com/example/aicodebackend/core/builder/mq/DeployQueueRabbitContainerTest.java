@@ -79,8 +79,8 @@ class DeployQueueRabbitContainerTest {
         } else {
             try {
                 container = new RabbitMQContainer(IMAGE)
-                        .withUser(USER, PASSWORD)
-                        .withPermission("/", USER, ".*", ".*", ".*");
+                        .withAdminUser(USER)
+                        .withAdminPassword(PASSWORD);
                 container.start();
                 brokerHost = container.getHost();
                 brokerPort = container.getAmqpPort();

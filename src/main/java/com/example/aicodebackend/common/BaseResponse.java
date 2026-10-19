@@ -3,10 +3,15 @@ package com.example.aicodebackend.common;
 import com.example.aicodebackend.exception.ErrorCode;
 import lombok.Data;
 
+import java.io.Serial;
 import java.io.Serializable;
 
 @Data
+@SuppressWarnings("serial")
 public class BaseResponse<T> implements Serializable {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
 
     private int code;
 
